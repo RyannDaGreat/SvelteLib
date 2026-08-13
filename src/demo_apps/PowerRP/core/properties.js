@@ -64,7 +64,7 @@
 import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { NODE_INPUT_ROW_KIND } from "./nodeflow.js";
-import { VEC2_ROW_KIND } from "./vector_values.js";
+import { VEC2_ROW_KIND, VECTOR_KINDS, COLOR_CHANNEL_MAX, COLOR_VECTOR_ADDRESS, colorAlphaAxis } from "./vector_values.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
 import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeLabels, interpParamKeyFor, isInterpKey, isInterpParamKey, modeParams, modesForKey } from "./interp_modes.js";
@@ -2785,6 +2785,189 @@ export function withCompoundRows(rows, compounds = COMPOUNDS) {
     else if (!absorbed.has(r.key)) out.push(r);
   }
   return out;
+}
+
+// ── COLOUR CHANNEL CHILDREN (R7-36's UI grammar over R7-38's addresses) ──────
+//
+// A colour row gets a disclosure triangle and R/G/B/A children, exactly as the
+// Position row gets X and Y. The two are the SAME compound machinery over
+// different storage: `COMPOUNDS.xy` groups leaf rows that already exist, and a
+// colour has no leaf rows at all — its components are an ADDRESS over one stored
+// value (core/vector_values.js's "the vector is the storage, the components are
+// the view"). So the children have to be GENERATED, and this is the generator.
+//
+// IT IS ONE FUNCTION, NOT 32 HAND-WRITTEN ROWS (R7-38c forbids arity and name
+// hardcoding). The channels come from `VECTOR_KINDS.color.axes`, so a kind that
+// gains, loses or renames a component follows with NO edit here and no edit in
+// the Inspector — pinned by planting a fake 5-channel kind in the tests and
+// asserting five rows appear. There is no "r" in this file.
+
+/**
+ * Pure function. Is this row a COLOUR-BEARING row — one whose value has an
+ * addressable `.color`, and which therefore earns channel children?
+ *
+ * BOTH PAINT AND PLAIN COLOUR ROWS QUALIFY, because both address the same way at
+ * the value layer: `fill.color.r` on a paint, `shadow.color.r` on a plain colour
+ * (core/expressions.js readVectorAddress takes `<anything>.color[.axis]` and maps
+ * the paint through paintColorPath, which answers the EMPTY path for a bare
+ * string — so the two collapse to one rule rather than two).
+ *
+ * @example colorRowIsChannelBearing({key: "fill", kind: "color", paint: true}) // true
+ * @example colorRowIsChannelBearing({key: "shadow.color", kind: "color"}) // true
+ * @example colorRowIsChannelBearing({key: "x", kind: "number"}) // false
+ */
+export function colorRowIsChannelBearing(row) {
+  return rowKindOf(row) === "color";
+}
+
+/** Pure function. A row's kind through the retired-spelling map — the same read
+ *  web/Inspector.svelte makes, so a row written with a retired name is classified
+ *  identically here.
+ *
+ *  >>> rowKindOf({kind: "color"})
+ *  'color'
+ *  >>> rowKindOf({kind: "checkbox"})
+ *  'boolean' */
+function rowKindOf(row) {
+  return RETIRED_ROW_KINDS[row?.kind] ?? row?.kind;
+}
+
+/**
+ * Pure function. The CHANNEL CHILD ROWS for one colour row — one per component
+ * of the `color` vector kind, in the declaration table's own order.
+ *
+ * ── THE KEY IS THE REAL DOTTED WRITE PATH ───────────────────────────────────
+ * A child's `key` is `<row.key>.color.<axis>`, which is precisely the delta path
+ * `core/deltas.js`'s colour-component seam resolves and precisely the address an
+ * equation types. So a channel row keyframes, tweens, copies its path and binds
+ * an equation by BEING an ordinary row — the property the compound machinery
+ * already buys, extended to a value that has no leaves.
+ *
+ * A PLAIN COLOUR ROW WHOSE KEY ALREADY ENDS IN `color` DOES NOT REPEAT IT:
+ * `shadow.color` yields `shadow.color.r`, not `shadow.color.color.r`. The address
+ * grammar is "<the thing holding a colour>.color.<axis>", and for that row the
+ * thing holding the colour is `shadow`.
+ *
+ * ── THE UNITS ARE THE ADDRESS'S UNITS, NOT A UI CHOICE ──────────────────────
+ * R/G/B are 0..255 bytes and alpha is a 0..1 fraction — `COLOR_CHANNEL_MAX` and
+ * `colorChannelValue`'s rule, restated as row bounds so the scrubber cannot
+ * disagree with what an equation reading the same address gets. The alpha row is
+ * identified by ASKING the vector layer (`colorAlphaAxis`), never by comparing
+ * against the literal "a".
+ *
+ * Args:
+ *   row (object): a colour-bearing row
+ *
+ * Returns:
+ *   object[]: the channel rows, or [] when `row` is not colour-bearing
+ *
+ * Examples:
+ *     >>> colorChannelRows({key: "fill", label: "Fill", kind: "color", paint: true, category: "fillMaterial"}).map((r) => r.key)
+ *     ['fill.color.r', 'fill.color.g', 'fill.color.b', 'fill.color.a']
+ *     >>> // a plain colour row already ending in `color` does not say it twice:
+ *     >>> colorChannelRows({key: "shadow.color", label: "Shadow color", kind: "color"}).map((r) => r.key)
+ *     ['shadow.color.r', 'shadow.color.g', 'shadow.color.b', 'shadow.color.a']
+ *     >>> colorChannelRows({key: "fill", label: "Fill", kind: "color"})[0].label
+ *     'R'
+ *     >>> // RGB are BYTES; alpha is a FRACTION — the address's own units:
+ *     >>> colorChannelRows({key: "fill", label: "Fill", kind: "color"})[0].max
+ *     255
+ *     >>> colorChannelRows({key: "fill", label: "Fill", kind: "color"})[3].max
+ *     1
+ *     >>> colorChannelRows({key: "x", kind: "number"})
+ *     []
+ */
+export function colorChannelRows(row) {
+  if (!colorRowIsChannelBearing(row)) return [];
+  const base = row.key.split(".").at(-1) === COLOR_VECTOR_ADDRESS
+    ? row.key
+    : `${row.key}.${COLOR_VECTOR_ADDRESS}`;
+  const alpha = colorAlphaAxis();
+  return VECTOR_KINDS[COLOR_VECTOR_ADDRESS].axes.map((axis) => {
+    const isAlpha = axis === alpha;
+    return {
+      key: `${base}.${axis}`,
+      label: axis.toUpperCase(),
+      kind: "number",
+      category: row.category,
+      min: 0,
+      max: isAlpha ? 1 : COLOR_CHANNEL_MAX,
+      // The scrub coefficient follows the units, so one dragged pixel means a
+      // comparable amount of colour on every channel rather than 255x more on
+      // three of them than on the fourth.
+      scrub: isAlpha ? UNIT_SPAN_SCRUB : 1,
+      channelOf: row.key,
+      help: isAlpha
+        ? `The alpha of ${row.label}'s own colour, 0..1 — a property of THIS paint, separate from the widget's Opacity row (which multiplies every paint at once). Keyframe it alone to fade one slot.`
+        : `The ${axis.toUpperCase()} channel of ${row.label}'s colour, 0..255. Keyframing it alone animates ${axis.toUpperCase()} and leaves the other channels wherever the base colour puts them.`,
+    };
+  });
+}
+
+/**
+ * Pure function. The COMPOUND NODE a colour row becomes once it has channel
+ * children — the parent keeps its own control (the picker edits the whole
+ * colour) and gains a disclosure triangle plus the tri-state diamond.
+ *
+ * `editor: "self"` is what tells the Inspector to render THE ROW'S OWN control in
+ * the parent's value cell, rather than the `pad2d` a transform compound shows.
+ * That is the R7-36 requirement stated exactly: whole-colour editing stays the
+ * parent row's job, and the children are the per-channel addresses.
+ *
+ * RETURNS null WHEN THE ROW HAS NO ADDRESSABLE COLOUR, which is how the
+ * "disclosure is ABSENT, not disabled-and-lying" rule is enforced: the caller
+ * gets the plain row back and there is no triangle to click. Whether a given
+ * PAINT has one is a question about its stored VALUE, not about its row, so it is
+ * answered per-item at render time (`paintColorPath`) rather than here.
+ *
+ * Args:
+ *   row (object): a colour-bearing row
+ *
+ * Returns:
+ *   object|null: the compound node, or null for a non-colour row
+ *
+ * Examples:
+ *     >>> colorCompoundRow({key: "fill", label: "Fill", kind: "color", paint: true}).compound
+ *     true
+ *     >>> colorCompoundRow({key: "fill", label: "Fill", kind: "color"}).children.map((c) => c.label)
+ *     ['R', 'G', 'B', 'A']
+ *     >>> // the PARENT keeps its own control — the picker still edits the whole colour:
+ *     >>> colorCompoundRow({key: "fill", label: "Fill", kind: "color"}).editor
+ *     'self'
+ *     >>> colorCompoundRow({key: "x", kind: "number"})
+ *     null
+ */
+export function colorCompoundRow(row) {
+  const children = colorChannelRows(row);
+  if (children.length === 0) return null;
+  return { ...row, compound: true, editor: "self", channelParent: true, children };
+}
+
+/**
+ * Pure function. A row list with every colour row expanded into its channel
+ * compound — the one seam a panel calls, mirroring `withCompoundRows`.
+ *
+ * SEPARATE FROM `withCompoundRows` BECAUSE THE TWO ANSWER DIFFERENT QUESTIONS.
+ * That one folds SEVERAL declared rows into one (grouping); this one gives ONE
+ * declared row children it did not have (generation). Composing them in the
+ * caller keeps each honest about what it does, and means a colour row nested
+ * inside a future transform compound would still get its channels.
+ *
+ * Args:
+ *   rows (object[]): a widget's resolved inspector rows
+ *
+ * Returns:
+ *   object[]: the same rows, colour ones replaced by their compound node
+ *
+ * Examples:
+ *     >>> withColorChannelRows([{key: "x", kind: "number"}, {key: "fill", label: "Fill", kind: "color"}]).map((r) => r.compound === true)
+ *     [false, true]
+ *     >>> // ORDER AND COUNT ARE PRESERVED — this never adds or moves a row:
+ *     >>> withColorChannelRows([{key: "a", kind: "number"}, {key: "b", kind: "number"}]).length
+ *     2
+ */
+export function withColorChannelRows(rows) {
+  return rows.map((r) => colorCompoundRow(r) ?? r);
 }
 
 /**

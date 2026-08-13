@@ -65,11 +65,11 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
-  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage, withCompoundRows, ASPECT_LOCK_KEY, aspectLockedPair } from "../core/properties.js";
+  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage, withCompoundRows, colorCompoundRow, ASPECT_LOCK_KEY, aspectLockedPair } from "../core/properties.js";
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_DEFAULT, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
-  import { VEC2_ROW_KIND } from "../core/vector_values.js";
+  import { VEC2_ROW_KIND, paintColorPath } from "../core/vector_values.js";
   import { EXEC_CAT, NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleExecTargets, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
   import { OUTPUTS_CAT, outputPropertyRows } from "../core/output_properties.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
@@ -544,7 +544,7 @@
    *     >>> // groupRows([{key:"ghostCount",category:"custom"}], null, "Lens Flare")
    *     >>> // → [{id:"custom",title:"Lens Flare settings",rows:[…ghostCount]}]
    */
-  function groupRows(rows, state = null, widgetTitle = null) {
+  function groupRows(rows, state = null, widgetTitle = null, channelState = null) {
     const buckets = new Map();
     for (const row of rows) {
       if (state && typeof row.visibleWhen === "function" && !row.visibleWhen(state)) continue;
@@ -570,8 +570,55 @@
       // never straddle two sections — and the fold sees exactly the rows this
       // section will render, including the ones `visibleWhen` just dropped.
       // A widget missing any leaf keeps its plain rows, unchanged.
-      rows: withCompoundRows(buckets.get(id)),
+      //
+      // COLOUR CHANNEL CHILDREN ARE GENERATED IN THE SAME BREATH (workstream
+      // VECUI_, R7-36's grammar over R7-38's addresses). The two seams answer
+      // different questions and compose in that order: withCompoundRows FOLDS
+      // several declared rows into one, and channelExpanded GIVES one row
+      // children it never declared. Running the fold first means a colour row
+      // that some future compound absorbs is expanded as that compound's CHILD,
+      // which is the arbitrary-depth rule already in force.
+      //
+      // OPT-IN PER CALL SITE, not a global: only the SINGLE-SELECTION panel
+      // passes `channelState`. The multi panel declines because its selected
+      // paints may be different kinds (no single answer to "does this have a
+      // colour"), and the creation/transition panels have no stored paint to ask.
+      rows: channelState ? channelExpanded(withCompoundRows(buckets.get(id)), channelState) : withCompoundRows(buckets.get(id)),
     }));
+  }
+
+  /**
+   * Pure function. A row list with every colour row that HAS an addressable
+   * colour turned into its channel compound, against ONE item's raw state.
+   *
+   * ── THE ABSENCE RULE IS ENFORCED HERE, AND IT IS A QUESTION ABOUT THE VALUE ──
+   * "For paints whose kind has no addressable colour the disclosure is ABSENT,
+   * not disabled-and-lying." WHICH KINDS those are is core's (`paintColorPath` —
+   * off/material/crossfade answer null), but WHICH KIND THIS PAINT IS RIGHT NOW
+   * is a fact about the stored value, not about the row declaration. So
+   * core/properties.js's generator decides what a colour row COULD have, and this
+   * decides whether THIS item's paint actually does.
+   *
+   * A paint the author switches to Off therefore LOSES its triangle rather than
+   * keeping a dead one, and switching back restores it — the control tracks the
+   * value, which is the whole point of not rendering a disabled lie.
+   *
+   * RECURSES INTO COMPOUNDS, so a colour row nested inside a future compound
+   * still gets its channels (the arbitrary-depth rule; nothing counts levels).
+   */
+  function channelExpanded(rows, state) {
+    return rows.map((row) => {
+      if (row.compound) return { ...row, children: channelExpanded(row.children, state) };
+      const node = colorCompoundRow(row);
+      if (!node) return row;
+      // A PAINT is asked about its own value; a PLAIN colour row always has one
+      // (its value IS the colour), so it never consults paintColorPath. An ABSENT
+      // paint keeps its channels — the slot simply has not been written yet, and
+      // its default is a solid colour.
+      if (!row.paint) return node;
+      const paint = valueAt(state, writeKey(row));
+      return paint !== undefined && paintColorPath(paint) === null ? row : node;
+    });
   }
 
   /**
@@ -613,6 +660,16 @@
     // children mount their own divider run instead (see .compound-children).
     // COLLAPSED it is an ordinary boundary row: label on the left, fields on the
     // right, exactly the boundary a divider names.
+    // A CHANNEL PARENT IS ASKED ABOUT ITS OWN CONTROL, NOT ABOUT BEING A
+    // COMPOUND (workstream VECUI_). A colour row that gained R/G/B/A children is
+    // still rendering the SAME control it always did in the parent's value cell
+    // (`editor: "self"`), so a PAINT one still needs PaintField's full-width
+    // stack and a plain colour one still keeps the shared value column — exactly
+    // as each did before it had a triangle. Falling through to the generic
+    // compound answer below would have made a collapsed paint compound a
+    // boundary row and run the divider straight through the paint stack, which
+    // is the "extending too far down" complaint this function exists to answer.
+    if (row.compound && row.editor === "self") return fullWidthRow({ ...row, compound: false });
     if (row.compound) return !!compoundOpen[row.key];
     const kind = rowKind(row);
     return kind === LIST_ROW_KIND || (kind === "color" && !!row.paint);
@@ -671,8 +728,17 @@
   // nothing to spread, nothing to forget, no per-plugin copy to drift.
   // `sel.state` is the EVALUATED state, which is where core/expressions.js injected
   // the values, so the panel shows the very numbers the equations read.
+  // THE CHANNEL ARGUMENT IS THE *EVALUATED* STATE, deliberately, and it is the
+  // one place these two states differ in a way that matters here. The question
+  // channelExpanded asks is "what KIND of paint is in this slot" — and for a
+  // paint bound to an equation the raw value is the expression STRING, whose
+  // kind is unanswerable, while the evaluated value is the paint the widget
+  // actually has. Passing raw state would silently drop the triangle from every
+  // equation-bound paint; passing evaluated state asks about the paint that is
+  // really there. (The channel ROWS still write raw dotted paths, as every row
+  // does — this argument only decides whether the disclosure exists.)
   let itemCategories = $derived(
-    sel ? groupRows([...(sel.plugin.inspector ?? []), ...outputPropertyRows(sel.plugin, sel.state)], sel.state, sel.plugin.title ?? null) : []
+    sel ? groupRows([...(sel.plugin.inspector ?? []), ...outputPropertyRows(sel.plugin, sel.state)], sel.state, sel.plugin.title ?? null, sel.state) : []
   );
   let creationCategories = $derived(
     creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? [], creationState, app.registry.get(creationState.type)?.title ?? null) : []
@@ -2067,7 +2133,24 @@
            the leaves as their own full rows below — the user's `v [DragPad]`.
            A compound with no pad editor simply shows its children inline when
            collapsed and nothing here when open. -->
-      {#if !open}
+      <!-- `editor: "self"` — A CHANNEL PARENT KEEPS ITS OWN CONTROL, open or
+           closed (core/properties.js colorCompoundRow). R7-36 asks for exactly
+           this on a colour: the triangle drops down into R/G/B/A, and the WHOLE
+           colour is still edited by the picker that was always there. So the
+           parent renders THE ROW ITSELF rather than its children inline — the
+           children are addresses over that one value, not fields that would
+           reconstitute it, and showing four numbers where the swatch belongs
+           would replace the colour editor with its own decomposition. -->
+      {#if node.editor === "self"}
+        {@render valueControl(node, state, {
+          itemMode: opts.keyframes !== false && !opts.disabled,
+          disabled: !!opts.disabled,
+          onpreview: opts.onpreview, oncommit: opts.oncommit, itemId,
+          resolvedMax: typeof node.max === "function" ? node.max(state) : (node.max ?? null),
+          hoverPreview: opts.hoverPreview,
+          writePaths: opts.multi ? multiPaths(writeKey(node)) : null,
+        })}
+      {:else if !open}
         {#each leaves as leaf (leaf.key)}
           {@render valueControl(leaf, state, {
             itemMode: opts.keyframes !== false && !opts.disabled,

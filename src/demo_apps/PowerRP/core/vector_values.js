@@ -333,6 +333,32 @@ export function colorAlphaIsPaintLocal() {
   return true;
 }
 
+/**
+ * Pure function. WHICH component of the colour vector is the alpha — the name,
+ * asked rather than assumed.
+ *
+ * IT EXISTS SO NO CALLER WRITES `axis === "a"`. Alpha is the one channel whose
+ * UNITS differ (a 0..1 fraction where R/G/B are 0..255 bytes — see
+ * COLOR_CHANNEL_MAX), so every surface that builds a control, a bound or a
+ * scrub coefficient has to single it out; a literal in each of those places is
+ * the arity/name hardcoding R7-38c forbids, spread across files. Derived as the
+ * LAST axis, which is what "alpha is the fourth component" means positionally
+ * and what `withColorChannel`'s own `i === 3` branch encodes.
+ *
+ * Returns:
+ *   string: the alpha component's name
+ *
+ * Examples:
+ *     >>> colorAlphaAxis()
+ *     'a'
+ *     >>> // it is the LAST component, not a hardcoded letter:
+ *     >>> colorAlphaAxis() === VECTOR_KINDS.color.axes[COLOR_VECTOR_ARITY - 1]
+ *     true
+ */
+export function colorAlphaAxis() {
+  return VECTOR_KINDS.color.axes[VECTOR_KINDS.color.axes.length - 1];
+}
+
 /** The 0..255 byte range each color channel is addressed in. R/G/B are BYTES,
  *  matching hexToRgb and what an author reads off a color picker; `.a` is the
  *  odd one out and is addressed as a 0..1 FRACTION (see colorChannelValue) —
@@ -1047,9 +1073,20 @@ export function lerpedColorComponents(base, components, alpha) {
   return out;
 }
 
-/** The `color` address, read from the declaration table rather than written as a
- *  literal — R7-38c's "nothing hardcoding arity or name" applied to this seam. */
-const COLOR_ADDRESS = "color";
+/**
+ * THE `color` ADDRESS — the segment that sits between a paint's key and one of
+ * its channels (`fill` → `color` → `r`). Exported so the Inspector's channel-row
+ * generator spells it from HERE rather than writing "color" of its own; two
+ * literals in two modules is exactly how an address grammar drifts.
+ *
+ * @example COLOR_VECTOR_ADDRESS // "color"
+ * @example VECTOR_KINDS[COLOR_VECTOR_ADDRESS].axes // ["r", "g", "b", "a"]
+ */
+export const COLOR_VECTOR_ADDRESS = "color";
+
+/** Module-local alias, kept because this file's own seam functions read better
+ *  with the short name and predate the export. */
+const COLOR_ADDRESS = COLOR_VECTOR_ADDRESS;
 
 /** Pure function. A plain object literal (not an array, not a class instance) —
  *  the same test `core/deltas.js isTree` makes, restated here so this module does
