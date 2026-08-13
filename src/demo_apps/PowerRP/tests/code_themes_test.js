@@ -24,6 +24,7 @@ import { renderToPng } from "../render_gpu/skia/node_render.js";
 import { readPng, litSetDistance } from "./imageDistinctness.js";
 import { fitRectView } from "../core/view.js";
 import { KINDS } from "../core/codeHighlight.js";
+import { parseColor } from "../render_gpu/ir.js";
 import {
   CODE_PALETTES, CODE_THEME_IDS, CODE_THEME_LABELS, THEME_LICENSES,
   DEFAULT_CODE_THEME, codeTheme, codeThemeProps, kindColor,
@@ -138,6 +139,56 @@ test("codeThemeProps carries the theme's OWN background, so a light theme is rea
   // theme means writing both — otherwise Solarized Light's ink lands on a dark box.
   for (const id of CODE_THEME_IDS)
     assert.deepEqual(codeThemeProps(id), { theme: id, fill: CODE_PALETTES[id].bg });
+});
+
+// ── THE ROW WRITES THE BACKGROUND (user ruling, 2026-08-12) ───────────────────
+// "A VS Code theme is background + token colors; a Solarized Light pick that
+// leaves the box charcoal fails the plain meaning." The theme row declares a
+// `companion` hook so picking a theme stages {theme, fill} in ONE preview, and
+// therefore ONE undo unit. These pin the DECLARATION and its rendered effect;
+// tests/inspector_code_theme_probe.js drives the real dropdown in a browser.
+
+test("the theme row declares a companion write, and it is the theme's own background", () => {
+  const row = codeblockPlugin.inspector.find((r) => r.key === "theme");
+  assert.equal(typeof row.companion, "function",
+    "the theme row declares no `companion` — picking a theme would leave the box at its old fill");
+  for (const id of CODE_THEME_IDS)
+    assert.deepEqual(row.companion(id), [["fill", CODE_PALETTES[id].bg]],
+      `the theme row's companion for "${id}" is not that theme's own background`);
+});
+
+test("APPLYING a theme puts that theme's background in the emitted box op", () => {
+  // The end of the chain the ruling is about: the companion pair reaches the
+  // painter. Rendered through the real emit(), against a block whose stored fill
+  // is the LEGACY dark one — i.e. exactly the "switch an existing block to
+  // Solarized Light" case that used to leave a charcoal box.
+  for (const id of CODE_THEME_IDS) {
+    const applied = { ...codeblockPlugin.defaults, fill: CODE_PALETTES.dark.bg, ...codeThemeProps(id) };
+    const [box] = codeblockPlugin.emit({ ...applied, code: "const x = 1;", w: 200, h: 60 });
+    assert.deepEqual(box.fill, parseColor(CODE_PALETTES[id].bg),
+      `applying "${id}" left the box at ${JSON.stringify(box.fill)} instead of the theme's ${CODE_PALETTES[id].bg}`);
+  }
+});
+
+test("A MANUAL FILL AFTER a theme pick still wins (apply path only, not render precedence)", () => {
+  // Ordinary property order: the companion writes `fill`, and a later edit
+  // overwrites it. emit() is unchanged — it still reads `s.fill ?? palette.bg`.
+  const chosen = "#123456";
+  const state = { ...codeblockPlugin.defaults, ...codeThemeProps("solarizedLight"), fill: chosen };
+  const [box] = codeblockPlugin.emit({ ...state, code: "x", w: 120, h: 40 });
+  assert.deepEqual(box.fill, parseColor(chosen), "a fill edited after the theme pick was overridden by the palette");
+});
+
+test("A DOC THAT NEVER TOUCHES THE ROW is untouched — the ruling changed the apply path only", () => {
+  // The legacy law restated at the render seam: a stored theme+fill pair renders
+  // through emit() exactly as before, because emit() still prefers the stored
+  // fill. Only an actual row interaction writes a companion.
+  for (const id of LEGACY_IDS) {
+    const legacyDoc = { ...codeblockPlugin.defaults, theme: id, fill: "#0c0e12" }; // a Terminal-preset fill
+    const [box] = codeblockPlugin.emit({ ...legacyDoc, code: "x", w: 120, h: 40 });
+    assert.deepEqual(box.fill, parseColor("#0c0e12"),
+      `theme "${id}" on an untouched doc had its stored fill replaced — load-time precedence changed`);
+  }
 });
 
 // ── distinctness: the themes are not sixteen names for one look ───────────────

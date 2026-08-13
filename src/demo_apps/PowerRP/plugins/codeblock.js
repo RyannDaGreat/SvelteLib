@@ -319,11 +319,20 @@ export const codeblockPlugin = {
     // THE THEME ROSTER IS DERIVED, never transcribed: options come from the
     // table's own key order and labels from its own label map, so adding a theme
     // in core/code_themes.js reaches this dropdown with no edit here.
-    // NOTE the row colours TOKENS ONLY. The box's background is `fill` (below),
-    // and a stored fill always wins over the palette's bg, so switching to a
-    // light theme on a dark-filled block leaves the box dark — the help text says
-    // so, and core/code_themes.codeThemeProps() is the patch that sets both.
-    { key: "theme", label: "Code theme", kind: "select", options: CODE_THEME_IDS, optionLabels: CODE_THEME_LABELS, category: "formatting", help: "The syntax color palette for the code text: the app's two classic palettes plus fourteen from popular VS Code themes (Dracula, Monokai, Nord, Solarized, GitHub, Gruvbox, Tokyo Night, Catppuccin and more). This colors the TEXT only — set Fill below to the theme's own background if you switch between a dark and a light theme." },
+    //
+    // THE ROW WRITES THE BACKGROUND TOO (user ruling, 2026-08-12: "a VS Code
+    // theme is background + token colors; a Solarized Light pick that leaves the
+    // box charcoal fails the plain meaning"). `companion` is the row-level
+    // declaration of that coupled write — the same seam the aspect-chain lock
+    // rides — so picking a theme stages {theme, fill} in ONE preview and lands as
+    // ONE undo unit. It is DECLARATIVE and generic: the Inspector consults the
+    // row, never the widget type, so no codeblock knowledge leaks into the panel.
+    //
+    // THIS IS THE APPLY PATH ONLY. Load-time and render precedence are untouched
+    // (emit() still reads `s.fill ?? palette.bg`), so a stored fill still wins and
+    // an existing deck is byte-identical until someone actually touches this row —
+    // and a manual Fill edit AFTERWARDS still wins, by ordinary property order.
+    { key: "theme", label: "Code theme", kind: "select", options: CODE_THEME_IDS, optionLabels: CODE_THEME_LABELS, category: "formatting", companion: (id) => [["fill", codeTheme(id).bg]], help: "The syntax color palette: the app's two classic palettes plus fourteen from popular VS Code themes (Dracula, Monokai, Nord, Solarized, GitHub, Gruvbox, Tokyo Night, Catppuccin and more). Picking one also sets Fill to that theme's own background, as one undo step — edit Fill afterwards to override it. Existing blocks keep their current fill until you pick a theme here." },
     { key: "padding", label: "Padding", kind: "number", min: 0, category: "formatting", help: "Inner space between the box edge and the code, in canvas units." },
     ...bundle("strokedBox"),
     ...props("opacity"),

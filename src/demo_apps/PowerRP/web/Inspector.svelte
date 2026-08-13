@@ -1060,21 +1060,45 @@
   // the general fix; tests/node_input_row_probe.js asserts this seam and those two
   // functions agree PAIR FOR PAIR, so they cannot drift apart later.
 
-  /** Live preview while typing/dragging a field — viewport re-renders in real
-   * time BEFORE commit (manifest rule); Enter/blur commits; Escape reverts. */
-  function previewField(key, kind, raw) {
-    const value = coerce(kind, raw);
-    if (kind === "number" && Number.isNaN(value)) return;
-    app.setPreview([[["items", pickedItemId, ...key.split(".")], value]]);
+  /**
+   * The setPreview pairs one field edit writes: the row's own value, plus any
+   * COMPANION keys the row declares for that value.
+   *
+   * A `companion(value)` row hook returns [[key, value], ...] — coupled writes
+   * that belong in the SAME preview, and therefore the SAME undo unit, as the
+   * edit that caused them (the aspect-chain lock's seam, generalized from
+   * NumericField to the plain-select path). It is DECLARATIVE: this function asks
+   * the ROW, never the widget type, so no plugin knowledge lands in the panel.
+   *
+   * The codeblock `theme` row is today's caller — a VS Code theme is background
+   * plus token colours, so picking one writes `fill` alongside `theme` (user
+   * ruling, 2026-08-12). A later manual Fill edit still wins by ordinary property
+   * order; this is the APPLY path, not load-time or render precedence.
+   */
+  function fieldPairs(key, value, companion) {
+    const pairs = [[["items", pickedItemId, ...key.split(".")], value]];
+    for (const [companionKey, companionValue] of companion?.(value) ?? [])
+      pairs.push([["items", pickedItemId, ...companionKey.split(".")], companionValue]);
+    return pairs;
   }
 
-  function commitField(key, kind, raw) {
+  /** Live preview while typing/dragging a field — viewport re-renders in real
+   * time BEFORE commit (manifest rule); Enter/blur commits; Escape reverts.
+   * Previews the companion writes too, so the hover picture is the one the click
+   * will commit. */
+  function previewField(key, kind, raw, companion = null) {
+    const value = coerce(kind, raw);
+    if (kind === "number" && Number.isNaN(value)) return;
+    app.setPreview(fieldPairs(key, value, companion));
+  }
+
+  function commitField(key, kind, raw, companion = null) {
     const value = coerce(kind, raw);
     if (kind === "number" && Number.isNaN(value)) {
       app.cancelPreview();
       return;
     }
-    app.setPreview([[["items", pickedItemId, ...key.split(".")], value]]);
+    app.setPreview(fieldPairs(key, value, companion));
     app.commitPreview();
   }
 
@@ -1107,6 +1131,14 @@
    * coercion plan per item and commits once — the same one-undo-unit promise, by
    * a fold instead of a preview. Ineligible items (the camera) are skipped there
    * with their reason; the panel says so above the rows. */
+  // KNOWN BOUND — A COMPANION WRITE IS SINGLE-SELECTION ONLY, and it is stated
+  // rather than silently dropped. This path fans ONE value to N items through
+  // app.unifySelection, whose contract is one key; a row's `companion` hook would
+  // need a second fan-out to ride the same undo unit. So selecting twelve code
+  // blocks and picking a theme writes `theme` to all twelve and leaves their
+  // fills alone — the pre-ruling behaviour, which is coherent (nothing is half
+  // applied) but is NOT the single-item behaviour. Widening unifySelection to
+  // take pairs is the fix when a second companion row exists to justify it.
   function commitMulti(key, kind, raw) {
     if (key === "type") {
       app.cancelPreview();
