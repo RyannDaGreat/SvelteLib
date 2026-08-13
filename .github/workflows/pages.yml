@@ -6,7 +6,9 @@
 # (IndexedDB) and marks the genuinely server-only features (render jobs,
 # server-side ffmpeg encoding, ffprobe clip length) as unavailable IN THE UI
 # rather than failing with a 404. See web/storageMode.js for how that is decided
-# and web/StaticModeNotice.svelte for how it is stated.
+# and web/storageMode.js (UNAVAILABLE_IN_STATIC + refuseInStatic) for how it is
+# stated. (Corrected 2026-08-13: this line used to name web/StaticModeNotice.svelte,
+# a file that does not exist — doctrine had outlived the code it described.)
 #
 # ── ONE MANUAL SETTINGS STEP (a workflow cannot do this itself) ───────────────
 # In the repo: Settings → Pages → "Build and deployment" → Source = GITHUB
