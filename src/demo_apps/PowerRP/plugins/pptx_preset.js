@@ -1,7 +1,7 @@
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
-import { presetShapePath } from "../core/pptx/preset_geometry.js";
+import { presetShapePath, shadeSubpathFill } from "../core/pptx/preset_geometry.js";
 import { parseAhLst, handlePositions, adjFromHandleDrag } from "../core/pptx/preset_handles.js";
 import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import { path } from "../render_gpu/ir.js";
@@ -103,6 +103,127 @@ function geometryOf(state, defs) {
   const w = state.w ?? 0, h = state.h ?? 0;
   if (w <= 0 || h <= 0) return null;
   return presetShapePath(state.preset, effectiveAdjOf(state, defs), w, h, defs);
+}
+
+/**
+ * Pure function. THE SUBPATH PAINT MODEL — one `path` op per drawn subpath,
+ * honouring each subpath's OWN declared `fill`/`stroke` flags, in the order
+ * LibreOffice paints them.
+ *
+ * ── WHAT WAS WRONG BEFORE, AND HOW BADLY ────────────────────────────────────
+ * This widget used to `join(" ")` every subpath into ONE `d` and paint it with
+ * one fill + one stroke + a hardcoded `fillRule: "evenodd"`, on a comment
+ * claiming preset geometry "never mixes fill/stroke per-subpath in a way this
+ * app's paint model needs to keep separate". That is true of the 118
+ * single-subpath presets and FALSE of the other 69, which is 37% of the table.
+ * MEASURED on the vendored defs: 95 subpaths declare `fill="none"` (stroke-only
+ * detail lines — the joined path FLOOD-FILLED them), 52 declare `stroke=false`
+ * (fill-only silhouettes — the joined path OUTLINED them), and 33 declare a
+ * darken/lighten shade (the 3D faces of `cube`, `can`, `bevel`, the curved
+ * arrows — all painted flat). The user's report was "a lot of these shapes just
+ * look very broken"; the count behind it was 69/187.
+ *
+ * The evaluator ALREADY returned `{d, fill, stroke}` per subpath and
+ * `tests/pptx_geometry_test.js` already pinned that it does. Nothing consumed
+ * them. This function is that consumption.
+ *
+ * ── THE PAINT ORDER IS FILLS-THEN-STROKES, AND IT IS NOT DECLARATION ORDER ──
+ * Every subpath's fill is painted (in declaration order), and only then is every
+ * subpath's stroke painted (in declaration order). This is LibreOffice's own
+ * rule, not an inference: `EnhancedCustomShape2d.cxx` splits each subpath into a
+ * separate fill object and stroke object (`CreateSubPath`) and then STABLE-
+ * PARTITIONS the list so non-line objects precede line objects, under the
+ * comment "sort objects so that filled ones are in front. Necessary for some
+ * strange objects".
+ *
+ * IT IS LOAD-BEARING FOR EXACTLY THREE SHAPES and they are the reason a naive
+ * declaration-order implementation looks right and is not: `chartX`, `chartPlus`
+ * and `chartStar` declare their stroke-only detail lines FIRST and their filled
+ * square SECOND. In declaration order the square covers the lines and the shape
+ * renders as a blank box — which is what a first attempt at this fix produced.
+ * VERIFIED against LibreOffice's raw PDF content stream for chartX, which emits
+ * the blue fill (`f*`) before the two diagonal strokes (`S S`) despite the
+ * reverse declaration order. `cube`/`can`/`bevel`/`ribbon` show the same
+ * `f f ... S S` shape; `cloudCallout`'s apparent `f S f S` interleave is that
+ * same rule seen through subpaths that are each BOTH filled and stroked.
+ *
+ * THE ACCIDENT THIS DELIBERATELY DOES NOT PRESERVE: under the joined path,
+ * chartX's diagonals were flood-filled, which read as BOLDER than the reference.
+ * Honouring the flags makes them 2px strokes, and the correct answer is
+ * whichever LibreOffice draws — it draws strokes.
+ *
+ * ── FILL RULE ───────────────────────────────────────────────────────────────
+ * `evenodd` per subpath, retained and now VERIFIED rather than assumed: every
+ * fill in LibreOffice's PDF of all 187 shapes carries `even_odd: true`,
+ * including the ring/counter shapes (`donut`, `sun`) the rule actually matters
+ * for. The old code's `evenodd` was right; only its SCOPE was wrong.
+ *
+ * ── WHAT EACH FLAG MEANS HERE ───────────────────────────────────────────────
+ *   fill "none"          -> no fill op contribution (stroke only)
+ *   fill "norm"          -> the widget's own fill
+ *   fill darken/lighten* -> `shadeSubpathFill` of the widget's fill
+ *   stroke false         -> no stroke contribution
+ *   stroke true          -> the widget's stroke at the widget's strokeWidth
+ * A subpath that would draw NOTHING (no fill and no stroke) emits no op at all,
+ * rather than an invisible one — `path()` would accept it, but an op that cannot
+ * produce a pixel is cost in every backend and noise in every op-count test.
+ *
+ * Args:
+ *   subpaths (Array<{d, fill, stroke}>): `presetShapePath`'s own return.
+ *   s (object): the widget state (fill, stroke, strokeWidth, opacity).
+ *
+ * Returns:
+ *   Array<object> -- `path` IR ops, in paint order.
+ *
+ * @example // a plain one-subpath shape: ONE op, filled and stroked, as before
+ * @example presetPaintOps([{d: "M 0,0 L 1,1", fill: "norm", stroke: true}], {fill: "#f00", stroke: "#000", strokeWidth: 2}).length // 1
+ * @example // cube-like: 3 shaded fills then 1 outline stroke = 4 ops
+ * @example presetPaintOps([{d: "M 0,0", fill: "norm", stroke: false}, {d: "M 1,1", fill: "darkenLess", stroke: false}, {d: "M 2,2", fill: "none", stroke: true}], {fill: "#7dcfff", stroke: "#000", strokeWidth: 2}).map((o) => o.op) // ["path", "path", "path"]
+ * @example // chartX: the fill-second subpath is painted FIRST
+ * @example presetPaintOps([{d: "M 0,0", fill: "none", stroke: true}, {d: "M 9,9", fill: "norm", stroke: false}], {fill: "#7dcfff", stroke: "#000", strokeWidth: 2}).map((o) => o.d) // ["M 9,9", "M 0,0"]
+ */
+function presetPaintOps(subpaths, s) {
+  const strokeWidth = s.strokeWidth ?? 0;
+  const strokeColor = strokeWidth > 0 ? (s.stroke ?? null) : null;
+  const opacity = s.opacity ?? 1;
+  const common = { fillRule: "evenodd", opacity };
+
+  const fills = subpaths
+    .filter((sp) => sp.fill !== "none")
+    .map((sp) => path({ ...common, d: sp.d, fill: shadeSubpathFill(s.fill, sp.fill), stroke: null, strokeWidth: 0 }));
+  const strokes = strokeColor === null ? [] : subpaths
+    .filter((sp) => sp.stroke)
+    .map((sp) => path({ ...common, d: sp.d, fill: null, stroke: strokeColor, strokeWidth }));
+  return [...fills, ...strokes];
+}
+
+/**
+ * Pure function. ONE MORPH PIECE'S PAINT for `morphPaths` — the paint that
+ * subpath is actually drawn with, and `statePaint`'s MARK only when that paint
+ * IS the widget's own state ink. See `morphPaths`'s docblock for why the mark
+ * has to be conditional; the short version is that `render_gpu/ports.js` treats
+ * the mark as permission to REREAD the ink from state, which is a lie for a
+ * shaded face and would repaint a cube flat mid-morph.
+ *
+ * A `norm` + stroked subpath is exactly `statePaint(s)`, mark included, so the
+ * 118 single-subpath presets produce a byte-identical payload to before.
+ *
+ * @example // the ordinary case: state ink, marked, unchanged from before
+ * @example subpathMorphPaint({fill: "norm", stroke: true}, {fill: "#f00", stroke: "#000", strokeWidth: 2, opacity: 1}) // {fill: "#f00", stroke: "#000", strokeWidth: 2, opacity: 1}
+ * @example // a shaded face: derived colour, and NOT marked as state ink
+ * @example subpathMorphPaint({fill: "darken", stroke: false}, {fill: "#7dcfff", stroke: "#000", strokeWidth: 2, opacity: 1}).fill // "#4b7c99"
+ * @example // a stroke-only detail line carries NO fill
+ * @example subpathMorphPaint({fill: "none", stroke: true}, {fill: "#7dcfff", stroke: "#000", strokeWidth: 2, opacity: 1}).fill // null
+ */
+function subpathMorphPaint(sp, s) {
+  const strokeWidth = s.strokeWidth ?? 0;
+  if (sp.fill === "norm" && sp.stroke) return statePaint(s);
+  return {
+    fill: sp.fill === "none" ? null : shadeSubpathFill(s.fill, sp.fill),
+    stroke: sp.stroke && strokeWidth > 0 ? (s.stroke ?? null) : null,
+    strokeWidth,
+    opacity: s.opacity ?? 1,
+  };
 }
 
 // ── EFFECTS-BUNDLE IDENTITIES, named for the same reason plugins/group.js
@@ -261,23 +382,16 @@ export const pptxPresetPlugin = {
     ...bundle("effects"),
   ],
   presets: PRESETS,
-  /** Pure function. State -> display-list: every subpath `presetShapePath`
-   * returns, joined into ONE path op (PowerPoint preset geometry never mixes
-   * fill/stroke per-subpath in a way this app's paint model needs to keep
-   * separate — a ring/frame/hole shape's counter subpath is carved by
-   * fillRule alone, exactly like the shapeshifter `fillRule: "evenodd"`
-   * families), effects-wrapped (all-off = pass-through). */
+  /**
+   * Pure function. State -> display-list, ONE PATH OP PER SUBPATH, honouring
+   * each subpath's own declared `fill`/`stroke` — see `presetPaintOps`.
+   * Effects-wrapped as one unit (all-off = pass-through), so a shadow
+   * silhouettes the WHOLE assembled shape rather than each face separately.
+   */
   emit(s, _targetWorldIR, world) {
     const geo = geometryOf(s, DEFS);
     if (!geo) return [];
-    const d = geo.subpaths.map((sp) => sp.d).join(" ");
-    return applyEffects([path({
-      d, fill: s.fill,
-      stroke: (s.strokeWidth ?? 0) > 0 ? s.stroke : null,
-      strokeWidth: s.strokeWidth ?? 0,
-      fillRule: "evenodd", // safe superset: a single-subpath shape (the overwhelming majority) renders identically under evenodd and nonzero
-      opacity: s.opacity ?? 1,
-    })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+    return applyEffects(presetPaintOps(geo.subpaths, s), s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },
   /**
    * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths`
@@ -286,12 +400,35 @@ export const pptxPresetPlugin = {
    * (or a change to `ss_*`/`shape`/any other path-morphable widget) flows
    * smoothly instead of snapping. Mirrors plugins/shapeshifter.js's own
    * `morphPaths`, which this widget is the PPTX-import counterpart of.
+   *
+   * THE PAYLOAD CARRIES EACH SUBPATH'S OWN PAINT, matching what emit() now
+   * draws — a `cube`'s three faces morph as three differently-shaded pieces
+   * rather than one flat silhouette. Two consequences worth stating, because
+   * they are the reason this is not simply `statePaint(s)` on every piece:
+   *
+   *   THE `statePaint` MARK IS KEPT ONLY WHERE IT IS TRUE. render_gpu/ports.js
+   *   rereads a morph's ink from the tweened state ONLY when every piece is
+   *   marked (`morphStateInk` / `isStatePainted`), which is sound exactly when
+   *   the piece's ink IS the widget's fill/stroke — i.e. a `norm` fill. A SHADED
+   *   face's ink is a DERIVED colour, so marking it would make a morph repaint
+   *   every face with the flat widget fill and silently undo this whole fix.
+   *   Unmarked pieces fall back to the endpoint blend, which is the same route
+   *   an SVG icon's per-contour art already takes.
+   *   Consequence, stated rather than discovered later: a shape with any shaded
+   *   face is no longer "state-inked", so a morph between two such shapes blends
+   *   their endpoint colours instead of rereading state. That is correct — there
+   *   is no single state colour that describes a three-tone cube — and it only
+   *   changes shapes that were being painted WRONG before.
+   *
+   *   A `fill: "none"` PIECE IS STROKE-ONLY, so its paint carries `fill: null`.
+   *   Handing it the widget fill would flood-fill a detail line mid-morph — the
+   *   defect this workstream removed from emit(), reintroduced on the morph path.
    */
   morphPaths(s) {
     const geo = geometryOf(s, DEFS);
     if (!geo) return { space: { w: 0, h: 0 }, subpaths: [], fillRule: "evenodd" };
     return morphPayloadFromPaths(
-      geo.subpaths.map((sp) => ({ d: sp.d, paint: statePaint(s) })),
+      geo.subpaths.map((sp) => ({ d: sp.d, paint: subpathMorphPaint(sp, s) })),
       { w: s.w ?? 0, h: s.h ?? 0 },
       "evenodd",
     );
