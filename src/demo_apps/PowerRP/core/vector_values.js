@@ -229,6 +229,62 @@ export const VECTOR_KINDS = {
 export const VECTOR_ADDRESS_FOR_COMPOUND = { xy: "pos", wh: "size" };
 
 /**
+ * THE `vec2` INSPECTOR ROW KIND — a control over ONE slot holding an `[x, y]`
+ * tuple. Declared HERE rather than in core/properties.js for the reason
+ * `LIST_ROW_KIND` lives in core/lists.js and `NODE_INPUT_ROW_KIND` in
+ * core/nodeflow.js: a row kind's name belongs to the module that owns its
+ * MECHANISM, and the mechanism here is the vector value.
+ *
+ * ── IT IS NOT THE COMPOUND ROW, AND THE DIFFERENCE IS THE STORAGE ────────────
+ * `COMPOUNDS.xy` groups two rows a widget ALREADY declares (`x` and `y`) and
+ * writes two leaf paths; it needs leaves to group, which is exactly why R7-36's
+ * design works for an item and not for a variable. A `vec2` ROW's value is ONE
+ * stored tuple with no leaves at all, so it writes one path. Both surface the
+ * user's `[X] [Y] [pad]` grammar; they differ in what is underneath, and
+ * conflating them is what would have produced a pad that wrote a phantom leaf.
+ *
+ * THIS IS THE CONTROL `core/var_kinds.js` WAS WAITING ON. Its recorded omission
+ * ("there is no 2-vector row kind, because a compound row is grouping over two
+ * EXISTING leaf rows and a variable has no leaves to group") named this gap
+ * precisely; the kind is unblocked the moment a control exists whose value is
+ * the tuple itself.
+ *
+ * @example VEC2_ROW_KIND // "vec2"
+ */
+export const VEC2_ROW_KIND = "vec2";
+
+/**
+ * Pure function. Is `v` a legal `vec2` ROW VALUE — a plain two-number tuple?
+ *
+ * THE STORED FORM CARRIES NO RUNTIME TAG, deliberately: `makeVector`'s `__vec`
+ * wrapper is added by the evaluator on READ and must never reach a saved
+ * document (pinned in tests/vec_values_test.js). So the control's own validity
+ * test is about the PLAIN tuple, and a tagged value is NOT one — a tag in
+ * storage is a bug, and answering `true` for it would hide that.
+ *
+ * Args:
+ *   v (*): a candidate stored value
+ *
+ * Returns:
+ *   boolean
+ *
+ * Examples:
+ *     >>> isVec2Value([10, 20])
+ *     true
+ *     >>> // an equation string is a legal SLOT value but not a vec2 VALUE —
+ *     >>> // the control declines to drag it rather than overwriting it:
+ *     >>> isVec2Value("= origin")
+ *     false
+ *     >>> isVec2Value([10, 20, 30])
+ *     false
+ *     >>> isVec2Value(null)
+ *     false
+ */
+export function isVec2Value(v) {
+  return Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === "number");
+}
+
+/**
  * THE COLOR VECTOR'S ADDRESSABLE ARITY IS FOUR, BY RULING. R7-38 called color
  * "a 3-vec", and the 2026-08-13 ruling then spelled the components out as
  * ".color.r .color.g .color.b and .color.a etc" — so alpha is an addressable
@@ -757,6 +813,254 @@ export function foldColorComponent(base, components) {
   // its own spelling ("#f80" stays "#f80"), so the no-op case returns it whole
   // rather than round-tripping it through rgbToHex.
   return out;
+}
+
+// ── THE FOLD SEAM: A COMPONENT DELTA IS RESOLVED, NOT MERGED (workstream VECUI_)
+//
+// THIS HALF WAS MISSING AND ITS ABSENCE WAS SILENT. `foldColorComponent` above
+// was written with the whole honesty argument in its docstring and NO CALLER —
+// so a delta at `fill.color.r` reached `core/deltas.js mutBlendApply`'s ordinary
+// `isTree` arm, which does `state[key] = {}` and recurses. MEASURED, before this
+// block existed:
+//
+//     setPath({fill: "#7aa2f7"}, ["fill", "color", "r"], 255)
+//         -> {"fill": {"color": {"r": 255}}}
+//
+// The hex is GONE. And that object is not merely wrong, it is the exact shape
+// this module's own header proved unspellable: `render_gpu/ir.js isGradientPaint`
+// is `paint && typeof paint === "object" && !Array.isArray(paint)`, so EVERY
+// non-array object at a paint slot parses as a gradient — one with no stops,
+// which throws on every frame. The header rejected migrating color to `{r,g,b}`
+// leaves for precisely that reason; a component DELTA reintroduced the same
+// shape at fold time, one layer down, where nothing was looking.
+//
+// So the delta stays a real delta at a real path (that is the honesty argument,
+// unchanged) and the FOLD resolves it against the base color instead of merging
+// it. These three functions are that resolution, kept here beside the tables and
+// the refusals so `core/deltas.js` needs no knowledge of colors at all: it asks
+// one predicate and calls one resolver.
+
+/**
+ * Pure function. Is `delta` a COMPONENT WRAPPER — the `{color: {r, g, …}}` shape
+ * a channel keyframe writes over a paint-bearing slot?
+ *
+ * THE PREDICATE IS DELIBERATELY NARROW, because it gates a branch in the hottest
+ * loop in the document model and every legacy delta must fall straight past it.
+ * All four conditions must hold: a plain object, whose ONLY key is the `color`
+ * address, whose value is a plain object, ALL of whose keys are declared color
+ * axes. A gradient patch (`{stops: …}`), a paint switch (`{type: "material"}`),
+ * an effects bundle, a sparse list keyframe and a `{color: "#fff"}` whole-color
+ * write are each rejected by one of those and take the arms they always took.
+ *
+ * KEYED ON THE TABLES, NOT ON LITERALS (R7-38c). The address comes from
+ * `VECTOR_KINDS` and the axis list from that kind's own `axes`, so a future
+ * composite vector kind is covered by declaring it — there is no `"r"` here.
+ *
+ * Args:
+ *   delta (*): a delta subtree
+ *
+ * Returns:
+ *   boolean
+ *
+ * Examples:
+ *     >>> componentDeltaIsColor({color: {r: 255}})
+ *     true
+ *     >>> componentDeltaIsColor({color: {r: 255, a: 0.5}})
+ *     true
+ *     >>> // a WHOLE-colour write is not a component wrapper — it is an ordinary
+ *     >>> // leaf and must keep taking the ordinary arm:
+ *     >>> componentDeltaIsColor({color: "#ff0000"})
+ *     false
+ *     >>> // an unknown component name is NOT a colour wrapper (it would be a
+ *     >>> // typo or another feature's subtree; merging it is the old behaviour):
+ *     >>> componentDeltaIsColor({color: {z: 1}})
+ *     false
+ *     >>> componentDeltaIsColor({stops: []})
+ *     false
+ *     >>> componentDeltaIsColor({type: "material"})
+ *     false
+ *     >>> componentDeltaIsColor("#ff0000")
+ *     false
+ */
+export function componentDeltaIsColor(delta) {
+  if (!isPlainObject(delta)) return false;
+  const keys = Object.keys(delta);
+  if (keys.length !== 1 || keys[0] !== COLOR_ADDRESS) return false;
+  const components = delta[COLOR_ADDRESS];
+  if (!isPlainObject(components)) return false;
+  const axes = VECTOR_KINDS[COLOR_ADDRESS].axes;
+  const names = Object.keys(components);
+  return names.length > 0 && names.every((n) => axes.includes(n));
+}
+
+/**
+ * Pure function. Resolves a component wrapper over a stored PAINT, yielding the
+ * paint with its addressable color updated — or a REFUSAL SENTENCE when this
+ * paint kind has no color to address.
+ *
+ * ── THE WRITE SIDE MIRRORS THE READ SIDE EXACTLY, BY CONSTRUCTION ────────────
+ * It routes through `paintColorPath` and `paintColorRefusal`, the SAME two
+ * functions `core/expressions.js readVectorAddress` reads through. So the kinds
+ * that refuse a read refuse a write, with the same sentences, and the two can
+ * never drift into disagreeing about what `fill.color` means:
+ *
+ *   bare hex / {type:"solid"} — the color itself; folds to a real hex string.
+ *   linear/radialGradient     — the REMEMBERED `solid` slot, exactly as the read
+ *                               side answers. Legal and inert: it is a real
+ *                               author-set value that is not currently painted.
+ *   none / material / crossfade — REFUSED with the read side's own sentence.
+ *
+ * A REFUSAL IS RETURNED, NOT THROWN, because the caller is the fold — and the
+ * fold runs for every frame of every render. Throwing there would take the app
+ * down on a document that is merely wrong; returning the sentence lets
+ * `core/deltas.js` leave the paint UNTOUCHED and lets the surface that can speak
+ * (the Inspector, the equation error path) say why. It is never a silent no-op:
+ * the sentence is the caller's to report, and the paint is provably unchanged
+ * rather than half-written.
+ *
+ * ── PRECEDENCE: POSITIONAL, WHICH IS THE ONLY HONEST ANSWER ─────────────────
+ * A whole-colour write and a channel write cannot collide inside ONE delta —
+ * they are the same key, and an object has one value per key. So the mixed case
+ * is always ACROSS SLIDES, and it resolves by ordinary fold order with no rule
+ * of its own (measured):
+ *
+ *   whole `#00ff00` then channel `r=255`  ->  #ffff00   (the channel folds over
+ *                                                        the new base)
+ *   channel `r=255` then whole `#00ff00`  ->  #00ff00   (the whole write is a
+ *                                                        complete value; it wins)
+ *
+ * That is exactly the honesty argument `foldColorComponent` makes, read across
+ * the timeline: a component keyframe describes ONE channel of whatever the base
+ * happens to be, so a later base change moves the channels the author did not
+ * key — and a later WHOLE colour is a new base entire.
+ *
+ * ── AN ADDITION IS DECLINED, NOT INVENTED ───────────────────────────────────
+ * A component delta over a slot the state does not have resolves to a refusal,
+ * so the fold leaves the key ABSENT rather than creating one. There is no base
+ * to fold a channel over, and materializing `#000000` to receive it would put a
+ * colour the author never wrote into a slot they never filled — the fold's own
+ * "additions apply as soon as alpha > 0" rule does not apply, because a channel
+ * is not a value, it is a modification of one.
+ *
+ * THE SLOT NAME IS THE CALLER'S TO SUPPLY, because the refusal sentences NAME
+ * the alternative ("address its knobs at fill.material.params") and a sentence
+ * pointing at a slot the author cannot find is a dead end. The fold knows the
+ * key it is standing on; this module does not. Defaults to the bare address so a
+ * caller with genuinely no slot in hand still gets a grammatical sentence.
+ *
+ * Args:
+ *   paint (*): the stored paint value the delta lands on
+ *   components (object): the `{r?, g?, b?, a?}` wrapper's contents
+ *   slot (string): the paint's own key, for the refusal sentence ("fill")
+ *
+ * Returns:
+ *   {paint: *} on success, or {refusal: string} — exactly one key
+ *
+ * Examples:
+ *     >>> // over a bare hex the whole paint IS the colour:
+ *     >>> resolveColorComponentDelta("#123456", {r: 255}, "fill")
+ *     { paint: '#ff3456' }
+ *     >>> // over a tagged solid the `solid` slot is rewritten and the rest of
+ *     >>> // the record (its remembered gradients) is preserved:
+ *     >>> resolveColorComponentDelta({type: "solid", solid: "#000000"}, {r: 255}, "fill")
+ *     { paint: { type: 'solid', solid: '#ff0000' } }
+ *     >>> // a gradient writes its REMEMBERED solid — legal, inert, and the same
+ *     >>> // slot the read side answers from:
+ *     >>> resolveColorComponentDelta({type: "linearGradient", solid: "#000000"}, {g: 255}, "fill").paint.solid
+ *     '#00ff00'
+ *     >>> // off/material/crossfade refuse, in the read side's own words, and the
+ *     >>> // sentence NAMES the author's real slot:
+ *     >>> resolveColorComponentDelta({type: "none"}, {r: 255}, "fill").refusal
+ *     '"fill.color" is Off — an off paint has no colour to address. Set the paint to Solid first.'
+ *     >>> resolveColorComponentDelta({type: "material", material: {}}, {r: 255}, "fill").refusal
+ *     '"fill.color" is a material, which has no single colour — address its knobs at fill.material.params instead.'
+ *     >>> resolveColorComponentDelta({type: "material", material: {}}, {r: 255}, "fill").paint
+ *     undefined
+ */
+export function resolveColorComponentDelta(paint, components, slot = COLOR_ADDRESS) {
+  const token = slot === COLOR_ADDRESS ? COLOR_ADDRESS : `${slot}.${COLOR_ADDRESS}`;
+  const refusal = paintColorRefusal(paint, token);
+  if (refusal) return { refusal };
+  const path = paintColorPath(paint);
+  const base = path.length === 0 ? paint : paint[path[0]];
+  const folded = foldColorComponent(base, components);
+  if (folded === null)
+    return {
+      refusal: base === undefined
+        // The slot exists and IS an object, but holds no colour where one was
+        // addressed — the `{color: {…}}` shape sitting in a NON-paint subtree.
+        // Say that, rather than "undefined is not a colour", which names a value
+        // the author never wrote and points at nothing they can fix.
+        ? `"${token}" cannot take a component keyframe — ${slot} has no colour slot to address.`
+        : `"${token}" cannot take a component keyframe — ${JSON.stringify(base)} is not a colour.`,
+    };
+  // An EMPTY path means the paint IS the colour, so the folded colour replaces it
+  // whole. Otherwise only the addressed slot changes and every other key of the
+  // record — a gradient's stops, its geometry, its remembered modes — survives.
+  if (path.length === 0) return { paint: folded };
+  return { paint: { ...paint, [path[0]]: folded } };
+}
+
+/**
+ * Pure function. The component wrapper LERPED toward its target — one channel's
+ * tween, at the fold's own alpha.
+ *
+ * THE TWEEN IS THE POINT (user, R7-38: a vector "can be interp'd"). A component
+ * keyframe that snapped would make `fill.color.r` a worse control than the whole
+ * colour it decomposes, which already tweens. Each channel lerps INDEPENDENTLY
+ * from the base colour's current value for that channel, so keying R alone
+ * animates R alone and leaves G and B exactly where the base put them — the same
+ * statement `foldColorComponent` makes about the endpoint, extended across the
+ * transition.
+ *
+ * ALPHA'S ENDPOINTS ARE EXACT: at 0 every channel is the base's own, at 1 every
+ * channel is the target. The fold's endpoint law (core/deltas.js: "at alpha 1 the
+ * answer IS the stored target") is therefore satisfied channel-wise.
+ *
+ * Args:
+ *   base (string|number[]): the folded base colour
+ *   components (object): the target channels
+ *   alpha (number): tween strength in [0, 1]
+ *
+ * Returns:
+ *   object: the components to fold, each lerped from the base's own channel
+ *
+ * Examples:
+ *     >>> // halfway from red 0x12 toward 255:
+ *     >>> lerpedColorComponents("#123456", {r: 255}, 0.5)
+ *     { r: 136.5 }
+ *     >>> lerpedColorComponents("#123456", {r: 255}, 0)
+ *     { r: 18 }
+ *     >>> lerpedColorComponents("#123456", {r: 255}, 1)
+ *     { r: 255 }
+ *     >>> // an unreadable base cannot be lerped FROM, so the target stands and
+ *     >>> // the caller's refusal path reports it:
+ *     >>> lerpedColorComponents("nope", {r: 255}, 0.5)
+ *     { r: 255 }
+ */
+export function lerpedColorComponents(base, components, alpha) {
+  const out = {};
+  for (const [axis, target] of Object.entries(components ?? {})) {
+    const from = colorChannelValue(base, axis);
+    out[axis] = from === null || typeof target !== "number" ? target : lerp(from, target, alpha);
+  }
+  return out;
+}
+
+/** The `color` address, read from the declaration table rather than written as a
+ *  literal — R7-38c's "nothing hardcoding arity or name" applied to this seam. */
+const COLOR_ADDRESS = "color";
+
+/** Pure function. A plain object literal (not an array, not a class instance) —
+ *  the same test `core/deltas.js isTree` makes, restated here so this module does
+ *  not import from the module that imports IT.
+ *
+ *  >>> isPlainObject({a: 1})
+ *  true
+ *  >>> isPlainObject([1])
+ *  false */
+function isPlainObject(x) {
+  return x !== null && typeof x === "object" && Object.getPrototypeOf(x) === Object.prototype;
 }
 
 // ── THE ALGEBRA: NAMED n-VECS AS NUMPY-STYLE VALUES (R7-38b / R7-38c) ────────
