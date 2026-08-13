@@ -65,7 +65,12 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
-  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage, withCompoundRows, colorCompoundRow, ASPECT_LOCK_KEY, aspectLockedPair } from "../core/properties.js";
+  // `rowKindOf` is imported AS `rowKind`: the nine call sites below read better
+  // with the short name, and the alias keeps this file's local vocabulary while the
+  // BODY comes from core. It replaces a hand-written copy of that body (and with it
+  // the raw `RETIRED_ROW_KINDS` import, which existed only to feed that copy) —
+  // see core/properties.js's rowKindOf for why the read is single-sourced.
+  import { CUSTOM_CATEGORY, PROPS, rowKindOf as rowKind, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage, withCompoundRows, colorCompoundRow, ASPECT_LOCK_KEY, aspectLockedPair } from "../core/properties.js";
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_DEFAULT, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
@@ -957,22 +962,12 @@
     return isNodeRef(ref) ? `${ref.item} ${ref.port}` : "";
   }
 
-  /**
-   * Pure function. The CANONICAL control kind for a row (core/properties.js
-   * ROW_KINDS). A current name passes straight through; a RETIRED spelling maps
-   * to its replacement, so a plugin row still carrying the old name gets its
-   * REAL control instead of falling through this dispatcher's catch-all text
-   * input — which is how a boolean would silently become a text box mid-
-   * migration. The alias table is single-sourced in core: deleting an entry
-   * there stops that spelling working here, with no edit in this file.
-   *
-   * @example rowKind({kind: "boolean"}) // "boolean"
-   * @example rowKind({kind: "checkbox"}) // "boolean" (retired V1 spelling)
-   * @example rowKind({kind: "number"}) // "number"
-   */
-  function rowKind(row) {
-    return RETIRED_ROW_KINDS[row.kind] ?? row.kind;
-  }
+  // `rowKind` — the CANONICAL control kind for a row — is core/properties.js's
+  // `rowKindOf`, imported under that name at the top of this file. A current kind
+  // passes straight through; a RETIRED spelling maps to its replacement, so a plugin
+  // row still carrying the old name gets its REAL control instead of falling through
+  // this dispatcher's catch-all text input — which is how a boolean would silently
+  // become a text box mid-migration.
 
   /**
    * Pure function. The REAL state key a row reads/writes/keyframes through —

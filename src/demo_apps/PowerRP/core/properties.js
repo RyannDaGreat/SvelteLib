@@ -803,6 +803,98 @@ export function shortestTurn(delta) {
   return wrapDegrees(delta + HALF_TURN_DEG) - HALF_TURN_DEG;
 }
 
+/** Degrees → radians, THE one conversion factor. Every `kind: "angle"` consumer
+ *  that needs radians goes through `angleRadians` below rather than redefining
+ *  this; it was defined seven times across the material packers before R7-44a. */
+export const DEG2RAD = Math.PI / HALF_TURN_DEG;
+
+/**
+ * Pure function. THE STORAGE UNIT of a `kind: "angle"` row — "radians" or
+ * "degrees" — read from the row's OWN declaration.
+ *
+ * WHY THIS EXISTS AT ALL. `display: "degrees"` is not decoration: the rotary dial
+ * always works in degrees, and `display` names the transform bridging the dial to
+ * whatever the row STORES (web/displayUnits.js). So `display: "degrees"` has
+ * ALWAYS meant "this row stores RADIANS" — the dial divides by 180/π on commit.
+ * A row with no `display` stores whatever the dial writes, i.e. DEGREES.
+ *
+ * That was true but UNSTATED, so each material packer re-decided the unit for
+ * itself: eleven agreed with their row and TWO DID NOT (atmosphere and mandelbrot
+ * declared `display: "degrees"` — radians — while their packers multiplied by
+ * π/180 as if degrees). Both were live bugs, not style drift: atmosphere's `-35`
+ * default rendered on the dial as -2005°, and a -35° edit reached the shader as
+ * -0.0107 rad instead of -0.611. Naming the rule as a function makes the unit
+ * READ from one place instead of re-decided per packer, and makes the disagreement
+ * expressible as a test rather than a comment.
+ *
+ * NOT a new key: reusing `display` is what keeps this a zero-migration change —
+ * every stored angle in every deck and preset keeps its exact value.
+ *
+ * @param {{display?: string}} row - a material/inspector param row
+ * @returns {"radians"|"degrees"}
+ *
+ * @example angleStorageUnit({name: "lightAngle", kind: "angle", display: "degrees"}) // "radians"
+ * @example angleStorageUnit({name: "lightAngle", kind: "angle"}) // "degrees"
+ */
+export function angleStorageUnit(row) {
+  return row?.display === "degrees" ? "radians" : "degrees";
+}
+
+/**
+ * Pure function. A stored angle → RADIANS, converting per the row's declared
+ * storage unit. THE one seam a shader packer calls: a packer states WHICH ROW it
+ * is packing and never restates the unit, so a row and its packer cannot drift
+ * apart the way atmosphere's and mandelbrot's did.
+ *
+ * @param {number} value - the stored angle, in the row's own unit
+ * @param {{display?: string}} row - that row's declaration
+ * @returns {number} radians
+ *
+ * @example angleRadians(-111.6, {name: "lightAngle", kind: "angle"}) // -1.9477874452256716
+ * @example angleRadians(-1.9477874452256716, {name: "lightAngle", kind: "angle", display: "degrees"}) // -1.9477874452256716
+ * @example angleRadians(90, {kind: "angle"}) // 1.5707963267948966
+ */
+export function angleRadians(value, row) {
+  return angleStorageUnit(row) === "radians" ? value : value * DEG2RAD;
+}
+
+/**
+ * Pure function. Builds a packer's degrees→radians converter by LOOKING THE ROW UP
+ * in the schema it belongs to, by name: `schemaAngleRadians(ATMOSPHERE_FILL_PARAMS)`
+ * returns `(name, value) => radians`.
+ *
+ * This is the shape that makes the unit un-restatable. A packer that wrote
+ * `angleRadians(v, {display: "degrees"})` would be declaring the unit a SECOND
+ * time next to the row, which is exactly the duplication that let atmosphere and
+ * mandelbrot drift from their own declarations. Going through the schema means the
+ * row is the only place the unit is written, so editing the row moves the packer
+ * with it.
+ *
+ * LOUD on an unknown name: a typo'd or renamed knob would otherwise silently take
+ * the degrees branch and mis-scale by 57.3.
+ *
+ * @param {Array<{name: string}>} params - a material's fillParams schema
+ * @returns {function(string, number): number} (rowName, storedValue) → radians
+ *
+ * @example
+ * // A row declaring display:"degrees" stores RADIANS, so its value passes through;
+ * // a bare row stores DEGREES and is converted.
+ * const toRad = schemaAngleRadians([{name: "spin", kind: "angle", display: "degrees"},
+ *                                   {name: "tilt", kind: "angle"}]);
+ * toRad("spin", 1.5) // 1.5
+ * @example
+ * const toRad = schemaAngleRadians([{name: "tilt", kind: "angle"}]);
+ * toRad("tilt", 90) // 1.5707963267948966
+ */
+export function schemaAngleRadians(params) {
+  const rows = new Map(params.map((row) => [row.name, row]));
+  return (name, value) => {
+    const row = rows.get(name);
+    if (!row) throw new Error(`schemaAngleRadians: no param named "${name}" in this schema (declared: ${[...rows.keys()].join(", ")})`);
+    return angleRadians(value, row);
+  };
+}
+
 /**
  * Pure function. The objectBoundingBox endpoints {from, to} of a linear gradient
  * whose axis points at `deg` degrees (0° = +x/right, 90° = +y/down). The axis is
@@ -2820,15 +2912,33 @@ export function colorRowIsChannelBearing(row) {
   return rowKindOf(row) === "color";
 }
 
-/** Pure function. A row's kind through the retired-spelling map — the same read
- *  web/Inspector.svelte makes, so a row written with a retired name is classified
- *  identically here.
+/**
+ * Pure function. A row's kind through the retired-spelling map — THE resolver, and
+ * the only place `RETIRED_ROW_KINDS` is consulted to classify a row.
  *
- *  >>> rowKindOf({kind: "color"})
- *  'color'
- *  >>> rowKindOf({kind: "checkbox"})
- *  'boolean' */
-function rowKindOf(row) {
+ * ONE DECLARATION, THREE CONSUMERS. This body existed verbatim in three files
+ * (here, `core/retype.js`'s `canonicalRowKind`, and `web/Inspector.svelte`'s
+ * `rowKind`), which is precisely the shape that lets a retired spelling be honoured
+ * in two of them and missed in the third. The alias table already lived in ONE place
+ * so that deleting an entry stops that spelling working everywhere; three copies of
+ * the READ put that guarantee back at risk from the other side.
+ *
+ * NULL-SAFE, and that is the contract the copies did NOT share: two of them indexed
+ * `row.kind` unguarded and threw on a null row, while this one answered `undefined`.
+ * The safe behaviour is the one kept — a caller asking the kind of nothing is asking
+ * a question with an answer ("no kind"), and every call site here reaches it through
+ * a `=== "color"`-style comparison that a thrown TypeError would only turn into a
+ * crash further from the cause.
+ *
+ * @param {object} row - an inspector row ({key, kind, ...}), or null/undefined
+ * @returns {string|undefined} the canonical kind
+ *
+ * @example rowKindOf({kind: "color"}) // "color"
+ * @example rowKindOf({kind: "checkbox"}) // "boolean" (retired V1 spelling)
+ * @example rowKindOf({kind: "number"}) // "number"
+ * @example rowKindOf(null) // undefined (a null row has no kind — it does not throw)
+ */
+export function rowKindOf(row) {
   return RETIRED_ROW_KINDS[row?.kind] ?? row?.kind;
 }
 
