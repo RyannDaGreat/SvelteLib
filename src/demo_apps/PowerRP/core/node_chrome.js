@@ -374,9 +374,10 @@ export function nodeFaceBand(band, boxH) {
  * Twenty-three individually-coloured cards IS the gaudy failure. So the
  * discipline here is deliberately narrow, and every part of it is a restriction:
  *
- *   SIX FAMILIES, NOT 23 COLOURS. Colour sorts nodes into KINDS — sources,
- *     filters, effects, modulation, analysis, output. A hundred modules still
- *     only ever wear six accents, so the palette cannot grow with the catalogue.
+ *   NINE FAMILIES, NOT 40 COLOURS. Colour sorts nodes into KINDS — sources,
+ *     filters, effects, modulation, analysis, output, and (workstream NODECHROME_)
+ *     the three non-audio kinds: trigger, math, display. A hundred modules still
+ *     only ever wear nine accents, so the palette cannot grow with the catalogue.
  *   THE ACCENT IS A HEADER TINT AND A RIM, NEVER THE BODY. The body stays
  *     NODE_BODY for every node in the app, audio or not. That single shared
  *     value is what keeps a patch reading as one family of objects; tinting
@@ -466,6 +467,42 @@ export const NODE_FAMILIES = Object.freeze({
   output: Object.freeze({
     label: "Output", header: "#3a2430", rim: "#a8557a",
     mark: "M 0.5 0.02 A 0.48 0.48 0 1 1 0.4999 0.02 Z",
+  }),
+  // ── THE NON-AUDIO THREE (workstream NODECHROME_) ──────────────────────────
+  // User, over a screenshot of a band-less Schmitt Trigger beside a properly
+  // banded audio module: "why is the text title on the audio nodes fine but
+  // schmitt trigger not? Why are they not all the same class? That sounds like
+  // bad class management". The answer was that these nodes wore the NEUTRAL
+  // fallback — not a family, but the absence of one — so they were a different
+  // card design rather than a different tint of the same card. They are FAMILIES
+  // now, on the same three-restriction discipline as the six above: a dark
+  // desaturated step off NODE_HEADER, a hairline rim, a unit-box vector mark, and
+  // nothing touching the body or the beads.
+  /** TRIGGER nodes are the exec/control-flow family — every widget from
+   *  core/exec_nodes.js: On Reveal, Set Property, Gate, Sequence, Delay, Counter,
+   *  Schmitt, Increment, Set Var, Custom. Slate indigo: the plane that decides
+   *  WHEN, distinct from modulation's blue, which decides HOW MUCH.
+   *  MARK: a lightning bolt — the flash a trigger sends down an exec wire, and
+   *  the same idea as the family's `mdi:flash-outline` palette icon. */
+  trigger: Object.freeze({
+    label: "Trigger", header: "#2a2740", rim: "#6f63b8",
+    mark: "M 0.62 0 L 0.15 0.55 L 0.45 0.55 L 0.38 1 L 0.85 0.45 L 0.55 0.45 Z",
+  }),
+  /** MATH nodes compute a value from values: Number, Math, Compare, Time. Steel
+   *  cyan — the arithmetic plane, cool and unremarkable on purpose, because these
+   *  are the most numerous cards in a data patch and must not shout.
+   *  MARK: a plus and a minus — arithmetic's two most literal signs. */
+  math: Object.freeze({
+    label: "Math", header: "#1d2f38", rim: "#4a7e94",
+    mark: "M 0.28 0.05 L 0.28 0.5 M 0.05 0.275 L 0.5 0.275 M 0.5 0.8 L 0.95 0.8",
+  }),
+  /** DISPLAY nodes are pure SINKS: they read a value and show it, changing
+   *  nothing. Warm grey-olive, the quietest accent in the table, because a display
+   *  is the end of a chain and never its subject.
+   *  MARK: a screen — a rounded frame with a baseline, the thing a value lands on. */
+  display: Object.freeze({
+    label: "Display", header: "#31322a", rim: "#8a8a63",
+    mark: "M 0.05 0.1 L 0.95 0.1 L 0.95 0.72 L 0.05 0.72 Z M 0.32 0.95 L 0.68 0.95",
   }),
 });
 
@@ -597,10 +634,22 @@ export const NODE_FAMILY_NAMES = Object.freeze(Object.keys(NODE_FAMILIES));
  * Pure function. A family's chrome record, or the NEUTRAL default for a node that
  * declares none.
  *
- * The default is the plain (non-audio) node look — NODE_HEADER with NODE_RIM — so
- * the proof trio in plugins/node_*.js renders BYTE-IDENTICALLY to how it did
- * before families existed. A family is an opt-in a node CHOOSES; the absence of
- * one is not an error and must not be a different picture.
+ * The default is the plain node look — NODE_HEADER with NODE_RIM. A family is an
+ * opt-in a node CHOOSES; the absence of one is not an error.
+ *
+ * ── WHAT THE NEUTRAL FALLBACK IS FOR NOW (workstream NODECHROME_) ───────────
+ * This used to say the fallback existed so "the proof trio in plugins/node_*.js
+ * renders BYTE-IDENTICALLY to how it did before families existed". That is no
+ * longer true and was the DEFECT: no registered node wants the neutral look, and
+ * the ones that got it by omission — the trigger roster and the number/math/
+ * compare/time/display five — are exactly the band-less cards the user asked
+ * about ("Why are they not all the same class?"). Every plugin in the shipped
+ * roster now names a family, and tests/node_chrome_unify_test.js's census fails
+ * if a new one forgets.
+ *
+ * The fallback survives because "no family" must still be a well-formed card
+ * rather than a crash — a plugin ASSET loaded from the sandbox can name a family
+ * that does not exist, and a typo must degrade to plain chrome, not to a throw.
  *
  * @param {string} [name] - a NODE_FAMILIES key
  * @returns {{label: string, header: string, rim: string, mark: string|null}}
@@ -709,41 +758,67 @@ export function familyRim(s, family) {
   return [rect({ x: 0, y: 0, w, h: h ?? 0, cornerRadius: NODE_RADIUS, fill: null, stroke: nodeFamily(family).rim, strokeWidth: NODE_RIM_WIDTH })];
 }
 
+// ── THE THIN PATH IS RETIRED (workstream NODECHROME_) ───────────────────────
+//
+// User, over a screenshot of a band-less "Schmitt Trigger" beside a properly
+// banded "Audio VCV Bogaudio Reftone", verbatim: "why is the text title on the
+// audio nodes fine but schmitt trigger not? Why are they not all the same class?
+// That sounds like bad class management"
+//
+// It was exactly that. `nodeCard`/`nodeRim` were a SECOND card implementation
+// sitting beside `familyCard`/`familyRim`, and the two had silently diverged:
+//
+//   THE TITLE WAS DRAWN AT THE WRONG Y. This function typeset its title at
+//     `NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3` — the arithmetic `titleLineTop()`
+//     documents as a BUG, because a text op's `y` is its line box's TOP and not a
+//     baseline. So the title's line ran 16..30.4 in a 24-unit header and hung
+//     BELOW its own strip. `familyCard` was fixed to `titleLineTop()`; this copy
+//     never was, which is precisely the difference the user photographed.
+//   THE TITLE HAD NO `boxW`, so a long name had nothing to clip against.
+//   AND THERE WAS NO BAND AND NO MARK AT ALL, because the neutral fallback is
+//     the ABSENCE of a family rather than a family — so these cards were a
+//     different design, not a different tint.
+//
+// Fixing the copy would have left two implementations to drift again. So there is
+// now ONE, and these two names are thin ALIASES kept only so a caller that wants
+// the neutral look can still say so — they take a family argument and forward it.
+// Every registered node plugin now passes a real family (tests/node_chrome_unify_test.js
+// is the census that fails if a new one does not), so in the shipped roster these
+// two are called with a family every time.
+
 /**
- * Pure function. The node CARD: body, title strip, rim, title text. Every node
- * widget emits this first, so a patch is visually one family.
- *
- * The title strip is drawn as a rounded rect the same radius as the body and then
- * squared off at its bottom by a plain rect, rather than as a clipped path: two
- * cheap ops with no clip beat one op the PDF/SVG exporters would have to emulate.
+ * Pure function. The node CARD in the NEUTRAL (family-less) look — `familyCard`
+ * with no family, and nothing else. Kept as a name because "a node with no family"
+ * is a meaningful thing to ask for; it is NOT a second card implementation.
  *
  * @param {object} s - the folded item state (w/h size the card)
  * @param {string} title - the node's display name (its title bar text)
+ * @param {string} [family] - a NODE_FAMILIES key; absent = the neutral look
  * @returns {object[]} display-list commands, LOCAL coords
  *
  * @example nodeCard({w: 120, h: 80}, "Add").length // 4
  * @example nodeCard({w: 120, h: 80}, "Add")[0].op // "rect"
  * @example nodeCard({w: 120, h: 80}, "Add")[3].text // "Add"
+ * @example // it IS familyCard, so the title now sits on titleLineTop() like every
+ * @example // other node's — the divergence the user photographed is gone
+ * @example nodeCard({w: 120, h: 80}, "Add")[3].y === titleLineTop() // true
+ * @example // and a family passed through lands the band and the mark
+ * @example nodeCard({w: 120, h: 80}, "Gate", "trigger").length // 5
  */
-export function nodeCard(s, title) {
-  const w = s.w ?? 0, h = s.h ?? 0;
-  return [
-    rect({ x: 0, y: 0, w, h, cornerRadius: NODE_RADIUS, fill: NODE_BODY }),
-    // The header: rounded at the top (shares the card's radius), squared at the
-    // bottom by overlapping the body's own fill for the lower half.
-    rect({ x: 0, y: 0, w, h: NODE_HEADER_H, cornerRadius: NODE_RADIUS, fill: NODE_HEADER }),
-    rect({ x: 0, y: NODE_HEADER_H - NODE_RADIUS, w, h: NODE_RADIUS, fill: NODE_HEADER }),
-    text({ text: title, x: NODE_PAD, y: NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3, size: NODE_TITLE_SIZE, color: NODE_TITLE_INK, bold: true }),
-  ];
+export function nodeCard(s, title, family) {
+  return familyCard(s, title, family);
 }
 
 /**
  * Pure function. The node card's RIM, emitted LAST so it draws over the header
- * seam and over any port bead that straddles the edge. Separated from nodeCard so
+ * seam and over any port bead that straddles the edge. Separated from the card so
  * a plugin can put its own content between the two and still have the rim on top —
  * which is what makes the card read as a container rather than as a stack.
  *
+ * `familyRim` with no family, for the reason nodeCard states.
+ *
  * @param {object} s - the folded item state
+ * @param {string} [family] - a NODE_FAMILIES key; absent = the neutral rim
  * @returns {object[]} display-list commands
  *
  * @example nodeRim({w: 120, h: 80}).length // 1
@@ -752,8 +827,8 @@ export function nodeCard(s, title) {
  * @example // floats, not the hex the caller passed. Alpha 1 = the rim is opaque.
  * @example nodeRim({w: 120, h: 80})[0].stroke[3] // 1
  */
-export function nodeRim(s) {
-  return [rect({ x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0, cornerRadius: NODE_RADIUS, fill: null, stroke: NODE_RIM, strokeWidth: NODE_RIM_WIDTH })];
+export function nodeRim(s, family) {
+  return familyRim(s, family);
 }
 
 /**

@@ -572,14 +572,29 @@ check("every spec's family is a declared family", () => {
     assert.ok(NODE_FAMILY_NAMES.includes(spec.family), `${spec.type} has unknown family "${spec.family}"`);
 });
 
-check("all six families are actually used — an unused family is a colour nobody sees", () => {
+// EVERY AUDIO family is used by an audio spec. This is the audio half of the
+// claim; the WHOLE claim — that no declared family anywhere is a colour nobody
+// sees — moved to tests/node_chrome_unify_test.js when workstream NODECHROME_
+// added the three non-audio families (trigger, math, display), which are worn by
+// plugins and not by AUDIO_SPECS. Asserting set EQUALITY here would fail on those
+// three for the wrong reason: they are used, just not by anything in this file's
+// subject. So this file asserts the direction it can actually see.
+check("every audio family in the table is used by an audio spec", () => {
   const used = new Set(AUDIO_SPECS.map((s) => s.family));
-  assert.deepEqual([...used].sort(), NODE_FAMILY_NAMES.slice().sort());
+  const NON_AUDIO = new Set(["trigger", "math", "display"]);
+  for (const name of NODE_FAMILY_NAMES) {
+    if (NON_AUDIO.has(name)) continue;
+    assert.ok(used.has(name), `family "${name}" is declared but no audio spec wears it`);
+  }
 });
 
-check("a family-less node renders byte-identically to the pre-family look", () => {
-  // The proof trio (plugins/node_*.js) declares no family, and its picture must not
-  // have changed when families landed.
+check("a family-less card renders as the plain pre-family look", () => {
+  // The NEUTRAL branch of familyCard, asserted directly. This comment used to say
+  // "the proof trio (plugins/node_*.js) declares no family" — as of workstream
+  // NODECHROME_ no registered plugin declares none, because the trio's band-less
+  // card is what the user filed. The branch is still exercised here because a
+  // plugin ASSET may name a family that does not exist and must degrade to plain
+  // chrome rather than throw.
   const s = { w: 140, h: 90 };
   assert.equal(nodeFamily().header, "#262b3d");
   assert.equal(familyCard(s, "Plain").length, 4, "no mark op for a family-less card");

@@ -33,7 +33,7 @@
  * `controlNodePlugin` side). `extra` exists as the general escape hatch; a protocol
  * the app itself reads should get its own named line, so the drop cannot happen.
  *
- * IT NEVER DECLARES WHERE ANYTHING GOES. `nodeCard` / `nodeValueText` / `portBeads`
+ * IT NEVER DECLARES WHERE ANYTHING GOES. `familyCard` / `nodeValueText` / `portBeads`
  * place themselves against the resolved box, per R7-10's unbypassable-layout rule,
  * and there is deliberately no override hatch (core/audio_nodes.js:305-312 is the
  * precedent, and the Bespoke Synth measurement behind it: 191 of ~265 modules
@@ -50,7 +50,7 @@ import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { EXEC_ITEM_REFS, EXEC_KEY, NODE_ITEM_REFS, execOutputRows, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows } from "./nodeflow.js";
-import { NODE_PAD, NODE_VALUE_SIZE, nodeBox, nodeCard, nodeRim, nodeValueText, portBeads } from "./node_chrome.js";
+import { NODE_PAD, NODE_VALUE_SIZE, familyCard, familyRim, nodeBox, nodeValueText, portBeads } from "./node_chrome.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
 
@@ -61,6 +61,17 @@ export const EXEC_NODE_CAT = "trigger";
 
 /** The palette / command-menu group every exec node's insert command files under. */
 export const EXEC_COMMAND_CATEGORY = "Trigger Nodes";
+
+/**
+ * THE FAMILY every trigger node's card wears (core/node_chrome.NODE_FAMILIES).
+ *
+ * One constant for the roster, exactly as `core/control_nodes.CONTROL_FAMILY` is
+ * one for its own — a family is a property of the KIND, so eleven widgets must not
+ * each name it. Before workstream NODECHROME_ these cards passed NO family and so
+ * wore the neutral fallback, which is what the user saw: "why is the text title on
+ * the audio nodes fine but schmitt trigger not?"
+ */
+export const EXEC_FAMILY = "trigger";
 
 /** Default card width. Wider than a control node's dial because these cards print a
  *  SENTENCE-ish readout ("x → 100") rather than a number, and a card that has to
@@ -249,10 +260,10 @@ export function execNodePlugin(spec) {
     emit(s, _target, world) {
       const box = nodeBox(s);
       const ops = [
-        ...nodeCard(s, spec.title),
+        ...familyCard(s, spec.title, EXEC_FAMILY),
         ...(spec.readout ? nodeValueText(s, oneLineReadout(spec.readout(s), box.w)) : []),
         ...portBeads(plugin, s),
-        ...nodeRim(s),
+        ...familyRim(s, EXEC_FAMILY),
       ];
       return applyEffects(ops, s, world, { x: 0, y: 0, w: box.w, h: box.h ?? 0 });
     },
