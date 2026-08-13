@@ -203,8 +203,70 @@ export function layoutCodeDraws(lines, opts) {
   return draws;
 }
 
+/**
+ * CODE BLOCK PRESENTATION-CONTEXT PRESETS (R7-39 presets law).
+ *
+ * A code block's presets are NOT color themes — `theme` already covers that in
+ * two rows. They are PRESENTATION CONTEXTS: the same source shown as a slide
+ * headline snippet vs. a printed handout vs. a terminal transcript vs. a
+ * pocket-sized footnote. Each row is a real, recognizable venue for reading
+ * code, not an arbitrary knob combination.
+ *
+ * NEVER `code`, NEVER `language` (per the task brief): a preset is a look, and
+ * this widget's `language` is DOCUMENT STATE the author chose (it drives both
+ * the canvas highlighter and the Monaco modal's coloring per the header above)
+ * — a preset overwriting it would silently relabel the author's own code.
+ *
+ * THE VISIBILITY CONSEQUENCE IS PART OF THE DESCRIPTION. Long lines
+ * character-truncate rather than wrap (module header), so fontSize/padding
+ * are not purely cosmetic — a bigger font or fatter padding shows FEWER
+ * columns of the same source. Every row whose fontSize/padding meaningfully
+ * changes how much code is visible says so.
+ *
+ * EVERY ROW SETS THE SAME NINE KEYS (overlay semantics — app.applyPreset
+ * writes exactly `props`, so a key one row omits keeps whatever the
+ * previously-hovered row left behind): theme, fontSize, lineNumbers, padding,
+ * cornerRadius, fill, stroke, strokeWidth, opacity. codeblock does NOT carry
+ * the shared effects bundle (no `bundle("effects")` in its inspector, no
+ * effects in its defaults — it is a box, but not an effects-capable one), so
+ * there is no shadow/bloom/blur identity for this family to restate; the nine
+ * keys above are the widget's ENTIRE visual-identity surface outside code and
+ * language.
+ *
+ * THE ORDER IS THE CONTENT: the everyday slide/doc/terminal trio first, then
+ * the print and review contexts, then the size extremes (footnote, chalk
+ * talk), then the two "framed application window" looks last.
+ */
+const PRESETS = [
+  { name: "Slide Snippet", description: "A short snippet blown up for a slide headline: large type, generous padding, no line-number gutter to steal width — but at this size a wide line hits the truncation edge sooner, so keep the pasted excerpt short.",
+    props: { theme: "dark", fontSize: 22, lineNumbers: false, padding: 24, cornerRadius: 10, fill: CODE_PALETTES.dark.bg, stroke: "#3a3f4b", strokeWidth: 1, opacity: 1 } },
+  { name: "Documentation Listing", description: "A numbered listing for a manual or README figure: a warm cream paper background, modest type, a full gutter so a reader can say \"see line 14\".",
+    props: { theme: "light", fontSize: 13, lineNumbers: true, padding: 14, cornerRadius: 4, fill: "#f2e9d5", stroke: "#8a7a52", strokeWidth: 1, opacity: 1 } },
+  { name: "Terminal", description: "A shell transcript: square corners, black-on-near-black chrome, tight padding and no gutter — a terminal shows no line numbers of its own.",
+    props: { theme: "dark", fontSize: 13, lineNumbers: false, padding: 6, cornerRadius: 0, fill: "#0c0e12", stroke: "#000000", strokeWidth: 0, opacity: 1 } },
+  { name: "Printed Handout", description: "Paper-ready body text for something an audience holds: stark white theme, small dense type, numbered, a thin cool-grey hairline border sized for print rather than screen glow — noticeably smaller and tighter than Documentation Listing so more of a long file fits on the page.",
+    props: { theme: "light", fontSize: 9, lineNumbers: true, padding: 8, cornerRadius: 2, fill: "#ffffff", stroke: "#7d8592", strokeWidth: 0.5, opacity: 1 } },
+  { name: "Diff Review Pane", description: "A code-review pane look: dark, numbered so comments can anchor to a line, a visible border framing it as one panel among several in a review UI.",
+    props: { theme: "dark", fontSize: 13, lineNumbers: true, padding: 10, cornerRadius: 6, fill: "#1a1d23", stroke: "#454b57", strokeWidth: 1.5, opacity: 1 } },
+  { name: "Tiny Footnote", description: "A citation-sized aside quoting a line or two of code inline with prose: tiny type in a pale rose-tinted box, minimal padding, no gutter — fits the least code of any row here, by design.",
+    props: { theme: "light", fontSize: 9, lineNumbers: false, padding: 4, cornerRadius: 3, fill: "#f7ecec", stroke: "#c99494", strokeWidth: 0.5, opacity: 1 } },
+  { name: "IDE Window", description: "A faux editor pane: rounded like an app window, a bold visible frame in a distinct slate-blue, numbered gutter — the \"screenshot of my editor\" read, without an actual screenshot.",
+    props: { theme: "dark", fontSize: 13, lineNumbers: true, padding: 16, cornerRadius: 16, fill: "#232840", stroke: "#5865b3", strokeWidth: 3, opacity: 1 } },
+  { name: "Chalk Talk", description: "A whiteboard-teaching size: dark, oversized type, airy padding for a room to read from the back — the least code visible per line of any dark-theme row, on purpose.",
+    props: { theme: "dark", fontSize: 26, lineNumbers: false, padding: 30, cornerRadius: 8, fill: "#14171c", stroke: "#2a2f38", strokeWidth: 1, opacity: 1 } },
+  { name: "Ticker / One-Liner", description: "A single running line of code as a marquee-style caption: minimal padding on every side, no gutter, no rounding — reads as a strip, not a panel.",
+    props: { theme: "dark", fontSize: 15, lineNumbers: false, padding: 3, cornerRadius: 0, fill: "#000000", stroke: "#333333", strokeWidth: 0.5, opacity: 1 } },
+  { name: "Card Embed", description: "A code excerpt embedded as its own elevated card among other slide content: fully rounded corners, a pale blue-tinted fill and a saturated accent border so it reads as a distinct card rather than a plain paper listing.",
+    props: { theme: "light", fontSize: 13, lineNumbers: true, padding: 16, cornerRadius: 20, fill: "#e2edfb", stroke: "#2f68c4", strokeWidth: 2, opacity: 1 } },
+  { name: "Ghost Overlay", description: "A translucent code fragment meant to float over other slide content without fully blocking it: reduced opacity, minimal border, so the code reads as a watermark-like layer.",
+    props: { theme: "dark", fontSize: 14, lineNumbers: false, padding: 12, cornerRadius: 8, fill: "#1e222a", stroke: "#3a3f4b", strokeWidth: 0.5, opacity: 0.55 } },
+  { name: "High-Contrast Review", description: "An accessibility-forward look for a live walkthrough: light theme with a pale mint tint, larger type than Documentation Listing, a heavy near-black border so the panel stays legible under projector glare.",
+    props: { theme: "light", fontSize: 16, lineNumbers: true, padding: 18, cornerRadius: 4, fill: "#eaf5ec", stroke: "#0e1210", strokeWidth: 2, opacity: 1 } },
+];
+
 export const codeblockPlugin = {
   type: "codeblock",
+  presets: PRESETS,
   ephemeral: EPHEMERAL.NONE,
   title: "Code Block",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
