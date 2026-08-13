@@ -83,7 +83,7 @@ import {
   MULTISELECT_MODE, MATERIAL_PRESET_ROW_KIND,
 } from "../core/multiselect.js";
 import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/material_presets.js";
-import { sectionTriState, sectionToggleAction, sectionJumpTarget, itemBakePaths } from "../core/section_keyframes.js";
+import { sectionTriState, sectionToggleAction, sectionJumpTarget, jumpArrow, itemBakePaths } from "../core/section_keyframes.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy
@@ -5800,6 +5800,26 @@ export class PowerRPApp {
    */
   sectionJumpTargetFor(paths, direction) {
     return sectionJumpTarget(paths.map((p) => keyframeIndices(this.doc, p)), this.slideIndex, direction);
+  }
+
+  /**
+   * Query. THE ONE CALL EVERY ‹ / › ARROW IN THE APP MAKES — where it would land,
+   * whether it may be clicked, and the sentence it shows either way
+   * (core/section_keyframes.js `jumpArrow` owns the descriptor and the reasoning).
+   *
+   * IT EXISTS BECAUSE THE FIRST FIX REACHED ONLY HALF THE ARROWS (user, 2026-08-13:
+   * "The small version didn't seem to have inherited this… The code is not the
+   * same"). The row triad (web/KeyframeControls.svelte) and the 70%-scale section
+   * triad (web/SectionKeyframeControls.svelte) were siblings by COPIED MARKUP, so
+   * availability added to one could not reach the other. Both now render off this,
+   * which means a variant either consumes the whole answer or has nothing to call.
+   *
+   * `subject` is the section title for the header triad and null for a row — the
+   * ONE thing the two tooltips legitimately differ about, and the reason a
+   * subject-less tip function could not be shared in the first place.
+   */
+  jumpArrowFor(paths, direction, subject = null) {
+    return jumpArrow(this.sectionJumpTargetFor(paths, direction), direction, subject);
   }
 
   // ── THE SLIDE-WIDE BAKE (user: "A 'Keyframe Everything In Slide' tool") ────

@@ -66,9 +66,14 @@
   that rule and the reason). A second `.unavailable` class beside the attribute
   would be one state spelled twice — the drift this codebase keeps paying for.
 
-  THE SENTENCE IS core's (`sectionJumpTip`), not this file's, for the reason the
-  toggle's tooltip is: the direction's availability and the words describing it
-  must come from ONE place or a future change moves one and not the other.
+  THE WHOLE ARROW STATE IS core's, not this file's. 2026-08-13 the user reported
+  that the fix had reached the row arrows and NOT the section header's smaller
+  ones — "The small version didn't seem to have inherited this… The code is not
+  the same" — which was exactly true: web/SectionKeyframeControls.svelte is this
+  file's markup COPIED, not a subclass of it, so nothing added here could reach it.
+  Both now render off ONE descriptor (`app.jumpArrowFor` ->
+  core/section_keyframes.jumpArrow), which carries target + disabled + tooltip
+  together, so a variant either consumes the whole answer or has nothing to call.
 
   Renders exactly the three buttons (no wrapper) so it drops into each panel's
   existing `.kf-controls` grid cell — the Variables Panel appends its own
@@ -80,7 +85,6 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { keyframeTriState } from "../core/multiselect.js";
-  import { sectionJumpTip } from "../core/section_keyframes.js";
 
   let {
     /** @type {object} The PowerRPApp controller. */
@@ -117,28 +121,30 @@
     app.toggleSectionKeyframes(keyPaths);
   }
 
-  // WHERE EACH ARROW WOULD LAND, or null for "nowhere" — ONE read of the app's
-  // own `sectionJumpTargetFor`, which `jumpSectionKeyframes` also calls, so the
-  // greying and the click are the same computation and cannot disagree.
-  let prevTarget = $derived(app.sectionJumpTargetFor(keyPaths, -1));
-  let nextTarget = $derived(app.sectionJumpTargetFor(keyPaths, +1));
+  // EACH ARROW'S WHOLE STATE — target, disabled, tooltip — from the ONE shared
+  // query every arrow in the app now makes (`app.jumpArrowFor` ->
+  // core/section_keyframes.jumpArrow). The section header's smaller triad reads
+  // the same thing with a subject; that is the fix for the user's "the small
+  // version didn't seem to have inherited this".
+  let prev = $derived(app.jumpArrowFor(keyPaths, -1));
+  let next = $derived(app.jumpArrowFor(keyPaths, +1));
 
   /** Command. Jumps, unless there is nowhere to jump — THE GUARD that makes
    * `aria-disabled` real. Native `disabled` is not used here (see the header:
    * it would make the button unfocusable and its reason unreachable), so a
    * disabled-looking arrow is still clickable and this is what refuses it. */
-  function jump(direction, target) {
-    if (target === null) return;
+  function jump(direction, arrow) {
+    if (arrow.disabled) return;
     app.jumpSectionKeyframes(keyPaths, direction);
   }
 </script>
 
-<Tooltip text={sectionJumpTip(prevTarget, -1)}>
+<Tooltip text={prev.tip}>
   <button
     class="jumpbtn"
-    aria-disabled={prevTarget === null}
+    aria-disabled={prev.disabled}
     aria-label="Previous keyframe"
-    onclick={() => jump(-1, prevTarget)}
+    onclick={() => jump(-1, prev)}
   >
     <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
   </button>
@@ -154,12 +160,12 @@
     <iconify-icon icon={TRI_ICONS[triState]} width="17" height="17"></iconify-icon>
   </button>
 </Tooltip>
-<Tooltip text={sectionJumpTip(nextTarget, +1)}>
+<Tooltip text={next.tip}>
   <button
     class="jumpbtn"
-    aria-disabled={nextTarget === null}
+    aria-disabled={next.disabled}
     aria-label="Next keyframe"
-    onclick={() => jump(+1, nextTarget)}
+    onclick={() => jump(+1, next)}
   >
     <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
   </button>

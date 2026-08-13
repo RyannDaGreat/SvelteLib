@@ -260,12 +260,12 @@ export function sectionJumpTarget(indicesPerPath, current, direction) {
  * its own affordance.
  *
  * A DISABLED ARROW MUST STILL SAY WHY, so the reason is a SENTENCE and not an
- * absence. web/KeyframeControls.svelte reflects it with `aria-disabled` + a
- * handler guard rather than the native `disabled` attribute, because a natively
- * disabled button is not focusable and the keyboard could then never reach this
- * sentence (the toolbar's standing rule — web/Toolbar.svelte's Save button is the
- * precedent, and the sentence there is likewise the only place its gate's reason
- * is written down).
+ * absence. Both surfacings reflect it with `aria-disabled` + a handler guard
+ * rather than the native `disabled` attribute, because a natively disabled button
+ * is not focusable and the keyboard could then never reach this sentence (the
+ * toolbar's standing rule — web/Toolbar.svelte's Save button is the precedent,
+ * and the sentence there is likewise the only place its gate's reason is written
+ * down).
  *
  * THE SENTENCE NAMES THE DIRECTION AND THE FACT, in the arrow's own words: the
  * user is looking at a greyed ‹, and "there is no earlier slide keyframing this"
@@ -275,8 +275,20 @@ export function sectionJumpTarget(indicesPerPath, current, direction) {
  * arrows are not registry entries. Borrowing the frame here would imply a palette
  * entry that does not exist.
  *
+ * ── `subject` IS WHAT MADE THIS SHAREABLE (WORKSTREAM KEYFR follow-up) ───────
+ * The section header's arrows always named their section ("Previous slide
+ * keyframing anything in Transform") while the row's said "Previous keyframe".
+ * That difference is REAL — a section bubble speaks for many properties at once,
+ * so the title is what tells you which — and it is exactly why the first pass at
+ * this feature only reached one of the two: a tip function that could not say
+ * "Transform" was not usable by the section variant, so the section variant kept
+ * its own hand-written strings and inherited nothing. Taking the subject as an
+ * argument is what lets ONE function serve both, which is the whole fix.
+ *
  * @param {number|null} target `sectionJumpTarget`'s answer for this direction.
  * @param {number} direction -1 for previous, +1 for next.
+ * @param {string|null} [subject] What these arrows speak for ("Transform"), or
+ *   null/omitted for the row triad, which speaks for one property.
  * @returns {string}
  *
  * @example
@@ -288,12 +300,80 @@ export function sectionJumpTarget(indicesPerPath, current, direction) {
  *     'Next keyframe'
  *     >>> sectionJumpTip(null, +1)
  *     'No later slide keyframes this — nothing to jump forward to'
+ *     >>> // named, for a section header's smaller triad:
+ *     >>> sectionJumpTip(3, -1, "Transform")
+ *     'Previous slide keyframing anything in Transform'
+ *     >>> sectionJumpTip(null, +1, "Transform")
+ *     'No later slide keyframes anything in Transform — nothing to jump forward to'
  */
-export function sectionJumpTip(target, direction) {
-  if (target !== null) return direction > 0 ? "Next keyframe" : "Previous keyframe";
-  return direction > 0
-    ? "No later slide keyframes this — nothing to jump forward to"
-    : "No earlier slide keyframes this — nothing to jump back to";
+export function sectionJumpTip(target, direction, subject = null) {
+  const later = direction > 0;
+  if (target !== null) {
+    if (subject === null) return later ? "Next keyframe" : "Previous keyframe";
+    return `${later ? "Next" : "Previous"} slide keyframing anything in ${subject}`;
+  }
+  const what = subject === null ? "this" : `anything in ${subject}`;
+  return later
+    ? `No later slide keyframes ${what} — nothing to jump forward to`
+    : `No earlier slide keyframes ${what} — nothing to jump back to`;
+}
+
+/**
+ * Pure function. EVERYTHING one ‹ or › arrow needs to render itself: where it
+ * would go, whether it may be clicked, and the sentence it shows either way.
+ *
+ * ── WHY THIS EXISTS, IN THE USER'S OWN DIAGNOSIS (2026-08-13, verbatim) ──────
+ * "The disabling of next and previous keyframes for ones that don't have it seems
+ * not to have transferred to the overall ones such as the ones that are small. The
+ * small version didn't seem to have inherited this. This leads me to believe that
+ * they're not sharing the same base class or it was implemented in the wrong
+ * level. Perhaps it should be applied to the parent. I haven't looked at the code
+ * though. To be honest, I'm not really sure what the issue is. Please tell the
+ * agent thought. The code is not the same."
+ *
+ * THE LAST SENTENCE IS THE BUG REPORT AND IT IS EXACTLY RIGHT. There are two
+ * surfacings of this triad — web/KeyframeControls.svelte (row) and
+ * web/SectionKeyframeControls.svelte (the 70%-scale section header) — and they
+ * were siblings by COPIED MARKUP, not by a shared component. Their headers even
+ * say so, proudly: "the same three buttons in the same order… the same
+ * `.keybtn`/`.jumpbtn` classes". SHARING A CSS CLASS IS NOT SHARING BEHAVIOUR, so
+ * a fix applied to one file could not reach the other, and the availability
+ * shipped to exactly half the arrows in the app. The user inferred all of that
+ * from the outside, without reading the code.
+ *
+ * ── THE HOIST, AND WHY IT IS A DESCRIPTOR AND NOT A COMPONENT ───────────────
+ * "Perhaps it should be applied to the parent" is the right instinct, and this is
+ * the parent: the two variants differ in SCALE, in wrapper markup, in whether they
+ * stop propagation, and in whether they name a subject — all presentational — but
+ * they cannot differ in WHEN AN ARROW MAY BE CLICKED without one of them being
+ * wrong. So the shared layer is the ANSWER, not the markup: each variant renders
+ * its own button and reads `disabled`/`tip`/`target` off this one object. Merging
+ * the markup instead would have meant one component growing scale/wrapper/subject
+ * props to serve two visual designs the user deliberately asked to look different
+ * ("maybe just 30% smaller"), which is a worse trade than sharing the derivation.
+ *
+ * A THIRD SURFACING CANNOT SHIP UNWIRED, because there is now nothing else to
+ * call: the target walk, the guard condition and both sentences arrive together,
+ * and `tests/keyfr_tools_test.js` ENUMERATES the `jumpbtn` surfacings and fails on
+ * any that does not consume this. That enumeration is the real guarantee — the
+ * first pass at this feature was also "correct", and still reached one file.
+ *
+ * @param {number|null} target `sectionJumpTarget`'s answer for this direction.
+ * @param {number} direction -1 for previous, +1 for next.
+ * @param {string|null} [subject] What the arrows speak for, or null for a row.
+ * @returns {{target: number|null, disabled: boolean, tip: string}}
+ *
+ * @example
+ *     >>> jumpArrow(3, -1)
+ *     {target: 3, disabled: false, tip: 'Previous keyframe'}
+ *     >>> jumpArrow(null, +1)
+ *     {target: null, disabled: true, tip: 'No later slide keyframes this — nothing to jump forward to'}
+ *     >>> // SLIDE 0 IS A TARGET, NOT AN ABSENCE — a falsy test would grey this:
+ *     >>> jumpArrow(0, -1).disabled
+ *     false
+ */
+export function jumpArrow(target, direction, subject = null) {
+  return { target, disabled: target === null, tip: sectionJumpTip(target, direction, subject) };
 }
 
 /**

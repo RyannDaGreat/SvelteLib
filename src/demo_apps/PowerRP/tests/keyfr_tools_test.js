@@ -26,7 +26,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -39,6 +39,7 @@ import { getPath } from "../core/deltas.js";
 import {
   sectionJumpTarget,
   sectionJumpTip,
+  jumpArrow,
   itemBakePaths,
   keyframeEverythingHelp,
 } from "../core/section_keyframes.js";
@@ -97,18 +98,91 @@ test("AW: the tooltip states the DIRECTION and the fact, and never goes blank", 
   // `target !== null` would call a jump to the first slide "unavailable" — the
   // falsy-zero bug this line exists to catch.
   assert.equal(sectionJumpTip(0, -1), "Previous keyframe");
+  // THE SUBJECT FORM IS BYTE-IDENTICAL TO WHAT THE SECTION HEADER ALWAYS SAID,
+  // so hoisting its tooltip into core changed no wording the user had been reading.
+  assert.equal(sectionJumpTip(3, -1, "Transform"), "Previous slide keyframing anything in Transform");
+  assert.equal(sectionJumpTip(3, +1, "Transform"), "Next slide keyframing anything in Transform");
+  // …and the refusal names it too, so a greyed section arrow says WHICH section.
+  assert.match(sectionJumpTip(null, -1, "Transform"), /No earlier slide keyframes anything in Transform/);
+  // Omitting the subject is exactly the row triad's old behaviour, unchanged.
+  assert.equal(sectionJumpTip(null, -1, null), sectionJumpTip(null, -1));
 });
 
-test("AW: the arrows are aria-disabled and NEVER natively disabled (house ruling)", () => {
-  const src = readFileSync(join(APP, "web/KeyframeControls.svelte"), "utf8");
-  assert.match(src, /aria-disabled=\{prevTarget === null\}/, "the ‹ arrow must report its own state");
-  assert.match(src, /aria-disabled=\{nextTarget === null\}/, "the › arrow must report its own state");
-  // THE BAN. A natively disabled button drops out of the tab order, and the
-  // tooltip is the only place the reason lives — so `disabled=` here would delete
-  // the sentence for every keyboard user while looking like a tidy-up.
-  assert.doesNotMatch(src, /\sdisabled=\{/, "native `disabled` is banned on these buttons");
-  // The guard is what actually refuses the click; aria-disabled only says so.
-  assert.match(src, /if \(target === null\) return;/, "the handler must guard, not just the attribute");
+/** Query (reads web/). EVERY component that renders a keyframe jump arrow, found
+ * by its markup rather than by a hand-kept list.
+ *
+ * THIS ENUMERATION IS THE POINT OF THE FOLLOW-UP. The first pass at the arrows'
+ * availability was correct and still shipped to only ONE of the two surfacings,
+ * because nothing anywhere asked how many there were. `.jumpbtn` is the class both
+ * triads render and the class app.css greys, so it is the honest census: a third
+ * variant that draws one is found the moment it is written, and a variant that
+ * draws an arrow WITHOUT that class does not get the greying from app.css either,
+ * so it would be broken in a way this test's own subject matter already covers. */
+function jumpArrowSurfacings() {
+  const web = join(APP, "web");
+  return readdirSync(web)
+    .filter((f) => f.endsWith(".svelte"))
+    .map((f) => ({ file: f, src: readFileSync(join(web, f), "utf8") }))
+    .filter((e) => e.src.includes('class="jumpbtn"'));
+}
+
+test("AW: EVERY jump-arrow surfacing consumes the shared availability — the census", () => {
+  const found = jumpArrowSurfacings();
+  // Both known variants must be here, or the census itself has stopped working.
+  const names = found.map((e) => e.file).sort();
+  assert.deepEqual(names, ["KeyframeControls.svelte", "SectionKeyframeControls.svelte"],
+    `the set of jump-arrow surfacings changed: ${names.join(", ")}. A NEW one must read app.jumpArrowFor (see core/section_keyframes.jumpArrow); if one was deleted, update this list.`);
+
+  for (const { file, src } of found) {
+    // 1. IT READS THE SHARED DESCRIPTOR. This is the whole fix: the user's
+    //    "the small version didn't seem to have inherited this" was true because
+    //    this file could be written with no reference to the availability at all.
+    assert.match(src, /app\.jumpArrowFor\(/,
+      `${file} draws a jump arrow but never calls app.jumpArrowFor — it will silently ship without the disabling, which is the 2026-08-13 bug`);
+    // 2. BOTH DIRECTIONS, not just one.
+    assert.match(src, /jumpArrowFor\([^)]*, ?-1/, `${file} does not derive its ‹ arrow's state`);
+    assert.match(src, /jumpArrowFor\([^)]*, ?\+1/, `${file} does not derive its › arrow's state`);
+    // 3. IT REFLECTS IT: every jumpbtn carries aria-disabled.
+    const arrows = (src.match(/class="jumpbtn"/g) ?? []).length;
+    const reported = (src.match(/aria-disabled=\{/g) ?? []).length;
+    assert.equal(reported, arrows, `${file}: ${arrows} jump arrows but ${reported} aria-disabled attributes`);
+    // 4. THE BAN. A natively disabled button drops out of the tab order, taking
+    //    the tooltip — the only place the reason is written — with it.
+    assert.doesNotMatch(src, /\sdisabled=\{/, `${file} uses native \`disabled\`, which is banned on these buttons`);
+    // 5. THE GUARD is what actually refuses the click; aria-disabled only says so.
+    assert.match(src, /if \(arrow\.disabled\) return;/, `${file} has no handler guard — aria-disabled alone does not stop a click`);
+    // 6. THE TOOLTIP IS THE DESCRIPTOR'S, never a hand-written string, or a
+    //    disabled arrow would keep claiming it can move.
+    assert.match(src, /Tooltip text=\{(prev|next)\.tip\}/, `${file} does not show the descriptor's own sentence`);
+  }
+});
+
+test("AW: the section triad names its SUBJECT — the difference that blocked sharing", () => {
+  // The section header's tooltips always said "…anything in Transform" while the
+  // row's said "Previous keyframe". A tip function that could not carry a subject
+  // was unusable here, which is precisely why this variant kept its own strings
+  // and inherited nothing. The subject argument is what made one function serve both.
+  const src = readFileSync(join(APP, "web/SectionKeyframeControls.svelte"), "utf8");
+  assert.match(src, /jumpArrowFor\(paths, -1, title\)/, "the section triad must pass its title as the subject");
+  assert.match(src, /jumpArrowFor\(paths, \+1, title\)/);
+  // And it must keep stopping propagation: the header behind it is a collapse
+  // button, so even a REFUSED jump must not fold the panel out from under the click.
+  assert.match(src, /e\.stopPropagation\(\);/, "a click here must never reach the collapse header");
+});
+
+test("AW: jumpArrow bundles target + disabled + tip so half of it cannot be used", () => {
+  // The descriptor is the hoist. A caller cannot take the target and forget the
+  // guard, because they arrive together.
+  assert.deepEqual(jumpArrow(3, -1), { target: 3, disabled: false, tip: "Previous keyframe" });
+  assert.deepEqual(jumpArrow(null, +1),
+    { target: null, disabled: true, tip: "No later slide keyframes this — nothing to jump forward to" });
+  // SLIDE 0 IS A TARGET, NOT AN ABSENCE — `if (target)` would grey a real jump.
+  assert.equal(jumpArrow(0, -1).disabled, false);
+  assert.equal(jumpArrow(0, -1).tip, "Previous keyframe");
+  // With a subject, both the live and the dead sentence name it.
+  assert.equal(jumpArrow(3, -1, "Transform").tip, "Previous slide keyframing anything in Transform");
+  assert.match(jumpArrow(null, -1, "Transform").tip, /anything in Transform/);
+  assert.equal(jumpArrow(null, -1, "Transform").disabled, true);
 });
 
 // ── [AV] THE SLIDE-WIDE BAKE ─────────────────────────────────────────────────
@@ -301,9 +375,13 @@ test("KEYFR: jumpSectionKeyframes and the arrows share ONE computation", () => {
   const jump = src.slice(src.indexOf("  jumpSectionKeyframes(paths, direction) {"), src.indexOf("  sectionJumpTargetFor(paths, direction) {"));
   assert.match(jump, /this\.sectionJumpTargetFor\(paths, direction\)/,
     "jumpSectionKeyframes must read the same query the buttons do, not its own copy");
-  const ui = readFileSync(join(APP, "web/KeyframeControls.svelte"), "utf8");
-  assert.match(ui, /app\.sectionJumpTargetFor\(keyPaths, -1\)/);
-  assert.match(ui, /app\.sectionJumpTargetFor\(keyPaths, \+1\)/);
+  // The UI reaches it through `jumpArrowFor`, which wraps the same query — ONE
+  // chain from the document walk to the greyed button, in every surfacing.
+  const appSrc = src.slice(src.indexOf("  jumpArrowFor(paths, direction, subject = null) {"));
+  assert.match(appSrc, /this\.sectionJumpTargetFor\(paths, direction\)/,
+    "jumpArrowFor must reuse the same target query, not walk the document a second way");
+  for (const file of ["web/KeyframeControls.svelte", "web/SectionKeyframeControls.svelte"])
+    assert.match(readFileSync(join(APP, file), "utf8"), /app\.jumpArrowFor\(/, `${file} must read the shared descriptor`);
 });
 
 console.log(`\n${passed} keyfr tool tests passed`);

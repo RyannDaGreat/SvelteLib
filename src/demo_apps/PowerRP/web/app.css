@@ -9793,7 +9793,14 @@ audio.ae-preview-media {
    .btn block above already rules that `[aria-disabled]` reads as `:disabled` and
    spelling one state twice is how the two spellings drift. The button stays
    focusable and hoverable ON PURPOSE — its tooltip is the only place the reason is
-   written down (web/KeyframeControls.svelte's header). */
+   written down (web/KeyframeControls.svelte's header).
+
+   IT COVERS BOTH TRIADS AND ALWAYS DID: the section header's smaller siblings are
+   `.jumpbtn` inside `.inspector` too, and `.kf-section` below overrides only
+   width/padding/font-size — never opacity. So the CSS was never the half that
+   missed the section variant in the 2026-08-13 report; the BEHAVIOUR was, which is
+   the distinction that whole bug turns on. Do not add a `.kf-section` copy of this
+   rule: a second declaration is how the two drift. */
 .inspector .jumpbtn[aria-disabled="true"],
 .varspanel .jumpbtn[aria-disabled="true"] {
   opacity: var(--a-disabled-opacity);
