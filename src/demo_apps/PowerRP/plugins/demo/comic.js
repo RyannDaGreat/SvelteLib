@@ -61,7 +61,16 @@ const CUSTOM = customProps([
   { name: "cornerRadius", kind: "number", default: 0, min: 0, help: "Rounded-corner radius of the print region (world px). 0 = sharp corners (a full comic panel)." },
 ]);
 
-// The 5 canonical looks, surfaced by web/ToolsPane.svelte (props = a flat knob map).
+// R7-39 TOP-UP (batch A): the original 5 canonical looks plus 6 more, extending
+// the SAME sparse idiom rather than flattening it. Every row sets the 11-key
+// common core (mode, pitch, worldLocked, dotShape, dotGain, gamma, posterize,
+// edgeInk, grain, paperColor, registration); angleC/angleM/angleY/angleK are
+// included exactly for the ink channels `mode` actually screens (cmyk/rgb use
+// all four, duotone uses angleC+angleK as its two spot-ink angles, mono uses
+// angleK alone); edgeLo/edgeHi appear only when edgeInk > 0 (an edge threshold
+// with no ink to gate is inert); inkA/inkB appear only in duotone mode (the
+// only mode that reads them). Surfaced by web/ToolsPane.svelte (props = a flat
+// knob map).
 const PRESETS = [
   {
     name: "Classic 4-Color Comic",
@@ -87,6 +96,36 @@ const PRESETS = [
     name: "Desync RGB",
     description: "Additive R/G/B dot screens fanned onto three axes over near-black — a heavy chromatic-aberration / anaglyph split.",
     props: { mode: "rgb", pitch: 9, worldLocked: true, dotShape: "round", angleC: 15, angleM: 75, angleY: 0, angleK: 45, registration: 0.45, dotGain: 0, gamma: 1.0, posterize: 0, edgeInk: 0, grain: 0, paperColor: "#0a0a0f" },
+  },
+  {
+    name: "Sunday Funnies",
+    description: "Big coarse dots, flat 3-level posterize and heavy dot gain — a cheap Sunday-supplement print run on yellowed paper.",
+    props: { mode: "cmyk", pitch: 16, worldLocked: true, dotShape: "round", angleC: 15, angleM: 75, angleY: 0, angleK: 45, registration: 0.10, dotGain: 0.09, gamma: 1.0, posterize: 3, edgeInk: 0, grain: 0.20, paperColor: "#f3e6b8" },
+  },
+  {
+    name: "Square Screen",
+    description: "Square dots at a fine pitch with zero registration drift — a clean commercial-print CMYK screen, not a hand-inked one.",
+    props: { mode: "cmyk", pitch: 7, worldLocked: true, dotShape: "square", angleC: 15, angleM: 75, angleY: 0, angleK: 45, registration: 0, dotGain: 0.01, gamma: 1.0, posterize: 0, edgeInk: 0, grain: 0.02, paperColor: "#ffffff" },
+  },
+  {
+    name: "Zine Mono",
+    description: "Big soft mono dots with heavy gain and no ink outline — a photocopied fanzine page, screen-only.",
+    props: { mode: "mono", pitch: 13, worldLocked: true, dotShape: "round", angleK: 45, registration: 0, dotGain: 0.14, gamma: 0.85, posterize: 0, edgeInk: 0, grain: 0.22, paperColor: "#eeeee6" },
+  },
+  {
+    name: "Sepia Duotone",
+    description: "Warm brown-and-cream spot inks in tight registration — an aged sepia-toned print rather than a loud riso split.",
+    props: { mode: "duotone", pitch: 9, worldLocked: true, dotShape: "round", angleC: 15, angleK: 45, registration: 0.04, dotGain: 0.05, gamma: 1.05, posterize: 0, edgeInk: 0, grain: 0.10, paperColor: "#f8efd8", inkA: "#8a5a2e", inkB: "#3a2410" },
+  },
+  {
+    name: "Chrome Anaglyph",
+    description: "Ellipse dots with heavy registration drift and a full-strength ink outline — the RGB split pushed to a hard-edged 3D-glasses look.",
+    props: { mode: "rgb", pitch: 12, worldLocked: true, dotShape: "ellipse", angleC: 15, angleM: 75, angleY: 0, angleK: 45, registration: 0.65, dotGain: 0, gamma: 1.0, posterize: 0, edgeInk: 0.6, edgeLo: 0.12, edgeHi: 0.30, grain: 0, paperColor: "#000000" },
+  },
+  {
+    name: "Line Art Only",
+    description: "Posterize and every dot screen switched off in spirit — a stark black outline on white, closer to inked pen art than a print process.",
+    props: { mode: "mono", pitch: 4, worldLocked: true, dotShape: "square", angleK: 45, registration: 0, dotGain: 0, gamma: 2.0, posterize: 2, edgeInk: 1.0, edgeLo: 0.06, edgeHi: 0.14, grain: 0, paperColor: "#ffffff" },
   },
 ];
 

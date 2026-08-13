@@ -707,16 +707,36 @@ export const paperPeacockPlugin = {
     }
     return { parts, notes: [] };
   },
+  // R7-39 TOP-UP (batch A). "Classic ±45°" used to write the plugin's OWN
+  // untouched defaults byte-for-byte (pageCount:8, fanAngle:45, hRatio:1.5,
+  // shadowBlur:0.2, shadowOpacity:0.5, shadowDx:0.2, shadowDy:0.2 — compare
+  // `defaults` above) — a C-16 dead row no preset-vs-preset diff could ever
+  // catch, because the untouched widget already painted its exact picture.
+  // FIXED by deepening the shadow well past the default (0.2/0.5/0.2/0.2 ->
+  // 0.4/0.75/0.32/0.32 — MEASURED: the first, smaller nudge to 0.28/0.62/
+  // 0.24/0.24 still only cleared 7.62 lit-set levels from the untouched
+  // default, too close to the family's own calibrated floor below): the row
+  // still IS the reference fan geometry (pageCount, fanAngle, hRatio
+  // untouched — that triple is the named look), it just casts a genuinely
+  // heavier, unmistakably different shadow than an author gets for free by
+  // placing the widget and touching nothing.
+  //
+  // Two idioms carried through from the original four, extended in kind:
+  // FULL-LOOK rows set the whole seven-key group (fan geometry + shadow)
+  // together, PARTIAL rows touch only fan geometry OR only shadow — the same
+  // split the original four already drew (Classic/Full-splay set both;
+  // Tight-fan set only geometry; Subtle-shadow set only shadow). New rows stay
+  // on one side of that split rather than inventing a third shape.
   presets: [
     {
       name: "Classic ±45°",
-      description: "The MotionV2V hero look: eight sheets fanned across ±45°, pivot half a page below them, soft down-right shadows.",
-      props: { pageCount: 8, fanAngle: 45, hRatio: 1.5, shadowBlur: 0.2, shadowOpacity: 0.5, shadowDx: 0.2, shadowDy: 0.2 },
+      description: "The MotionV2V hero look, with a much heavier cast shadow than the untouched default: eight sheets fanned across ±45°, pivot half a page below them, deep down-right shadows.",
+      props: { pageCount: 8, fanAngle: 45, hRatio: 1.5, shadowBlur: 0.4, shadowOpacity: 0.75, shadowDx: 0.32, shadowDy: 0.32 },
     },
     {
       name: "Tight fan ±20°",
-      description: "A restrained spread — the sheets mostly overlap, like a hand of cards barely opened.",
-      props: { fanAngle: 20, hRatio: 1.2 },
+      description: "A restrained spread of four sheets — the sheets mostly overlap, like a hand of cards barely opened.",
+      props: { pageCount: 4, fanAngle: 20, hRatio: 2.2 },
     },
     {
       name: "Full splay ±80° low pivot",
@@ -727,6 +747,41 @@ export const paperPeacockPlugin = {
       name: "Subtle shadow",
       description: "Keeps the current fan but drops the shadows to a faint, close-set haze.",
       props: { shadowBlur: 0.08, shadowOpacity: 0.25, shadowDx: 0.15, shadowDy: 0.15 },
+    },
+    {
+      name: "Closed stack",
+      description: "Fourteen sheets almost unfanned, with a faint close-set shadow — a thick unopened report, its pages barely peeking out from behind each other.",
+      props: { pageCount: 14, fanAngle: 6, hRatio: 2.6, shadowBlur: 0.06, shadowOpacity: 0.2, shadowDx: 0.1, shadowDy: 0.1 },
+    },
+    {
+      name: "Wide deck, high pivot",
+      description: "Ten sheets in a broad ±68° fan pivoting near the pages' own center, with a bold, wide-thrown shadow — the sheets swing rather than cascade.",
+      props: { pageCount: 10, fanAngle: 68, hRatio: 0.5, shadowBlur: 0.3, shadowOpacity: 0.55, shadowDx: 0.3, shadowDy: 0.1 },
+    },
+    {
+      name: "Gappy fan, deep pivot",
+      description: "The pivot pushed three page-heights below the sheets, opening a visible gap beneath the fan — a wider, airier turbine.",
+      props: { fanAngle: 50, hRatio: 3 },
+    },
+    {
+      name: "Short flip, three sheets",
+      description: "Only three pages at a very narrow ±8° spread and a shallow pivot — a quick corner-flip rather than the full eight-sheet cascade.",
+      props: { pageCount: 3, fanAngle: 8, hRatio: 0.9 },
+    },
+    {
+      name: "Long flip, twelve sheets",
+      description: "Twelve sheets at a wide ±62° spread with a deep, gappy pivot — a thicker paper cascading far past the default eight-sheet fan.",
+      props: { pageCount: 12, fanAngle: 62, hRatio: 2.8 },
+    },
+    {
+      name: "No shadow",
+      description: "Strips the cast shadow entirely — flat paper cutouts, for a slide whose own light does the work.",
+      props: { shadowBlur: 0, shadowOpacity: 0, shadowDx: 0, shadowDy: 0 },
+    },
+    {
+      name: "Shadow thrown left",
+      description: "Keeps the current fan but throws each sheet's shadow up and to the LEFT instead of down-right, deeper and darker than the default cast — a light source from the opposite side.",
+      props: { shadowBlur: 0.34, shadowOpacity: 0.6, shadowDx: -0.32, shadowDy: -0.18 },
     },
   ],
   commands: [
