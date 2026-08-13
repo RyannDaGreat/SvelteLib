@@ -106,12 +106,14 @@ function lightenCss(color, add, alpha) {
  * @param {(s: object) => (object|null)} [cfg.toShadow] - state → materialFill shadow descriptor
  * @param {(s: object) => object[]} [cfg.anchors] - anchors fn (default standard bbox)
  * @param {boolean} [cfg.disk] - hit-test as a disk (the thumbtack) instead of the bbox
+ * @param {Array<{name: string, description: string, props: object}>} [cfg.presets] - R7-39 preset table
  * @returns {object} a plugin object
  */
 function makeMaterialWidget(cfg) {
   return {
     type: cfg.type,
     title: cfg.title,
+    ...(cfg.presets ? { presets: cfg.presets } : {}),
     // Declared in the FACTORY so all four corkboard widgets inherit it and a
     // fifth cannot be added without one. These are SkSL material fills evaluated
     // per pixel from their own knobs — no cheap tier, no async source.
@@ -188,12 +190,48 @@ const CORK_CUSTOM = customProps([
   { name: "cornerRadius", kind: "number", default: 30, min: 0, help: "Rounded-corner radius of the board (world px)." },
 ]);
 
+// CORKBOARD (board) PRESETS (R7-39 presets law) — BOARD MATERIALS, not colour swaps: a
+// board you would recognise on sight (fine cork, dark cork, burlap, whiteboard, felt,
+// weathered plank) rather than "Tan Board" / "Brown Board". Every row is a COMPLETE
+// overlay of the eleven CORK_FILL_PARAMS knobs plus the widget's own cornerRadius, so a
+// look is fully specified by its props — hovering any row after any other leaves nothing
+// behind (the rect.js identity law: this family has no separate effects bundle to carry
+// OFF identities for, since materialFill's shadow/bloom live on the universal effects
+// bundle the factory does not expose here — makeMaterialWidget only composes transform +
+// opacity + the custom rows, so PRESETS is not required to restate an effects key it
+// never writes).
+const CORK_PRESETS = [
+  { name: "Fine Cork", description: "The natural mid-tone panel this widget defaults near: tight granules, a light mottle and a thin walnut frame — the everyday corkboard.",
+    props: { baseColor: "rgb(190,143,86)", grainScale: 0.22, mottleScale: 0.02, mottleStrength: 0.1, pitStrength: 0.3, fleckStrength: 0.22, vignette: 0.18, frameWidth: 24, frameColor: "rgb(92,58,30)", seed: 7, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 26 } },
+  { name: "Dark Espresso Cork", description: "A roasted, near-chocolate cork favoured for a moody study — deep base tone, strong pores and a heavy black-walnut frame.",
+    props: { baseColor: "rgb(92,58,32)", grainScale: 0.24, mottleScale: 0.018, mottleStrength: 0.16, pitStrength: 0.46, fleckStrength: 0.14, vignette: 0.32, frameWidth: 30, frameColor: "rgb(38,24,14)", seed: 11, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 18 } },
+  { name: "Coarse Burlap", description: "A loose woven-fibre look: a wide, strong mottle standing in for burlap's visible weave, low granule contrast, and no frame at all — raw fabric tacked straight to the wall.",
+    props: { baseColor: "rgb(168,138,92)", grainScale: 0.06, mottleScale: 0.055, mottleStrength: 0.42, pitStrength: 0.12, fleckStrength: 0.08, vignette: 0.1, frameWidth: 0, frameColor: "rgb(92,58,30)", seed: 4, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 4 } },
+  { name: "Linen Pinboard", description: "A fabric-covered office pinboard: a pale warm-grey ground, the faintest granule (linen's tight weave, not cork's pores) and a slim aluminium-toned frame.",
+    props: { baseColor: "rgb(214,204,186)", grainScale: 0.34, mottleScale: 0.028, mottleStrength: 0.06, pitStrength: 0.08, fleckStrength: 0.3, vignette: 0.12, frameWidth: 14, frameColor: "rgb(150,150,148)", seed: 2, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 10 } },
+  { name: "Whiteboard-ish", description: "A near-white writable panel with the texture dialled almost off — a whisper of grain to keep it from looking like a flat rectangle, inside a thin grey bezel.",
+    props: { baseColor: "rgb(240,240,236)", grainScale: 0.5, mottleScale: 0.01, mottleStrength: 0.02, pitStrength: 0.03, fleckStrength: 0.06, vignette: 0.04, frameWidth: 10, frameColor: "rgb(120,124,128)", seed: 1, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 8 } },
+  { name: "Charcoal Felt", description: "A soft dark felt board with almost no pore detail (felt has no pits to speak of) and a wide, gentle mottle standing in for its brushed nap.",
+    props: { baseColor: "rgb(58,58,64)", grainScale: 0.14, mottleScale: 0.03, mottleStrength: 0.2, pitStrength: 0.05, fleckStrength: 0.05, vignette: 0.28, frameWidth: 16, frameColor: "rgb(20,20,24)", seed: 9, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 14 } },
+  { name: "Weathered Outdoor Board", description: "A cork panel left outside for a season: a bleached, uneven base, heavy blotching, deep pores and a chunky, sun-greyed frame.",
+    props: { baseColor: "rgb(176,158,120)", grainScale: 0.2, mottleScale: 0.014, mottleStrength: 0.5, pitStrength: 0.55, fleckStrength: 0.18, vignette: 0.4, frameWidth: 36, frameColor: "rgb(110,102,88)", seed: 23, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 6 } },
+  { name: "Honey Cork, Wide Frame", description: "A bright honey-gold cork set deep inside an oversized frame — a gallery-style mount where the border is as much the object as the board.",
+    props: { baseColor: "rgb(214,166,96)", grainScale: 0.18, mottleScale: 0.022, mottleStrength: 0.14, pitStrength: 0.28, fleckStrength: 0.3, vignette: 0.16, frameWidth: 60, frameColor: "rgb(70,42,20)", seed: 5, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 34 } },
+  { name: "Frameless Cork Tile", description: "A cork tile butted edge-to-edge with its neighbours in a modular wall — square corners, zero frame width, so nothing but cork touches the edge of the widget.",
+    props: { baseColor: "rgb(182,134,78)", grainScale: 0.26, mottleScale: 0.024, mottleStrength: 0.13, pitStrength: 0.36, fleckStrength: 0.26, vignette: 0.22, frameWidth: 0, frameColor: "rgb(92,58,30)", seed: 14, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 0 } },
+  { name: "Speckled Fine-Grain Cork", description: "The finest-ground cork in the set: a dense high-frequency granule with bright flecks catching the light, almost a stone-terrazzo read.",
+    props: { baseColor: "rgb(198,150,92)", grainScale: 0.44, mottleScale: 0.032, mottleStrength: 0.08, pitStrength: 0.2, fleckStrength: 0.4, vignette: 0.14, frameWidth: 20, frameColor: "rgb(84,52,26)", seed: 31, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 22 } },
+  { name: "Slate-Grey Composite Board", description: "A modern grey composite panel rather than natural cork: a cool desaturated base, the pore/granule texture almost entirely suppressed, and a black minimalist frame — a corkboard shape in a material that reads as manufactured, not harvested.",
+    props: { baseColor: "rgb(120,124,130)", grainScale: 0.12, mottleScale: 0.016, mottleStrength: 0.05, pitStrength: 0.06, fleckStrength: 0.04, vignette: 0.24, frameWidth: 12, frameColor: "rgb(18,18,20)", seed: 44, lightAngle: FAMILY_LIGHT_ANGLE, cornerRadius: 2 } },
+];
+
 const corkboardPlugin = makeMaterialWidget({
   type: "corkboard",
   title: "Corkboard",
   material: "corkboard",
   positioning: { x: 80, y: 80, w: 900, h: 640, z: 0 },
   custom: CORK_CUSTOM,
+  presets: CORK_PRESETS,
   cornerRadius: (s) => s.cornerRadius,
   toParams: (s) => ({
     seed: s.seed, grainScale: s.grainScale, mottleScale: s.mottleScale,
@@ -230,12 +268,44 @@ const NOTE_CUSTOM = customProps([
   { name: "lightAngle", kind: "angle", display: "degrees", default: FAMILY_LIGHT_ANGLE, help: "Direction TO the light (screen space). Shared with the family; drives ruling shade, curl lighting, and shadow direction." },
 ]);
 
+// CORKBOARD NOTE PRESETS (R7-39 presets law) — PAPER KINDS, not colour swaps: a sticky
+// note, an index card, a lined page, a kraft tag, graph paper — each a real stationery
+// idiom recognisable on sight. Every row sets ALL TWENTY knobs (paperColor through
+// lightAngle), so hovering any row after any other leaves nothing behind — a ruled
+// sticky note left ruled by a preset that meant to turn ruling off. curlAmount is left
+// at 0 on every row (curling is the ANIMATED flagship gesture the docblock above
+// describes, not a static look a preset should pre-bake) except one row that states a
+// pinned-and-peeling look on purpose.
+const NOTE_PRESETS = [
+  { name: "Canary Sticky Note", description: "The classic square sticky: saturated yellow, unruled, no holes, a torn-free clean edge and a tight, close shadow of a note barely lifted off the board.",
+    props: { paperColor: "rgb(255,241,120)", ruleSpacing: 0, ruleStrength: 0, ruleColor: "rgb(120,150,190)", marginX: -1, marginColor: "rgb(200,90,90)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 0, ripScale: 0.1, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 2, seed: 3, shadowStrength: 0.28, shadowBlur: 10, shadowOffset: 6, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Ruled Index Card", description: "A stiff cream index card ruled in a bold, closely-spaced blue with a heavy red margin line set far in — the librarian's card-catalogue look, unpunched and square-cornered.",
+    props: { paperColor: "rgb(238,228,198)", ruleSpacing: 14, ruleStrength: 0.85, ruleColor: "rgb(70,105,165)", marginX: 44, marginColor: "rgb(178,52,52)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 0, ripScale: 0.1, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 6, seed: 12, shadowStrength: 0.3, shadowBlur: 12, shadowOffset: 8, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Loose-Leaf Lined Page", description: "A page torn from a spiral notebook: a slightly aged cream stock, bold widely-spaced rules in a deeper ink, a strong red margin, LARGE punched holes down the left edge and a heavily ragged torn-off strip where it left the pad.",
+    props: { paperColor: "rgb(238,232,206)", ruleSpacing: 36, ruleStrength: 0.75, ruleColor: "rgb(80,110,165)", marginX: 46, marginColor: "rgb(200,90,90)", holeRadius: 16, holeSpacing: 130, holeInset: 28, ripStrength: 24, ripScale: 0.07, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 2, seed: 3, shadowStrength: 0.34, shadowBlur: 18, shadowOffset: 14, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Polaroid-ish Note", description: "A thick, cool bright-white instant-photo card: no ruling and no margin, a fat rounded corner and a dramatically large, soft, far-offset shadow that lifts it well off the board — the deepest floating shadow in the family.",
+    props: { paperColor: "rgb(250,250,255)", ruleSpacing: 0, ruleStrength: 0, ruleColor: "rgb(120,150,190)", marginX: -1, marginColor: "rgb(200,90,90)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 0, ripScale: 0.1, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 32, seed: 5, shadowStrength: 0.55, shadowBlur: 38, shadowOffset: 30, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Kraft Shipping Tag", description: "A brown kraft-paper tag: warm tan stock, a fine unruled surface, a subtle rip along its cut edge and a low, tight shadow — no ruling, no margin, no holes.",
+    props: { paperColor: "rgb(196,160,116)", ruleSpacing: 0, ruleStrength: 0, ruleColor: "rgb(120,150,190)", marginX: -1, marginColor: "rgb(200,90,90)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 5, ripScale: 0.06, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 3, seed: 19, shadowStrength: 0.3, shadowBlur: 12, shadowOffset: 8, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Graph Paper", description: "Engineering graph paper: rule spacing tightened to a fine grid-like cadence at high ink strength, a thin grey-blue line colour, no margin, no holes.",
+    props: { paperColor: "rgb(250,250,246)", ruleSpacing: 10, ruleStrength: 0.7, ruleColor: "rgb(150,180,205)", marginX: -1, marginColor: "rgb(200,90,90)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 0, ripScale: 0.1, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 0, seed: 8, shadowStrength: 0.26, shadowBlur: 10, shadowOffset: 6, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Legal Pad Sheet", description: "A canary-yellow legal pad page: wide ruling in a stronger ink, a bold red margin set far in from the edge, and a soft rip along the top where it tore free of the pad.",
+    props: { paperColor: "rgb(255,247,168)", ruleSpacing: 34, ruleStrength: 0.6, ruleColor: "rgb(90,110,150)", marginX: 56, marginColor: "rgb(210,70,70)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 10, ripScale: 0.11, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 2, seed: 27, shadowStrength: 0.3, shadowBlur: 14, shadowOffset: 10, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Torn Scrap Paper", description: "A scrap ripped by hand from something bigger: no ruling, no margin, no clean edge at all — the ragged-tear amplitude pushed to its most visible setting on both left sides at once (the widget can only rag its own left edge, so this is that edge at maximum).",
+    props: { paperColor: "rgb(244,240,228)", ruleSpacing: 0, ruleStrength: 0, ruleColor: "rgb(120,150,190)", marginX: -1, marginColor: "rgb(200,90,90)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 26, ripScale: 0.16, curlAmount: 0, curlSize: 150, curlCorner: "TR", cornerRadius: 1, seed: 41, shadowStrength: 0.24, shadowBlur: 9, shadowOffset: 5, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Pinned & Peeling", description: "A salmon-orange sticky note pinned once and well on its way off the board: the top-right corner curled DEEPLY (0.75 of the way up, over a wide curl region), casting the family's self-shadow under the flap.",
+    props: { paperColor: "rgb(252,196,150)", ruleSpacing: 0, ruleStrength: 0, ruleColor: "rgb(120,150,190)", marginX: -1, marginColor: "rgb(200,90,90)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 0, ripScale: 0.1, curlAmount: 0.75, curlSize: 220, curlCorner: "TR", cornerRadius: 2, seed: 3, shadowStrength: 0.28, shadowBlur: 10, shadowOffset: 6, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Pale Mint Sticky, Bottom-Left Curl", description: "A cooler pastel-mint sticky note curling from its bottom-left corner instead of the family default top-right — proves curlCorner is a real preset axis, not just a hidden default.",
+    props: { paperColor: "rgb(206,238,220)", ruleSpacing: 0, ruleStrength: 0, ruleColor: "rgb(120,150,190)", marginX: -1, marginColor: "rgb(200,90,90)", holeRadius: 0, holeSpacing: 60, holeInset: 22, ripStrength: 0, ripScale: 0.1, curlAmount: 0.5, curlSize: 160, curlCorner: "BL", cornerRadius: 2, seed: 17, shadowStrength: 0.3, shadowBlur: 12, shadowOffset: 8, lightAngle: FAMILY_LIGHT_ANGLE } },
+];
+
 const corkboardNotePlugin = makeMaterialWidget({
   type: "corkboardNote",
   title: "Corkboard Note",
   material: "corkboardNote",
   positioning: { x: 220, y: 200, w: 340, h: 420, z: 10 },
   custom: NOTE_CUSTOM,
+  presets: NOTE_PRESETS,
   cornerRadius: (s) => s.cornerRadius,
   toParams: (s) => ({
     seed: s.seed, paperColor: s.paperColor, lightAngle: s.lightAngle,
@@ -268,12 +338,53 @@ const TACK_SHADOW_A_BASE = 0.30, TACK_SHADOW_A_GAIN = 0.14;      // alpha = base
 // derived below), and the contact shadow is a widget-side descriptor, not a knob.
 const TACK_CUSTOM = customProps(TACK_FILL_PARAMS);
 
+// THUMBTACK PRESETS (R7-39 presets law) — PIN HARDWARE, not colour swaps. The schema is
+// only FOUR knobs (color, domeGain, shininess, lightAngle), the narrowest in the family,
+// but all three non-light knobs are load-bearing on the picture: `color` is the material
+// (brass vs red plastic vs brushed steel is a different substance, not a hue rotation of
+// the same plastic), `domeGain` is press-in DEPTH (it also resizes/darkens the contact
+// shadow via TACK_SHADOW_*_GAIN above, so it moves more than the head's own silhouette),
+// and `shininess` is the specular character (a matte ball-head vs a glassy dome are
+// different finishes on the same shape). Ten rows vary at least two of the three
+// together, so no pair is "the same pin in a different colour" — see the honest-ceiling
+// note after row 10 for why this schema does not honestly stretch to an eleventh.
+const TACK_PRESETS = [
+  { name: "Cherry Red Pushpin", description: "A deep cherry-red plastic pin, fully proud of the board with a bright, tight hotspot — a darker, glossier cousin of the everyday office pushpin.",
+    props: { color: "rgb(150,10,20)", domeGain: 1, shininess: 32, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Brass Drawing Pin", description: "A small polished brass pin, pressed nearly flat the way a real drawing pin sits almost flush with the board, with a sharp metallic hotspot.",
+    props: { color: "rgb(196,158,74)", domeGain: 0.35, shininess: 60, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Brushed Steel Pin", description: "A cool grey steel head, moderately proud, with a broad soft specular rather than a hard glint — the diffuse hotspot of a brushed rather than polished finish.",
+    props: { color: "rgb(176,182,190)", domeGain: 0.6, shininess: 5, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Matte Ball-Head Pin", description: "A chunky map-pin silhouette: fully proud and rounded, but the shininess dropped to its floor so the dome reads as soft rubberised plastic with almost no hotspot at all.",
+    props: { color: "rgb(60,110,190)", domeGain: 1, shininess: 1, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Glossy Yellow Ball-Head Pin", description: "The same fully-proud ball-head silhouette in high-visibility yellow plastic, but glassy — a bright, tight specular hotspot instead of the matte pin's none.",
+    props: { color: "rgb(238,196,20)", domeGain: 1, shininess: 45, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Pressed-In Steel Tack", description: "A steel head pushed nearly flush with the board (a low domeGain past the shader's DOME_MIN floor, so it never fully vanishes) — the contact shadow shrinks and darkens far less than a proud pin's.",
+    props: { color: "rgb(150,156,164)", domeGain: 0.08, shininess: 12, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Copper Push Pin", description: "A warm oxidised-copper head, pressed to about half-proud with a mid-range satin shininess — between the mirror brass row and the flat matte one.",
+    props: { color: "rgb(170,96,58)", domeGain: 0.55, shininess: 10, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Black Enamel Pin", description: "A near-black glossy enamel head — dark colour reads its dome shape almost entirely through the specular hotspot and the contact shadow, since there is little diffuse tone to shade.",
+    props: { color: "rgb(24,24,26)", domeGain: 0.85, shininess: 30, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Chrome Map Pin", description: "A mirror-polished chrome ball, maximally proud with the schema's highest practical shininess for the tightest, brightest hotspot the material can produce.",
+    props: { color: "rgb(224,228,232)", domeGain: 1, shininess: 80, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Side-Lit Green Pushpin", description: "The classic proud, glossy pin recoloured green and re-lit from the side rather than the family's usual upper-left, to show the hotspot and shadow both follow lightAngle rather than being baked into the dome.",
+    props: { color: "rgb(50,140,70)", domeGain: 0.95, shininess: 22, lightAngle: 0 } },
+];
+// HONEST CEILING: ten is this schema's practical roof, not an arbitrary stop. With only
+// four knobs and one of them (lightAngle) reserved for a single demonstration row rather
+// than per-row variation, distinct MATERIAL+DEPTH+FINISH combinations that still read as
+// "a pin" (domeGain and shininess both have a narrow practically-visible range — see
+// DOME_MIN and TACK_SHADOW_*_GAIN above) run out well before "ten hue rotations" would;
+// an eleventh row would necessarily repeat a (domeGain, shininess) pairing already shown
+// under a new color, which the ban this task names specifically as not a new preset.
+
 const corkboardThumbtackPlugin = makeMaterialWidget({
   type: "corkboardThumbtack",
   title: "Corkboard Thumbtack",
   material: "corkboardThumbtack",
   positioning: { x: 380, y: 176, w: 44, h: 44, z: 30 },
   custom: TACK_CUSTOM,
+  presets: TACK_PRESETS,
   disk: true,
   cornerRadius: (s) => Math.min(s.w, s.h) / 2, // a disk (the round head)
   // The head centre is BOTH the standard center anchor and a named "head" anchor —
@@ -343,12 +454,45 @@ function yarnInkRect(s) {
   return paddedPointsBBox([from, to, ctrl], pad);
 }
 
+// YARN PRESETS (R7-39 presets law) — STRING IDIOMS, not colour swaps. The look schema
+// is `gravity` (sag), `color`, `width` (cord thickness) and `lightAngle` — four knobs,
+// but `gravity` and `width` are STRUCTURAL, not decorative: a taut fishing-line and a
+// deep-sagging clothesline are different OBJECTS at the same two endpoints, and a wide
+// cord versus a thin one changes the shadow/highlight geometry (both scale off `width`
+// in emit()), not just its colour. NO ROW SETS `from`/`to`/`opacity` (placement/keys the
+// widget author already chose — the presets law's placement ban; opacity is universal
+// state, not a look knob this family owns). `lightAngle` stays at the family default on
+// every row but one, matching the sibling families' single demonstration row.
+const YARN_PRESETS = [
+  { name: "Crimson Conspiracy Yarn", description: "A deeper, more saturated red wool than the widget's own default cord, thicker and sagging further — the exaggerated evidence-board string, distinctly itself rather than the untouched default.",
+    props: { gravity: 0.2, color: "rgb(170,15,15)", width: 9, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Taut Kitchen Twine", description: "Thin, pale jute twine pulled almost straight — minimal sag, a narrow cord, the colour of unbleached string.",
+    props: { gravity: 0.02, color: "rgb(214,196,158)", width: 2.5, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Sagging Clothesline", description: "A thick grey-white cord slung with real weight in it — the deepest droop in the set, the way a line sags under wet washing.",
+    props: { gravity: 0.32, color: "rgb(224,222,214)", width: 6, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Satin Ribbon", description: "A wide, flat-reading pale-pink cord standing in for ribbon — the widest width in the set, with a gentle rather than dramatic sag.",
+    props: { gravity: 0.08, color: "rgb(232,170,196)", width: 12, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Black Bootlace Cord", description: "A slim near-black cord, taut, reading as a bootlace or paracord strand rather than soft yarn.",
+    props: { gravity: 0.04, color: "rgb(24,24,26)", width: 3, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Chunky Blue Wool", description: "A fat, heavily-sagging blue wool cord — the family's widest, droopiest non-ribbon string, for a hand-knitted-looking connection.",
+    props: { gravity: 0.22, color: "rgb(60,90,190)", width: 10, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Fine Fishing Line", description: "The thinnest cord the schema offers, almost perfectly taut and pale, reading as monofilament rather than fabric.",
+    props: { gravity: 0.01, color: "rgb(200,210,208)", width: 1.5, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Orange Hazard Cord", description: "A mid-thick high-visibility orange cord with a moderate sag — the site-hazard-tape colour applied to a round cord instead of a flat strip.",
+    props: { gravity: 0.12, color: "rgb(230,120,20)", width: 5, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Forest Green Paracord", description: "A dark green mid-weight cord, taut-ish, in the tonal range a paracord loop would actually be sold in.",
+    props: { gravity: 0.06, color: "rgb(30,80,50)", width: 4.5, lightAngle: FAMILY_LIGHT_ANGLE } },
+  { name: "Side-Lit Purple Yarn", description: "The default cord's thickness and sag, recoloured violet and re-lit from the side rather than the family's usual upper-left, to show the cord's sheen and shadow both follow lightAngle.",
+    props: { gravity: 0.14, color: "rgb(120,50,170)", width: 7, lightAngle: 0 } },
+];
+
 const corkboardYarnPlugin = {
   type: "corkboardYarn",
   // A LITERAL, not made by makeMaterialWidget — so it declares for itself. Sagging
   // yarn is a catenary drawn as vector strokes: no cheap tier, no async source.
   ephemeral: EPHEMERAL.NONE,
   title: "Corkboard Yarn",
+  presets: YARN_PRESETS,
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   defaults: {
     type: "corkboardYarn", z: 20,
