@@ -439,6 +439,11 @@ export const irisBladesPlugin = {
       description: "Five broad plates and a pentagonal hole, the arrangement a vintage leaf shutter uses. Few enough that one plate covers a large fraction of the bore, so the overlap — rather than the opening — is most of what you see.",
       props: { blades: 5, stopDown: 0.5, curvature: 0.25, bladeRotation: 0, bladeReach: 3 },
     },
+    {
+      name: "Seven-Blade Modern Prime",
+      description: "The common blade count on a current mirrorless prime, gently rounded and turned off-axis: the assembly is rotated a tenth of a turn from every other row here, so the extension arms point somewhere none of the others do.",
+      props: { blades: 7, stopDown: 0.45, curvature: 0.5, bladeRotation: Math.PI / 5, bladeReach: 4 },
+    },
   ],
   defaults: {
     type: "iris_blades", x: 260, y: 160, w: 220, h: 220, z: 0, rotation: 0, scale: 1,
