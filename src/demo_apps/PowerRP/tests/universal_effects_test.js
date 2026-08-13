@@ -130,7 +130,7 @@ test("(2) the ONLY plugins WITHOUT the bundle are the declared exclusions", () =
   // the hook is exactly the documented way to become eligible — which is the
   // point of the hook, and the reason this list must shrink, never grow.
   const without = registered.filter((p) => !hasBundle(p)).map((p) => p.type).sort();
-  assert.deepEqual(without, ["anchor_point", "blur", "camera", "cropbox"]);
+  assert.deepEqual(without, ["blur", "camera", "cropbox", "empty"]);
   for (const t of without) {
     const reason = injectionBlocker(registry.get(t));
     assert.ok(reason, `${t} has no effect rows and NO declared reason — that is the drift this suite exists to catch`);

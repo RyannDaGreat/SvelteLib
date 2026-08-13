@@ -8,7 +8,7 @@
  *   - a non-empty filmstrip / non-empty text is NOT a ghost.
  *   - the SAME predicate mechanism (core/derive.isGhostNode consulting
  *     capabilities.ghost OR plugin.isGhost(state)) serves both the static
- *     ghosts (cropbox, group, anchor_point) and these dynamic ones — one
+ *     ghosts (cropbox, group, empty) and these dynamic ones — one
  *     canonical form, no dual paths.
  *
  * PRESENTATION-EXCLUSION SYMMETRY (found by this probe as an asymmetry, fixed

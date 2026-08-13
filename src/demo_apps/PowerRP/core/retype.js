@@ -331,7 +331,7 @@ export function retypedItem(doc, slideIndex, itemId, newType, folded, registry) 
  *     COLLECTION of its sibling metaballs, not just its own state.
  *
  * Over the live 96-type roster this excludes exactly five: camera, group,
- * cropbox, anchor_point, metaball. tests/retype_test.js pins that set against the
+ * cropbox, empty, metaball. tests/retype_test.js pins that set against the
  * roster, so a new scene-structural type cannot silently join the menu.
  *
  * @param {object} plugin - a registered plugin

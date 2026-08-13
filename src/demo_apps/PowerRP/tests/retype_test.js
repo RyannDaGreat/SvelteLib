@@ -76,7 +76,7 @@ function documentWithWidget(type, extra = {}) {
     .sort();
   assert.deepStrictEqual(
     excluded,
-    ["anchor_point", "camera", "cropbox", "group", "metaball"].sort(),
+    ["camera", "cropbox", "empty", "group", "metaball"].sort(),
     "the retype exclusion set changed — a widget gained or lost one of the four structural marks (purgeable:false / foldsSubtree / ghost / metaball). " +
       "If a NEW scene-structural type appeared, this failure is the point: confirm the predicate catches it for the right REASON, then update this list.",
   );

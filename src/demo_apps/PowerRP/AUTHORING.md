@@ -295,7 +295,7 @@ documentation — open it to see its exact knobs.
 - `cropbox` — Crop Box.
 - `blur` — Blur Layer.
 - `magnifier` — Magnifier.
-- `anchor_point` — Anchor Point. A bare reference point for equations to bind to.
+- `empty` — Empty. A blender-style empty: a full transform (position, rotation, scale) with no geometry, drawn as an axis cross in the editor only and referencable by equations through its `pt` centre anchor and its `+x`/`-x`/`+y`/`-y` axis tips. Replaces the retired `anchor_point`, which is migrated to it loudly on load with its `pt` anchor id unchanged.
 - `particles` — Particles. A deterministic, seeded emitter (recordable state).
 - `clock_analog` / `clock_digital` — Analog / Digital Clock.
 

@@ -42,9 +42,19 @@ import {
   withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue, evaluateState,
   sourceIsSimulated,
 } from "./expressions.js";
+// THE FRAME DOMAIN'S "am I simulated" predicate (documentIsSimulated reads it — see
+// the strided-shard landmine in its docblock). core/exec_frame.js imports only
+// nodeflow, simulation_history and report, NONE of which import this file, so this
+// edge closes no cycle; that is also why its step budget is declared there rather
+// than imported from core/exec_flow.js, which DOES import this file.
+import { frameNodeIsSimulated } from "./exec_frame.js";
 import { withRichTextMigrated } from "./richtext.js";
 import { headModeSplit } from "./endpoints.js";
 import { withPaletteRampMigrated, rampMigrationReports } from "./ramp_migration.js";
+// GLOBAL VARIABLE KINDS (core/var_kinds.js) — meta.varKinds is normalized here for
+// meta.script's exact reasons; that module owns the rules and this file only
+// reports what it dropped.
+import { repairedVarKinds } from "./var_kinds.js";
 // The plugin ROW INDEX — the one place that knows how to look a declared row up by
 // key. Read here for the `nullable` aspect (see missingDefaults); imported rather
 // than re-derived, since a second `inspector`-to-map walk is the mirror this
@@ -2292,6 +2302,82 @@ export function legacyBindings(doc) {
   return out;
 }
 
+/**
+ * RETIRED WIDGET TYPES and the type each becomes on load: `<old> → <new>`.
+ *
+ * `anchor_point` → `empty` (user, 2026-08-13: "Empties. Replace the anchor
+ * widget. I want empties. Full transform, blender-style."). The empty is a strict
+ * SUPERSET: it keeps `anchor_point`'s geometry keys (x/y/z/w/h/rotation/scale/
+ * rotationAnchor/opacity — the defaults are the same values), keeps its `pt`
+ * CENTRE anchor id, and adds the rotation/scale inspector rows and the axis-tip
+ * anchors it lacked. So the migration rewrites the TYPE STRING and nothing else,
+ * and every stored equation naming the retired widget — `@<itemId>_pt.x`, or
+ * `<slug>.pt.y` through the item's name — keeps resolving: the ITEM ID is
+ * untouched (it is the delta key, not a value) and the ANCHOR ID is unchanged.
+ *
+ * A TABLE rather than a special case because a retired type is a shape this
+ * codebase will meet again, and the finder/rewriter/report below all read this
+ * one map so they cannot drift about which types are retired.
+ */
+export const RETIRED_ITEM_TYPES = Object.freeze({ anchor_point: "empty" });
+
+/**
+ * Pure function. Every write of a RETIRED item type a document still carries:
+ * `{id, slideIndex, from, to}` per slide-delta that names one.
+ *
+ * PER SLIDE, NOT PER ITEM, for cameraDitherMigrations' reason: nothing in the
+ * editor can produce a retired type any more, so every occurrence on any slide is
+ * legacy by construction. A `type` may legitimately be written on more than one
+ * slide (the creation slide plus any that re-state it), so each write is reported
+ * where it sits and each is rewritten.
+ *
+ * @example itemTypeMigrations({slides: [{delta: {items: {a: {type: "anchor_point", x: 5}}}}]}) // [{id: "a", slideIndex: 0, from: "anchor_point", to: "empty"}]
+ * @example itemTypeMigrations({slides: [{delta: {items: {a: {type: "empty"}}}}]}) // [] (already current)
+ * @example itemTypeMigrations({slides: [{delta: {items: {a: {x: 5}}}}]}) // [] (a keyframe with no type write)
+ */
+export function itemTypeMigrations(doc) {
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!item || typeof item !== "object") continue;
+      const to = RETIRED_ITEM_TYPES[item.type];
+      if (to) out.push({ id, slideIndex, from: item.type, to });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every retired item type rewritten to its
+ * replacement (itemTypeMigrations). REPORTING IS THE CALLER'S JOB. Idempotent — a
+ * document with none comes back as the SAME object.
+ *
+ * It rewrites ONLY the `type` leaf. The retired widget's other keys are the
+ * replacement's keys by construction (see RETIRED_ITEM_TYPES); any key the
+ * replacement added and the old document lacks is version skew, which
+ * withMissingDefaultsFilled already fills at the plugin's own default — the
+ * ordinary path, not a special case for this migration.
+ *
+ * @example withItemTypesMigrated({slides: [{delta: {items: {a: {type: "anchor_point", x: 5}}}}]}).doc.slides[0].delta.items.a // {type: "empty", x: 5}
+ * @example withItemTypesMigrated({slides: [{delta: {items: {a: {type: "empty"}}}}]}).migrated.length // 0
+ */
+export function withItemTypesMigrated(doc) {
+  const migrated = itemTypeMigrations(doc);
+  if (!migrated.length) return { doc, migrated };
+  const slides = doc.slides.map((s, slideIndex) => {
+    const items = s.delta.items ?? {};
+    let touched = false;
+    const nextItems = Object.fromEntries(Object.entries(items).map(([id, item]) => {
+      const to = item && typeof item === "object" ? RETIRED_ITEM_TYPES[item.type] : undefined;
+      if (!to) return [id, item];
+      touched = true;
+      return [id, { ...item, type: to }];
+    }));
+    return touched ? { ...s, delta: { ...s.delta, items: nextItems } } : s;
+  });
+  return { doc: { ...doc, slides }, migrated };
+}
+
 // ── The load-boundary repair pipeline (ONE home) ─────────────────────────────
 // Both consumers of load-time repair — the editor (app.repaired via loadFile /
 // loadAutosave / loadProject / deleteSlide) and the CLI render hook
@@ -2310,6 +2396,9 @@ export function legacyBindings(doc) {
  * back unchanged with reports = [].
  *
  * ORDER (every step is order-critical — do not reshuffle):
+ *   0. retired item types renamed — MUST precede the orphan drop: a retired type
+ *      is absent from the registry, so the orphan step would PURGE the item and
+ *      every equation bound to it (withItemTypesMigrated).
  *   1. orphaned items dropped   — a typeless/unknown item must go before any
  *      later step reads its (missing) type; keeps the fold renderable.
  *   2. legacy key renames       — MUST precede defaults-fill: filling first
@@ -2342,6 +2431,12 @@ export function legacyBindings(doc) {
  *  2d. meta.script normalized  — THE PROJECT SCRIPT is filled to "" when absent
  *      (quietly — an old deck has no library and an empty one means the same) and
  *      DISCARDED loudly when it is not a string. meta-only, order-free.
+ * 2d2. meta.varKinds normalized — THE GLOBAL VARIABLE KINDS map (core/var_kinds.js)
+ *      is filled to {} when absent (quietly, meta.script's rule: every deck written
+ *      before kinds existed has all-number variables and an empty map means exactly
+ *      that) and its BAD ENTRIES are dropped LOUDLY — an unknown kind changes how a
+ *      variable is EDITED, so it can never vanish in silence. No variable's VALUE is
+ *      touched either way, which is what the report says. meta-only, order-free.
  *   3. meta.fps stripped        — frame caps are dead (round 11); meta-only, so
  *      its position among the item/slide steps is free — placed here to match
  *      the editor's long-tested sequence.
@@ -2374,7 +2469,17 @@ export function repairedDocument(doc, registry) {
   const reports = [];
   const known = new Set(registry.all().map((p) => p.type));
 
-  const { doc: droppedDoc, dropped } = withOrphanedItemsDropped(doc, known);
+  // RETIRED TYPES FIRST, BEFORE THE ORPHAN DROP, AND THAT ORDER IS THE WHOLE
+  // MIGRATION. A retired type is by definition not in the registry, so the orphan
+  // step would classify every one of them as `unknown type "anchor_point"` and
+  // PURGE the item — silently destroying a widget the user still has, along with
+  // every equation bound to it, while reporting only that something unknown was
+  // dropped. Renaming first means the orphan step meets a type it knows.
+  const { doc: typedDoc, migrated: typeMigrated } = withItemTypesMigrated(doc);
+  for (const m of typeMigrated)
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: retired type "${m.from}" → "${m.to}" — the anchor point is now an EMPTY (a full blender-style transform: rotation and scale on top of the position it had). Its "${m.id}_pt" anchor id is unchanged, so every equation bound to it still resolves`);
+
+  const { doc: droppedDoc, dropped } = withOrphanedItemsDropped(typedDoc, known);
   for (const { id, reason } of dropped)
     reports.push(`PowerRP repair: dropped item "${id}" — ${reason}`);
 
@@ -2496,6 +2601,20 @@ export function repairedDocument(doc, registry) {
     if ("script" in out.meta)
       reports.push(`PowerRP repair: meta.script was ${typeof out.meta.script}, not a string — discarded; the project script is one JavaScript source string`);
     out = { ...out, meta: { ...out.meta, script: "" } };
+  }
+
+  // THE GLOBAL VARIABLE KINDS map (core/var_kinds.js). Same two-case shape as
+  // meta.script above and for the same reasons: ABSENT is filled quietly (an old
+  // deck's variables are all numbers, and an empty map says precisely that), a
+  // DAMAGED entry is dropped loudly. The rules live in var_kinds.js so the panel
+  // and the repair cannot disagree about what a legal kind is.
+  {
+    const { varKinds, dropped } = repairedVarKinds(out.meta.varKinds);
+    for (const d of dropped)
+      reports.push(d.name == null
+        ? `PowerRP repair: ${d.reason} — discarded; every variable falls back to Number (no variable's VALUE was touched)`
+        : `PowerRP repair: variable "${d.name}" declared kind ${JSON.stringify(d.kind)}, ${d.reason} — dropped; it edits as a Number now (its VALUE is unchanged)`);
+    if (dropped.length || !out.meta.varKinds) out = { ...out, meta: { ...out.meta, varKinds } };
   }
 
   if ("fps" in out.meta) {
@@ -2875,12 +2994,31 @@ export function allDocumentItems(doc) {
  * direction it would drift in is the wrong one (a source the evaluator treats as an
  * equation and this does not is a silent strided shard).
  *
+ * ── IT ASKS THE REGISTRY TOO, AND SCANNING TEXT ALONE WAS A REAL BUG ────────
+ * A SIMULATED NODE CARRIES NO `@` ANYWHERE IN THE DOCUMENT. The frame domain
+ * (core/exec_frame.js) holds a Schmitt latch, a counter's tally and a countdown in
+ * the simulation table with no equation to scan — so an equation-source-only scan
+ * answered `false` for a deck whose entire behaviour is simulated,
+ * `stridedShardRefusal` returned `null`, and `cli/render_job.js` would shard it by
+ * STRIDED frame range. The result is precisely what that refusal's own sentence
+ * warns about: *"a strided shard would start cold in the middle of a trajectory and
+ * render a plausible WRONG video"* — on a green exit code, with no error, and no
+ * existing test could catch it because every simulated deck until now reached the
+ * table through an equation.
+ *
+ * THE QUESTION IS ASKED OF THE PLUGIN'S DECLARATION, NEVER OF A TYPE LIST
+ * (`core/exec_frame.frameNodeIsSimulated`, which is `typeof plugin.frameStep ===
+ * "function"`). This is the `isTriggerableMidiSource` precedent verbatim: a hand-kept
+ * roster of "the simulated types" would be correct only until the next frame node
+ * lands, and the failure of a stale one is silent and unrenderable-after-the-fact.
+ *
  * @param {object} doc - a repaired document
  * @param {object} registry - the plugin registry
  * @returns {boolean}
  *
  * @example // documentIsSimulated(newDocument(), registry) === false — a fresh deck simulates nothing
  * @example // a deck with items.a1.rotation = "= @@ + dt" → true
+ * @example // a deck whose ONLY simulation is a Schmitt trigger node → true (no `@` in it)
  */
 export function documentIsSimulated(doc, registry) {
   for (let index = 0; index < doc.slides.length; index++) {
@@ -2890,6 +3028,11 @@ export function documentIsSimulated(doc, registry) {
     for (const item of Object.values(state.items ?? {})) {
       if (typeof item?.type !== "string") continue;
       const plugin = registry.get(item.type);
+      // THE FRAME DOMAIN, asked of the declaration — see the docblock. Checked
+      // BEFORE the leaf walk because it is one property read against a walk of every
+      // leaf of every item, and because a frame node's answer cannot be overturned
+      // by anything the walk finds.
+      if (frameNodeIsSimulated(plugin)) return true;
       for (const value of Object.values(item.vars ?? {}))
         if (typeof value === "string" && sourceIsSimulated(value)) return true;
       for (const [path, value] of [...leaves(item), ...declaredListLeaves(item)])
@@ -2921,5 +3064,5 @@ export function documentIsSimulated(doc, registry) {
  */
 export function stridedShardRefusal(doc, registry) {
   if (!documentIsSimulated(doc, registry)) return null;
-  return "this document contains SIMULATED STATE (an equation reading `@` or `dt`), so frame N is a function of frames 0..N-1 — a strided shard would start cold in the middle of a trajectory and render a plausible WRONG video; shard by CONTIGUOUS frame ranges instead, one prefix per worker";
+  return "this document contains SIMULATED STATE (an equation reading `@` or `dt`, or a per-frame trigger node that carries state between frames), so frame N is a function of frames 0..N-1 — a strided shard would start cold in the middle of a trajectory and render a plausible WRONG video; shard by CONTIGUOUS frame ranges instead, one prefix per worker";
 }

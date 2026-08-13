@@ -368,6 +368,31 @@
      affordances may TRUNCATE a label, never MOVE it. Width covers both glyphs
      (13px help icon + air) so neither button needs a size of its own. */
   --a-row-label-gutter: 15px;
+  /* ── COMPOUND ROWS (workstream COMPOUND_) ────────────────────────────────
+     THE DISCLOSURE TRIANGLE's box, and the gap between it and the label it
+     pushes right. Sized to the 14px glyph it holds plus nothing — the nudge the
+     user asked for ("push the property name to the right a little") should be
+     exactly the arrow's own width, not a decorative indent on top of it. It
+     doubles as the per-level indent unit via --a-row-label-gutter, so a nested
+     compound's label steps by the same amount its parent's triangle occupies. */
+  --a-compound-twisty-w: 14px;
+  --a-compound-twisty-gap: 2px;
+  /* THE 2D DRAG PAD, collapsed and expanded (web/Vector2Pad.svelte). The
+     collapsed size is --a-control-h so the pad is exactly as tall as the X and Y
+     fields it sits beside and the row keeps one baseline. The expanded size is
+     what the row grows to when the compound is dropped down and the pad has the
+     value cell to itself — big enough to aim, not so big it dwarfs the two rows
+     beneath it. */
+  --a-vec2pad-size: 26px;
+  --a-vec2pad-large-size: 64px;
+  /* The reticle's line weight: heavier than a hairline so the crosshair reads at
+     26px, light enough not to look like a filled tile at 64px. */
+  --a-vec2pad-stroke: 6px;
+  /* ── THE GLOBAL VARIABLE KIND PICKER (backburner CX) ──────────────────────
+     Wide enough for the longest kind label ("Boolean") plus its caret, and no
+     wider: it shares the label cell with the variable's NAME, which is the part
+     an author actually reads the row for. */
+  --a-var-kind-w: 76px;
   /* The label⟷value DIVIDER: an invisible grab strip centred on the column
      boundary, revealing a hairline on hover. Hit width is deliberately wider
      than the line, the same relationship --a-split-handle-hit has to
@@ -5871,6 +5896,18 @@ textarea {
   pointer-events: none;
 }
 
+/* THE EMPTY'S AXIS CROSS (blender's plain-axes empty, editor only). Same ghost
+   tone and hairline weight as the outline above — an empty has no rendered
+   volume, so its chrome belongs to the same family — but SOLID rather than
+   dashed: the cross IS the widget's whole depiction, not a boundary annotation
+   on something else that is drawn. pointer-events:none like all overlay
+   decoration, so a click passes through to the item's own hit box beneath. */
+.overlay .empty-cross {
+  stroke: var(--a-ghost);
+  stroke-width: var(--a-ghost-stroke);
+  pointer-events: none;
+}
+
 /* INK-BOUNDS GHOST: where a widget's INK actually is, when that is not its
    property box — for text, the rect the type overflows into. Shown under the
    same "Show Ghosts" toggle as the outline above, and deliberately built from
@@ -7749,7 +7786,14 @@ audio.ae-preview-media {
    :not(.add-row) because the ADD row is also a .row but is NOT a value row — it
    opts out of the value-column grid entirely (see .varspanel .add-row) and
    mounts no NumericField, so there is no ƒ to make room for and reserving one
-   would just shrink its text box for nothing. */
+   would just shrink its text box for nothing.
+   THE VALUE ROW'S IDENTIFIER IS NOW `.var-ident` (workstream COMPOUND_): the KIND
+   PICKER moved into the label cell beside the name, so the cell's child is a
+   wrapper holding both rather than the bare input. The gutter therefore has to be
+   reserved on the WRAPPER — left on the input it would reserve the strip in the
+   middle of the cell, where nothing hangs. The add row still puts a bare
+   `.var-name` in that cell and is still excluded, unchanged. */
+.varspanel .row:not(.add-row) > .var-ident,
 .varspanel .row:not(.add-row) > .var-name {
   /* The affordance is --a-row-chrome-w wide but the row's grid GAP already sits
      between the label and the value, and the affordance hangs across it — so
@@ -7757,6 +7801,39 @@ audio.ae-preview-media {
      the full width would cost the label 4px it never needed, which at the
      narrow default panel is a visible character of a truncated label. */
   padding-right: calc(var(--a-row-chrome-w) - var(--a-sp-2));
+}
+
+/* ── THE VARIABLE IDENTITY CELL (workstream COMPOUND_, backburner CX) ────────
+   The label cell of a value row: the KIND picker, then the name. The picker is
+   FIXED-WIDTH and the name TAKES THE REST, so every row's name field starts at
+   the same x — the same alignment property the Property Panel's label column
+   buys, applied inside a cell that now holds two controls. */
+.varspanel .var-ident {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  min-width: 0;
+}
+.varspanel .var-ident > .var-name {
+  min-width: 0;
+  flex: 1 1 0;
+}
+/* THE KIND PICKER is deliberately NARROW — it shows a short word ("Color") and
+   must not take the room the variable's NAME needs, which is the thing an author
+   reads the row for. It is the same Dropdown every select row mounts; only its
+   width is constrained here. */
+.varspanel .var-kind {
+  flex: none;
+  width: var(--a-var-kind-w);
+}
+.varspanel .var-kind > * {
+  width: 100%;
+}
+/* A TEXT variable's value field: the panel's ordinary text input, filling the
+   value column like every other kind's control so the rows keep one right edge. */
+.varspanel .var-text {
+  width: 100%;
+  min-width: 0;
 }
 
 /* ── THE LABEL⟷VALUE DIVIDER (web/LabelDivider.svelte) ───────────────────────
@@ -8092,6 +8169,173 @@ audio.ae-preview-media {
   margin-left: var(--a-row-label-gutter);
   border-left: var(--a-hairline) solid var(--border);
   padding-left: var(--a-sp-2);
+}
+
+/* ═══ COMPOUND ROWS (workstream COMPOUND_, backburner CY) ═══════════════════
+   A compound row is an ORDINARY .row — same three-column grid, same label frac,
+   same trailing keyframe cell — so its label and its diamond line up with every
+   other row in the panel. Only three things are added: an in-flow disclosure
+   triangle, a value cell that holds SEVERAL controls, and a depth indent.
+
+   THE TRIANGLE IS IN FLOW, WHICH IS THE OPPOSITE OF EVERY OTHER LABEL AFFORDANCE
+   IN THIS PANEL, and the user asked for exactly that: triangles "which push the
+   property name to the right a little". The copy-path/help/gallery/interp glyphs
+   are absolutely positioned into a reserved gutter precisely so revealing them
+   never moves the label — but those appear on HOVER, and a thing that appears
+   must not shift layout. The twisty is ALWAYS THERE ("they're always visible
+   those arrows"), so it costs its width once, at rest, on compound rows only, and
+   the nudge is the point rather than a side effect: it is what makes a parent's
+   label read as one level above its children's. */
+.inspector .compound-row > .compound-label {
+  display: flex;
+  align-items: center;
+  gap: var(--a-compound-twisty-gap);
+  min-width: 0; /* so a long label ellipsizes instead of pushing the value cell */
+}
+.inspector .compound-twisty {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-compound-twisty-w);
+  height: var(--a-compound-twisty-w);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.inspector .compound-twisty:hover {
+  color: var(--fg);
+}
+/* DEPTH IS A CUSTOM PROPERTY, NOT A NESTED SELECTOR, because the tree is of
+   ARBITRARY DEPTH (the user's "we might even have sub-subproperties"): a
+   selector per level would cap the feature at however many levels someone
+   happened to write, and the cap would be invisible until the day a three-level
+   compound rendered flat. `--compound-depth` is set inline by the snippet from
+   its own recursion counter, so level N indents by N gutters for every N. */
+.inspector .compound-row > .compound-label,
+.inspector .compound-children > .row > .label,
+.inspector .compound-children > .row > .row-label-chrome {
+  padding-left: calc(var(--compound-depth, 0) * var(--a-row-label-gutter));
+}
+/* The value cell holds several controls at once — the collapsed form's
+   `[X] [Y] [pad]`, plus the chain link on the Size compound. They share the ONE
+   value column every other row's single field occupies, so the compound's right
+   edge still lands where a plain row's does. */
+.inspector .compound-value {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  min-width: 0;
+}
+/* Each inline leaf field shrinks to share the cell (a lone NumericField would
+   otherwise claim the whole column and shove the pad out of the row). */
+.inspector .compound-value > .numfield,
+.inspector .compound-value > input {
+  min-width: 0;
+  flex: 1 1 0;
+}
+/* EXPANDED, the pad gets the cell to itself and the leaves are full rows below,
+   which is the user's `v [DragPad]` over `[X] [Y]`. */
+.inspector .compound-row.compound-open > .compound-value {
+  justify-content: flex-start;
+}
+/* The children block: bracketed on the left like the interp strip, so a leaf
+   inside a compound reads as belonging to the row above rather than as a sibling
+   property. It does NOT indent the whole block (the interp strip's margin-left
+   idiom), because these are real rows whose value columns must stay aligned with
+   the rest of the panel — the indent goes on the LABEL only, above. */
+.inspector .compound-children {
+  border-left: var(--a-hairline) solid var(--border);
+}
+
+/* THE 2D DRAG PAD (web/Vector2Pad.svelte) — the XY compound's joint control, the
+   rotation dial's sibling. Square, because the two axes are symmetric and a
+   rectangle would imply one of them is longer than the other. */
+.inspector .vec2pad {
+  flex: none;
+  width: var(--a-vec2pad-size);
+  height: var(--a-vec2pad-size);
+  border: var(--a-hairline) solid var(--border);
+  border-radius: var(--a-radius-control);
+  background: var(--control-bg);
+  color: var(--fg-dim);
+  cursor: grab;
+  touch-action: none; /* the pointer drag owns the gesture, never the scroller */
+}
+.inspector .vec2pad:hover:not(.vec2pad-disabled) {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+/* FOCUS IS OUR OWN STYLE, NEVER THE UA OUTLINE — the app kills that ring
+   globally ("focus is conveyed by our own selection/highlight styles"), so a
+   keyboard user reaching the pad must be told by the border, as every other
+   focusable control here is. */
+.inspector .vec2pad:focus-visible {
+  border-color: var(--a-selection);
+  color: var(--fg);
+}
+/* DRAGGING keeps the accent while the pointer is captured, including when it
+   leaves the square — the gesture is still live, and a control that dimmed
+   mid-drag would read as having been let go. */
+.inspector .vec2pad.vec2pad-dragging {
+  border-color: var(--accent);
+  color: var(--accent);
+  cursor: grabbing;
+}
+/* An EQUATION-BOUND axis makes the pad inert rather than absent: the tooltip is
+   the only place the reason is written, so the control has to stay to carry it
+   (the save-dot rule — a disabled control explains itself). */
+.inspector .vec2pad.vec2pad-disabled {
+  opacity: var(--a-disabled-opacity);
+  cursor: default;
+}
+.inspector .vec2pad svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.inspector .vec2pad line,
+.inspector .vec2pad circle {
+  stroke: currentColor;
+  stroke-width: var(--a-vec2pad-stroke);
+  fill: none;
+}
+/* EXPANDED, the pad is bigger — the user's collapsed `[dragpad]` beside the
+   fields versus the dropped-down `[DragPad]` on its own line. Same control, more
+   room to aim it. */
+.inspector .vec2pad.vec2pad-large {
+  width: var(--a-vec2pad-large-size);
+  height: var(--a-vec2pad-large-size);
+}
+
+/* THE ASPECT CHAIN LOCK (backburner AF), on the Size compound's row. The glyph
+   family is the equation lock chain's (mdi:link / mdi:link-off), so a reader who
+   knows one knows this one; LIT when engaged, for the interp button's reason —
+   a constraint silently changing what a drag does must be visible without
+   hovering, or it is not an answer to "why did my height move?". */
+.inspector .compound-chain {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-control-h);
+  height: var(--a-control-h);
+  padding: 0;
+  border: var(--a-hairline) solid transparent;
+  border-radius: var(--a-radius-control);
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.inspector .compound-chain:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+.inspector .compound-chain.chain-locked {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* Path tooltip content: one line per form (self.<path>, then the absolute

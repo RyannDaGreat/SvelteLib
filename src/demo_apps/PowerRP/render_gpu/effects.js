@@ -68,7 +68,7 @@
  * EXCLUDED, deliberately — the honest boundary (core/registry.effectsInjectable):
  *   - camera (capabilities.purgeable === false): the view/background
  *     definition, not a drawn widget.
- *   - cropbox + anchor_point (capabilities.ghost, no foldsSubtree): no rendered
+ *   - cropbox + empty (capabilities.ghost, no foldsSubtree): no rendered
  *     volume of their own — a crop box is a clip region (its TARGET carries
  *     effects; they ride into the crop content), an anchor point is editor
  *     chrome. A group is ALSO a ghost but folds a composited subtree, so it
