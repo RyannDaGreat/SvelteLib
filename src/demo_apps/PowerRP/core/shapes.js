@@ -33,6 +33,26 @@ const TOP_UP = -Math.PI / 2;        // start angle so polygons/stars point strai
 /** The default decimals for authored path data — short `d` strings, stable doctests. */
 export const PATH_DECIMALS = 3;
 
+/**
+ * `decimals` value asking `num` for the value UNROUNDED — JS's own shortest
+ * round-trip-exact representation, so `+num(v, EXACT_DECIMALS) === v` for every
+ * finite double.
+ *
+ * IT EXISTS FOR MEASUREMENT, NOT AUTHORING. A path normalized purely to be
+ * MEASURED (core/svg_paths.js pathPoints, and pathsBounds through it) must not
+ * have its coordinates rounded by the normalization step — that would make a
+ * bounding rect disagree with the ink by up to half a unit in the last place kept,
+ * for no benefit at all, since no `d` string is ever written from it. Authored
+ * `d` keeps the 3-decimal default: short strings, stable doctests.
+ *
+ * A LARGE `decimals` IS NOT THE SAME THING AND WAS MEASURED WRONG. `toFixed`
+ * counts decimals AFTER THE POINT, not significant digits, so even `toFixed(20)`
+ * is lossy below ~1e-4: over 300k random doubles, 82k did not round-trip (e.g.
+ * -0.000005097449538826027 → -0.00000509744953882603). There is no number that
+ * makes the fixed-precision path exact; only skipping it does.
+ */
+export const EXACT_DECIMALS = "exact";
+
 /** Pure function. Compact fixed-precision number for path data (trailing zeros
  * trimmed) — keeps `d` short and doctests stable.
  *
@@ -40,18 +60,22 @@ export const PATH_DECIMALS = 3;
  * without losing precision it was going to keep: the PDF backend writes 4-decimal
  * operands (pdfNum), so rounding to 3 on the way through would be a fidelity loss
  * introduced by the normalization step alone. Every authoring caller keeps the
- * 3-decimal default and is byte-identical.
+ * 3-decimal default and is byte-identical. EXACT_DECIMALS skips rounding entirely
+ * (see its docblock — measurement, never authoring).
  *
  * @param {number} n - the value
- * @param {number} [decimals] - decimals to keep; defaults to PATH_DECIMALS
+ * @param {number|"exact"} [decimals] - decimals to keep; defaults to PATH_DECIMALS
  * @returns {string}
  *
  * @example num(50) // "50"
  * @example num(33.333333) // "33.333"
  * @example num(-0) // "0"
  * @example num(33.333333, 4) // "33.3333"
+ * @example num(33.333333, EXACT_DECIMALS) // "33.333333"
+ * @example num(-0, EXACT_DECIMALS) // "0"
  */
 export function num(n, decimals = PATH_DECIMALS) {
+  if (decimals === EXACT_DECIMALS) return String(+n + 0); // + 0 normalizes -0 → 0
   return String(+(+n).toFixed(decimals) + 0); // + 0 normalizes -0 → 0
 }
 
