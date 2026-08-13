@@ -9516,6 +9516,19 @@ audio.ae-preview-media {
   color: var(--a-keyed-partial);
 }
 
+/* AN ARROW WITH NOWHERE TO GO (WORKSTREAM KEYFR, user: "The buttons for previous
+   keyframe and next keyframe should be disabled if there is no previous or next
+   keyframe to go to"). Keyed on the ATTRIBUTE, not a companion class, because the
+   .btn block above already rules that `[aria-disabled]` reads as `:disabled` and
+   spelling one state twice is how the two spellings drift. The button stays
+   focusable and hoverable ON PURPOSE — its tooltip is the only place the reason is
+   written down (web/KeyframeControls.svelte's header). */
+.inspector .jumpbtn[aria-disabled="true"],
+.varspanel .jumpbtn[aria-disabled="true"] {
+  opacity: var(--a-disabled-opacity);
+  cursor: default;
+}
+
 /* ── THE SECTION-HEADER KEYFRAME BUBBLE (WORKSTREAM BH) ─────────────────────
    A SMALLER SIBLING of the row triad above, not a new control: it inherits every
    rule in this block (.keybtn/.jumpbtn geometry, the amber .keyed and the dimmer

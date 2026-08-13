@@ -74,10 +74,11 @@ import { reportAction } from "../core/report.js";
 import { bundleDefaults } from "../core/properties.js";
 import {
   multiSelectPanel, multiToolPanel, presetPairs, materialPresetPairs, unifyPairs, retypeSkipReason,
+  universalRows,
   MULTISELECT_MODE, MATERIAL_PRESET_ROW_KIND,
 } from "../core/multiselect.js";
 import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/material_presets.js";
-import { sectionTriState, sectionToggleAction, sectionJumpTarget } from "../core/section_keyframes.js";
+import { sectionTriState, sectionToggleAction, sectionJumpTarget, itemBakePaths } from "../core/section_keyframes.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy
@@ -5751,8 +5752,157 @@ export class PowerRPApp {
    * `sectionJumpTarget` — the union, so the arrows and the bubble beside them
    * describe the same thing). Stays put when there is none. */
   jumpSectionKeyframes(paths, direction) {
-    const target = sectionJumpTarget(paths.map((p) => keyframeIndices(this.doc, p)), this.slideIndex, direction);
+    const target = this.sectionJumpTargetFor(paths, direction);
     if (target !== null) this.slideIndex = target;
+  }
+
+  /**
+   * Query. WHERE a section-wide ‹ / › would land, or null when there is nowhere
+   * — the availability the arrows themselves read (WORKSTREAM KEYFR, user:
+   * "The buttons for previous keyframe and next keyframe should be disabled if
+   * there is no previous or next keyframe to go to").
+   *
+   * SPLIT OUT OF `jumpSectionKeyframes`, WHICH NOW CALLS IT, so the button's
+   * greying and the button's click cannot disagree about whether there is a
+   * target: they are one computation with two readers, the save-dot/save-button
+   * shape. Extracting a second copy of the `keyframeIndices` walk for the UI to
+   * consult would be exactly the hand-maintained duplicate that shape exists to
+   * prevent.
+   *
+   * O(slides × paths) per call and read once per arrow per render — the same cost
+   * the click already paid, now also paid to draw. That is well inside the
+   * Inspector's per-row budget (`hasKeyPath` is already called per path per row),
+   * but it is NOT a command-registry `when` gate, where the hot-path rule in
+   * core/commands.js would forbid a document walk.
+   */
+  sectionJumpTargetFor(paths, direction) {
+    return sectionJumpTarget(paths.map((p) => keyframeIndices(this.doc, p)), this.slideIndex, direction);
+  }
+
+  // ── THE SLIDE-WIDE BAKE (user: "A 'Keyframe Everything In Slide' tool") ────
+
+  /**
+   * Query. Which items "Keyframe Everything In Slide" would bake, and whether the
+   * SELECTION scoped it: `{ids, scoped}`.
+   *
+   * TWO SCOPES, ONE TOOL (the brief's ruling, and the shape every other bulk
+   * keyframe tool here already has): a selection scopes the bake to it, and no
+   * selection bakes the whole slide. A tool that only ever did the whole slide
+   * would make "bake these three widgets" unreachable, and one that required a
+   * selection would make the slide-wide case — the one the title names — need a
+   * Select All first.
+   *
+   * ITEMS ACTIVE ON THIS SLIDE ONLY, which is what `nodes()` already means: an
+   * item hidden here (`active: false`) or not yet created has no visible state to
+   * pin, and baking one would write a whole scene's worth of properties for a
+   * widget that is not on the slide. A selected-but-hidden item therefore drops
+   * out of the scoped bake too — `nodes()` is the filter in BOTH branches, so the
+   * two scopes cannot disagree about what "on this slide" means.
+   */
+  bakeSlideTargets() {
+    const present = this.nodes().map((n) => n.itemId);
+    const selected = new Set(this.selectedIds());
+    if (selected.size === 0) return { ids: present, scoped: false };
+    return { ids: present.filter((id) => selected.has(id)), scoped: true };
+  }
+
+  /**
+   * Command (ONE undo unit). KEYFRAMES EVERYTHING: every keyframeable property of
+   * every target item gets a keyframe on the CURRENT slide, holding the value it
+   * already has.
+   *
+   * IT IS A BAKE, AND THE PICTURE DOES NOT CHANGE. Every write copies the item's
+   * OWN stored value at that path (`storedValueAtPath` — so an equation keyframes
+   * as the equation and a sparse material knob keyframes as its schema default),
+   * which is the section bubble's insert semantics applied item-wide. What changes
+   * is INHERITANCE: the slide's delta stops being sparse, and each pinned value no
+   * longer follows an edit made on an earlier slide. core/section_keyframes.js
+   * `keyframeEverythingHelp` is where that cost is stated to the user, and the
+   * command's help renders it.
+   *
+   * ONE `commit` OVER A FOLDED LOCAL, never a loop of `keyframePath` — the
+   * `toggleSectionKeyframes` rule, and far more load-bearing here: a slide-wide
+   * bake is thousands of leaves, and a per-leaf undo entry would make the tool
+   * impossible to take back.
+   *
+   * AN IN-PROGRESS TEXT/LATEX EDIT IS COMMITTED FIRST (`dismissEdit` —
+   * makeSelectionStatic's rule): it is a pending write on an item this call is
+   * about to pin, so it must land in the state being baked rather than be lost to
+   * the commit below, which writes `this.doc` directly and knows nothing about
+   * previewDelta.
+   *
+   * A PROPERTY WITH NO VALUE IS SKIPPED, AND THE SKIP IS COUNTED OUT LOUD. This
+   * is the one thing about the bake that had to be MEASURED rather than reasoned,
+   * and the measurement changed the design. On a real deck (examples/demo, slide 1,
+   * five widgets) 33 of 161 declared paths hold NOTHING: `strokeOffset`,
+   * `strokeCapStart`, `morph`, `delay` and friends are absent from the fold AND
+   * absent from `plugin.defaults` — the plugin's own `emit()` supplies a fallback
+   * at paint time and the property genuinely has no value to pin. Writing one
+   * anyway is not merely useless, it is SILENT JUNK: `keyframed(doc, i, path,
+   * undefined)` leaves an EMPTY `{}` item object in the delta, `hasKeyframe` reads
+   * false, and JSON.stringify drops the key — so the tool would report success
+   * while keyframing 128 of the 161 things its own title promised.
+   *
+   * So the filter is on `undefined` and the remainder is REPORTED, never hidden:
+   * "Keyframe Everything In Slide" is a tool whose whole contract is the word
+   * EVERYTHING, and a tool that quietly means "most" is the shape this codebase
+   * forbids. The report is a console line and not a refusal because the skips are
+   * CORRECT — there is nothing there to key — and refusing the whole bake over
+   * them would make the tool unusable on every real deck.
+   *
+   * NO TARGETS = NO WRITES AND NO UNDO ENTRY. `commit` refuses an unchanged
+   * document, so a bake of an already-fully-baked slide pushes nothing either.
+   */
+  keyframeEverythingInSlide() {
+    const { ids } = this.bakeSlideTargets();
+    if (ids.length === 0) return;
+    this.dismissEdit();
+    const paths = this.bakePathsFor(ids);
+    const written = paths.filter((p) => this.storedValueAtPath(p) !== undefined);
+    let doc = this.doc;
+    for (const path of written) doc = keyframed(doc, this.slideIndex, path, this.storedValueAtPath(path));
+    const skipped = paths.length - written.length;
+    if (skipped > 0)
+      console.warn(`PowerRP: Keyframe Everything In Slide keyframed ${written.length} propert${written.length === 1 ? "y" : "ies"} on slide ${this.slideIndex} across ${ids.length} widget(s), and SKIPPED ${skipped} that hold no value at all (a property absent from both the slide and the widget's defaults has nothing to pin — its plugin supplies a fallback when it paints). Nothing was lost; one undo takes the rest back.`);
+    this.commit(doc);
+  }
+
+  /**
+   * Query. Every state path the bake writes for `ids` — each item's plugin rows
+   * PLUS the universal rows no plugin declares (`universalRows` owns that set,
+   * including the camera's exemption from `active`).
+   *
+   * THE DECLARED ROWS ARE THE AUTHORITY, NOT THE STORED FOLD. A property the
+   * author never touched is absent from the fold and is exactly what a bake is
+   * for; `name`/`type` are stored and are NOT keyframeable here.
+   * core/section_keyframes.js `itemBakePaths` states both halves of that argument.
+   *
+   * `type` IS EXCLUDED HERE AND THE FLAG CANNOT COME FROM `universalRows`, which
+   * is a real asymmetry and not an oversight. `universalRows` returns the row's
+   * CONTRACT and carries no `keyframes` aspect at all — web/Inspector.svelte adds
+   * `keyframes: false` to `type` and `name` at its own call site, and it does so
+   * because R6-6.7 ruled that widget type IS keyframeable in principle and is
+   * blocked only on the retype command writing at the CURRENT slide. So the flag
+   * is a statement about a MISSING COMMAND, not about the property, and the two
+   * consumers must state it independently until that command exists. A bake that
+   * pinned `type` would fan a bare type string into the delta and leave the item
+   * holding its old plugin's state bag — the "a bare type write is not enough"
+   * defect core/retype.js opens with. (`name` needs no exclusion: it is not a
+   * universal row at all, and no plugin declares it.)
+   *
+   * MEASURED, not assumed: the first version of this method omitted the filter and
+   * `tests/keyfr_tools_test.js` caught it baking `type` on every widget.
+   *
+   * A node with no plugin is impossible here (`nodes()` resolves one per item), so
+   * there is no fallback branch to hide a missing type behind.
+   */
+  bakePathsFor(ids) {
+    const byId = new Map(this.nodes().map((n) => [n.itemId, n]));
+    return ids.flatMap((id) => {
+      const node = byId.get(id);
+      const universal = universalRows([{ plugin: node.plugin }]).filter((r) => r.key !== "type");
+      return itemBakePaths(id, [...(node.plugin.inspector ?? []), ...universal]);
+    });
   }
 
   // ── Variables (keyframable state.vars subtree — the Variables Panel) ──────

@@ -49,6 +49,27 @@
   No new core function was written for either fix — see core/section_keyframes.js
   for the pure logic and web/app.svelte.js for the two methods reused verbatim.
 
+  WORKSTREAM KEYFR (2026-08-12) MADE THE ARROWS SAY WHEN THEY CANNOT GO (user:
+  "The buttons for previous keyframe and next keyframe should be disabled if there
+  is no previous or next keyframe to go to"). The condition was ALREADY computed
+  and ALREADY thrown away: `sectionJumpTarget` returns null and
+  `jumpSectionKeyframes` "stays put when there is none", so on the first and last
+  keyframed slide these were live-looking controls that silently did nothing.
+
+  THE HOUSE FORM IS `aria-disabled` + A HANDLER GUARD, NEVER THE NATIVE ATTRIBUTE
+  (the toolbar's Save-button ruling): a natively disabled button is not focusable,
+  so a keyboard user could never reach the tooltip — and the tooltip is the ONLY
+  place the reason is written down. The guard is what actually refuses the click;
+  `aria-disabled` is what says so — and it is ALSO what carries the greying, via
+  app.css's `.jumpbtn[aria-disabled="true"]` rule, because the app already styles
+  `[aria-disabled]` to read exactly as `:disabled` (app.css's `.btn` block states
+  that rule and the reason). A second `.unavailable` class beside the attribute
+  would be one state spelled twice — the drift this codebase keeps paying for.
+
+  THE SENTENCE IS core's (`sectionJumpTip`), not this file's, for the reason the
+  toggle's tooltip is: the direction's availability and the words describing it
+  must come from ONE place or a future change moves one and not the other.
+
   Renders exactly the three buttons (no wrapper) so it drops into each panel's
   existing `.kf-controls` grid cell — the Variables Panel appends its own
   delete button after it in the same cell. Styling is the global app.css
@@ -59,6 +80,7 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { keyframeTriState } from "../core/multiselect.js";
+  import { sectionJumpTip } from "../core/section_keyframes.js";
 
   let {
     /** @type {object} The PowerRPApp controller. */
@@ -94,10 +116,30 @@
   function toggleKey() {
     app.toggleSectionKeyframes(keyPaths);
   }
+
+  // WHERE EACH ARROW WOULD LAND, or null for "nowhere" — ONE read of the app's
+  // own `sectionJumpTargetFor`, which `jumpSectionKeyframes` also calls, so the
+  // greying and the click are the same computation and cannot disagree.
+  let prevTarget = $derived(app.sectionJumpTargetFor(keyPaths, -1));
+  let nextTarget = $derived(app.sectionJumpTargetFor(keyPaths, +1));
+
+  /** Command. Jumps, unless there is nowhere to jump — THE GUARD that makes
+   * `aria-disabled` real. Native `disabled` is not used here (see the header:
+   * it would make the button unfocusable and its reason unreachable), so a
+   * disabled-looking arrow is still clickable and this is what refuses it. */
+  function jump(direction, target) {
+    if (target === null) return;
+    app.jumpSectionKeyframes(keyPaths, direction);
+  }
 </script>
 
-<Tooltip text="Previous keyframe">
-  <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpSectionKeyframes(keyPaths, -1)}>
+<Tooltip text={sectionJumpTip(prevTarget, -1)}>
+  <button
+    class="jumpbtn"
+    aria-disabled={prevTarget === null}
+    aria-label="Previous keyframe"
+    onclick={() => jump(-1, prevTarget)}
+  >
     <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
   </button>
 </Tooltip>
@@ -112,8 +154,13 @@
     <iconify-icon icon={TRI_ICONS[triState]} width="17" height="17"></iconify-icon>
   </button>
 </Tooltip>
-<Tooltip text="Next keyframe">
-  <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpSectionKeyframes(keyPaths, +1)}>
+<Tooltip text={sectionJumpTip(nextTarget, +1)}>
+  <button
+    class="jumpbtn"
+    aria-disabled={nextTarget === null}
+    aria-label="Next keyframe"
+    onclick={() => jump(+1, nextTarget)}
+  >
     <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
   </button>
 </Tooltip>

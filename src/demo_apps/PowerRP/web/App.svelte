@@ -57,6 +57,7 @@
   import { humanReadableFileSize } from "./fileSize.js";
   import { PowerRPApp, THEME_FAMILIES, groupedThemeFamilies } from "./app.svelte.js";
   import { LABEL_DIVIDER_PROPERTY } from "./labelFrac.js";
+  import { keyframeEverythingHelp } from "../core/section_keyframes.js"; // the bake tool's help — see it for why a bake is a tool and not a behaviour
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
   import { withSimulationFrozen } from "../core/simulation_history.js"; // documentState is a HYPOTHETICAL — see it
@@ -1249,6 +1250,40 @@
     // someone who wants the sweep, and leaving it unclaimed would land them on the
     // local tool and quietly do a fraction of what they asked.
     { id: "make-static", title: "Make Static from Current Slide (every slide from where it appears until it is hidden)", icon: "mdi:motion-pause-outline", aliases: ["remove keyframes everywhere", "remove all keyframes", "clear keyframes on every slide", "freeze", "stop animating", "unanimate", "flatten animation"], when: (a) => a.makeStaticTargets().length > 0, requires: MAKE_STATIC_REQUIRES, help: MAKE_STATIC_HELP, plural: PLURAL_EACH, run: (a) => a.makeSelectionStatic() },
+    // ── THE SLIDE-WIDE BAKE (WORKSTREAM KEYFR; user: "A \'Keyframe Everything In
+    // Slide\' tool"). It sits HERE, between the two SUBTRACTIVE keyframe tools
+    // above and the z-order block, because it is their exact inverse and the
+    // three should be read together: those two remove keyframes (this slide /
+    // the whole stretch), this one adds every keyframe there is.
+    //
+    // IT IS THE ADDITIVE PRIMITIVE'S MISSING SCOPE. "Keyframe all of it" already
+    // exists as the Inspector SECTION bubble's click — per section, per item.
+    // The tool is that same act with the widest scope, built by calling the same
+    // core path collector (core/section_keyframes.js `itemBakePaths`), so the
+    // bubble and the tool cannot key different sets.
+    //
+    // THE HELP OWNS THE WORD "BAKE" and states the sparse-delta cost, because the
+    // Aug-4 feature review ruled exactly that boundary: a bake is fine as an
+    // EXPLICIT action and a bug as implicit behaviour, so the explicitness has to
+    // be carried in the sentence the user reads before clicking. It is a plain
+    // STRING naming both scopes — `help` may not be a function (core/commands.js:
+    // "A PLAIN STRING deliberately"; every surfacing renders it directly, so a
+    // function would print its own source into a tooltip). `requires` below IS a
+    // function, which is the difference `commandUnavailableReason` exists for.
+    //
+    // THE GATE IS A FUNCTION because two different things disqualify it and each
+    // has its own true sentence — the `save-project` precedent, and the reason
+    // `commandUnavailableReason` exists. Read through that helper, never off
+    // `cmd.requires`, or the surfacing renders this arrow function's source text.
+    //
+    // THE ALIASES ARE SUPERSTRINGS, not synonyms (the lesson `remove-slide-keyframes`
+    // records twenty lines above): rpFuzzyScore needs the query's letters as a
+    // SUBSEQUENCE, so "bake slide" must appear with the words a user threads
+    // through it. "keyframe all" / "keyframe everything" / "bake this slide" /
+    // "bake every widget on this slide" cover the phrasings that actually get
+    // typed, and "pin all values to this slide" catches the one that describes the
+    // EFFECT rather than the tool.
+    { id: "keyframe-everything-in-slide", title: "Keyframe Everything In Slide", icon: "mdi:vector-point-plus", aliases: ["bake slide", "bake this slide", "bake every widget on this slide", "keyframe all", "keyframe everything", "keyframe every property", "pin all values to this slide", "add keyframes for everything"], when: (a) => a.bakeSlideTargets().ids.length > 0, requires: (a) => (a.selectedIds().length > 0 ? "at least one selected widget that is actually on this slide — everything selected here is hidden or not yet created, and a widget that is not on the slide has no values to pin to it" : "at least one widget on this slide — there is nothing here to keyframe"), help: keyframeEverythingHelp, plural: PLURAL_EACH, run: (a) => a.keyframeEverythingInSlide() },
     { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.reorderSelection(+1) },
     { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.reorderSelection(-1) },
     { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.sendToExtreme(+1) },
