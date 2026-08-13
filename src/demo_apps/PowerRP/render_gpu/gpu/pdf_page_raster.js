@@ -782,8 +782,9 @@ export function bestCachedScale(wantScale, cachedScales) {
  * ensurePdfPageRasterized adds its own: the frame about to paint uses this Image
  * SYNCHRONOUSLY, so the trim must not free it out from under the draw.
  *
- * @example pdfBestCachedPageRef("blob:x", 1, 2.0) // {ref: "pdfpage:blob:x:1:1.9", scale: 1.9}
- * @example pdfBestCachedPageRef("blob:never-loaded", 1, 2.0) // null
+ * @example pdfBestCachedPageRef("blob:never-rasterized", 1, 2.0) // null (cold cache)
+ * @example // with scales 1.0 and 1.9 resident for page 1:
+ * @example //   pdfBestCachedPageRef(src, 1, 2.0) -> {ref: "pdfpage:<src>:1:1.9", scale: 1.9}
  */
 export function pdfBestCachedPageRef(src, page, wantScale) {
   const prefix = `${src}|${page}|`;
@@ -854,8 +855,11 @@ export function pdfBestCachedRegionRef(src, page, wantScale) {
  * @param {boolean} interactive - false only while an editor pointer gesture is live
  * @returns {string|null} an image-registry ref, or null when nothing is resident
  *
- * @example pdfPageRasterRefForDisplay("blob:x", 1, 2.0) // "pdfpage:blob:x:1:2" (requests it)
- * @example pdfPageRasterRefForDisplay("blob:x", 1, 2.0, false) // "pdfpage:blob:x:1:1.9" (draws what is resident, requests nothing)
+ * @example pdfPageRasterRefForDisplay("blob:never-rasterized", 1, 2.0, false) // null (nothing resident; caller draws the placeholder)
+ * @example // interactive (the default) always returns a ref and REQUESTS that scale:
+ * @example //   pdfPageRasterRefForDisplay(src, 1, 2.0) -> "pdfpage:<src>:1:2"
+ * @example // dragging, with 1.9 already resident:
+ * @example //   pdfPageRasterRefForDisplay(src, 1, 2.0, false) -> "pdfpage:<src>:1:1.9" (requests nothing)
  */
 /**
  * THE INTERACTION-LOD PLACEHOLDER — the flat fill a PDF-family widget draws while a
