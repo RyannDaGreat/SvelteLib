@@ -141,11 +141,179 @@ export function particleOps(particles, color, opacity) {
     }));
 }
 
+/**
+ * THE PARTICLE PRESETS — twelve REAL PHYSICAL PHENOMENA (the metaballs.js
+ * precedent: "each is a named REAL FLUID whose knobs follow its physics"), here
+ * applied to ballistic emission instead of a fused surface. Every knob traces to
+ * how the named thing actually moves: embers and bubbles carry NEGATIVE gravityY
+ * because buoyancy overcomes weight; a fountain's positive gravity is what turns
+ * its launch into an arc; rain and rocket exhaust are narrow and fast because
+ * they are jets, snow and fireflies are wide and slow because they are not.
+ *
+ * EVERY PRESET SETS ALL 14 PARTICLE KNOBS (the sky.js:73-82 rule, restated for
+ * this single-purpose family: with one bundle instead of several, "every knob of
+ * its own family" IS every particle* row). applyPreset overlays `props` onto the
+ * current frame, so a knob one preset omitted would keep whatever the
+ * PREVIOUSLY HOVERED preset left there — running down the list to compare looks
+ * is the whole point of the pane, and a partial preset would make that order-
+ * dependent.
+ *
+ * NO PRESET SHIPS rate 0 OR lifetime 0 — either makes the emitter a ghost
+ * (particlesPlugin.isGhost), i.e. a preset that would draw nothing.
+ *
+ * SEED IS NEVER THE DIFFERENTIATOR. Every preset below differs from every other
+ * in rate, lifetime, angle, spread, speed, gravity, size, color, fade or shrink
+ * — the actual physics — and particleSeed is set (to a small varied integer,
+ * so two presets never look coincidentally hand-synced) but never carries the
+ * distinction by itself; tests/particles_presets_test.js's distinctness gate
+ * renders real pixels at a fixed particleTime, which a seed-only change could
+ * pass without the presets differing in any way that matters.
+ *
+ * ORDER: upward-drifting phenomena (sparkler, embers, bubbles, steam, magic,
+ * fireflies) first, then the ballistic/gravity-dominated ones (fountain, rocket
+ * exhaust, confetti, rain), then the slow ambient ones (snowfall, dust motes).
+ */
+const PRESETS = [
+  {
+    name: "Sparkler",
+    description: "A handheld firework: a tight, fast jet of hot gold sparks fighting real gravity, burning out to nothing well before they'd fall far.",
+    props: {
+      particleRate: 120, particleLifetime: 0.5,
+      particleAngle: 270, particleSpread: 90, particleSpeedMin: 80, particleSpeedMax: 220,
+      particleGravityX: 0, particleGravityY: 150,
+      particleSizeMin: 1, particleSizeMax: 2.5,
+      particleColor: "#ffb400", particleFade: 1, particleShrink: 0.6, particleSeed: 3,
+    },
+  },
+  {
+    name: "Campfire Embers",
+    description: "Glowing ash lofted by the fire's own updraft: gravityY is NEGATIVE, because hot embers are lighter than the air around them and rise until they cool and wink out.",
+    props: {
+      particleRate: 18, particleLifetime: 3.5,
+      particleAngle: 270, particleSpread: 70, particleSpeedMin: 15, particleSpeedMax: 45,
+      particleGravityX: 8, particleGravityY: -35,
+      particleSizeMin: 1.5, particleSizeMax: 3.5,
+      particleColor: "#ff7a1a", particleFade: 1, particleShrink: 0.5, particleSeed: 11,
+    },
+  },
+  {
+    name: "Rising Bubbles",
+    description: "Air escaping underwater: buoyancy again wins over weight, so gravityY is negative and steady, and the bubbles wobble sideways on the way up rather than flying outward.",
+    props: {
+      particleRate: 8, particleLifetime: 4,
+      particleAngle: 270, particleSpread: 30, particleSpeedMin: 20, particleSpeedMax: 35,
+      particleGravityX: 0, particleGravityY: -22,
+      particleSizeMin: 3, particleSizeMax: 7,
+      particleColor: "#1ec8ffcc", particleFade: 0.4, particleShrink: 0, particleSeed: 22,
+    },
+  },
+  {
+    name: "Steam",
+    description: "Vapor off a hot cup: a soft upward billow that spreads wide as it rises and vanishes fast, a light drift standing in for the negative buoyancy that lifts it.",
+    props: {
+      particleRate: 30, particleLifetime: 1.8,
+      particleAngle: 270, particleSpread: 110, particleSpeedMin: 10, particleSpeedMax: 30,
+      particleGravityX: 0, particleGravityY: -12,
+      particleSizeMin: 4, particleSizeMax: 9,
+      particleColor: "#c9d6dd70", particleFade: 1, particleShrink: 0.1, particleSeed: 6,
+    },
+  },
+  {
+    name: "Magic Sparkle",
+    description: "A small radial shimmer with no gravity of its own — an enchantment, not a physical object — each mote flaring out, fading and shrinking to nothing.",
+    props: {
+      particleRate: 40, particleLifetime: 1.2,
+      particleAngle: 270, particleSpread: 360, particleSpeedMin: 20, particleSpeedMax: 70,
+      particleGravityX: 0, particleGravityY: -6,
+      particleSizeMin: 1, particleSizeMax: 3,
+      particleColor: "#c02bff", particleFade: 1, particleShrink: 0.8, particleSeed: 44,
+    },
+  },
+  {
+    name: "Fireflies",
+    description: "A summer-evening drift: very few, very slow, almost weightless motes wandering in every direction, glowing steadily for seconds at a time rather than streaking or falling.",
+    props: {
+      particleRate: 3, particleLifetime: 6,
+      particleAngle: 270, particleSpread: 360, particleSpeedMin: 4, particleSpeedMax: 14,
+      particleGravityX: 0, particleGravityY: -2,
+      particleSizeMin: 2, particleSizeMax: 4,
+      particleColor: "#d4ff5c", particleFade: 0.3, particleShrink: 0, particleSeed: 57,
+    },
+  },
+  {
+    name: "Fountain",
+    description: "A jet aimed straight up under real gravity: launch speed and downward acceleration are both large, so the water arcs over visibly instead of just drifting — the ballistic parabola gravity alone can draw.",
+    props: {
+      particleRate: 90, particleLifetime: 1.6,
+      particleAngle: 270, particleSpread: 18, particleSpeedMin: 180, particleSpeedMax: 260,
+      particleGravityX: 0, particleGravityY: 320,
+      particleSizeMin: 1.5, particleSizeMax: 3,
+      particleColor: "#bfe0ff", particleFade: 0.6, particleShrink: 0, particleSeed: 2,
+    },
+  },
+  {
+    name: "Rocket Exhaust",
+    description: "Hot gas blasted downward from a climbing rocket: high speed, a narrow cone, and a burn so fast the flame is gone (faded and shrunk to nothing) well before gravity could bend its path.",
+    props: {
+      particleRate: 200, particleLifetime: 0.35,
+      particleAngle: 90, particleSpread: 25, particleSpeedMin: 250, particleSpeedMax: 400,
+      particleGravityX: 0, particleGravityY: 60,
+      particleSizeMin: 2, particleSizeMax: 5,
+      particleColor: "#ffb347", particleFade: 1, particleShrink: 0.7, particleSeed: 8,
+    },
+  },
+  {
+    name: "Confetti Burst",
+    description: "A full radial pop under strong gravity: every particle launches at once in every direction, then arcs back down like the paper scraps it is, without fading or shrinking on the way.",
+    props: {
+      particleRate: 260, particleLifetime: 1.5,
+      particleAngle: 270, particleSpread: 360, particleSpeedMin: 120, particleSpeedMax: 320,
+      particleGravityX: 0, particleGravityY: 260,
+      particleSizeMin: 2, particleSizeMax: 4,
+      particleColor: "#ff3d7f", particleFade: 0, particleShrink: 0, particleSeed: 19,
+    },
+  },
+  {
+    name: "Rain",
+    description: "A downpour: a tight near-vertical jet, fast and heavy, with neither fade nor shrink — a raindrop looks the same the instant before it lands as it did leaving the cloud.",
+    props: {
+      particleRate: 260, particleLifetime: 1.1,
+      particleAngle: 95, particleSpread: 6, particleSpeedMin: 340, particleSpeedMax: 420,
+      particleGravityX: 20, particleGravityY: 260,
+      particleSizeMin: 0.6, particleSizeMax: 1.2,
+      particleColor: "#9db8cc", particleFade: 0, particleShrink: 0, particleSeed: 33,
+    },
+  },
+  {
+    name: "Snowfall",
+    description: "A gentle drift down: wide spread, low speed and weak gravity so flakes drift and settle rather than fall in straight lines, living long enough to cross the whole frame.",
+    props: {
+      particleRate: 80, particleLifetime: 6,
+      particleAngle: 90, particleSpread: 150, particleSpeedMin: 8, particleSpeedMax: 20,
+      particleGravityX: 4, particleGravityY: 14,
+      particleSizeMin: 2, particleSizeMax: 5,
+      particleColor: "#ffffff", particleFade: 0.1, particleShrink: 0, particleSeed: 5,
+    },
+  },
+  {
+    name: "Dust Motes",
+    description: "Particles hanging in a sunbeam: barely moving, barely falling, just enough drift and gravity to keep them turning over instead of frozen, visible for a long, slow life.",
+    props: {
+      particleRate: 1.5, particleLifetime: 8,
+      particleAngle: 270, particleSpread: 360, particleSpeedMin: 2, particleSpeedMax: 8,
+      particleGravityX: 1, particleGravityY: 4,
+      particleSizeMin: 0.5, particleSizeMax: 1,
+      particleColor: "#6b5a3a55", particleFade: 0.5, particleShrink: 0, particleSeed: 71,
+    },
+  },
+];
+
 export const particlesPlugin = {
   type: "particles",
   ephemeral: EPHEMERAL.NONE,
   title: "Particles",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  presets: PRESETS,
   defaults: {
     type: "particles", x: 200, y: 200, w: 80, h: 80, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation
