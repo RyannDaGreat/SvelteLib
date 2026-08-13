@@ -424,5 +424,14 @@ test("every registered plugin's exec declaration is sound, and the four kinds ar
   assert.deepEqual([...EXEC_KINDS].filter((k) => kinds.has(k)).sort(), [...EXEC_KINDS].sort(), "the roster must exercise all four kinds, or one of them is untested doctrine");
   // …and the overwhelming majority are PURE, which is the point of the taxonomy:
   // every widget that existed before this feature still declares nothing.
-  assert.ok(allPlugins.filter((p) => nodeExecKind(p) === "pure").length > allPlugins.length - 10);
+  //
+  // STATED AS A PROPORTION, NOT A HEADROOM OF TEN. It was `> allPlugins.length - 10`,
+  // which is not the claim above — it is a budget of exactly ten exec widgets, and it
+  // went stale the day the per-frame trigger family (core/exec_frame.js) landed four
+  // more. The number 10 was never the point; "the overwhelming majority" is, and a
+  // proportion says that in the units the sentence is written in. A roster where more
+  // than a fifth of all widgets declare exec pins would genuinely mean the taxonomy
+  // had stopped being an opt-in, which is what this is here to notice.
+  const pure = allPlugins.filter((p) => nodeExecKind(p) === "pure").length;
+  assert.ok(pure > allPlugins.length * 0.8, `only ${pure} of ${allPlugins.length} widgets are exec-PURE — the taxonomy is supposed to be an opt-in that almost every widget ignores`);
 });

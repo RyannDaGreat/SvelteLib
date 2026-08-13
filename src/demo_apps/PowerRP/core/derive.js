@@ -1722,8 +1722,30 @@ export function nodePortAnchors(node) {
  * WIRES ARE NOT WIDGETS (user ruling): this returns plain geometry records, never
  * render nodes, and nothing here ever enters the item map.
  *
+ * ── THE FLASH IS AN ARGUMENT, NOT A LOOKUP (per-frame triggers) ─────────────
+ * > *"On frames where triggers fire, the wires connecting them should change color
+ * > to show that something happened."* (user, 2026-08-12)
+ *
+ * `firedKeys` is the set of `"<fromItem>.<fromPort>"` that pulsed THIS frame —
+ * `core/exec_frame.firedWireKeys(...)` builds it from the frame domain's step. A wire
+ * whose source pin is in the set carries `fired: true`, and
+ * `core/node_chrome.wireOps` paints it in the flash colour.
+ *
+ * IT IS PASSED IN RATHER THAN READ, and that keeps this function PURE: whether a
+ * trigger fired is a fact about a simulation STEP, and a `deriveWires` that consulted
+ * the ambient history table would produce different geometry on two derives of one
+ * frame — the exact thing `core/exec_frame.js` is shaped to prevent one level up.
+ * Passing `undefined` (every existing caller) stamps nothing and returns the same
+ * records it always did, so nothing that predates the frame domain changed.
+ *
+ * DERIVED, NEVER STORED: `plugins/node_display.js` states the rule and
+ * `plugins/node_button.js` the sharp version — *"a moment is not a value"*. A
+ * `fired` leaf in the document would be ephemeral state written to disk.
+ *
  * @param {object[]} nodes - derived render nodes
- * @returns {object[]} [{from: {item, port, x, y}, to: {item, port, x, y}, type}]
+ * @param {Set<string>} [firedKeys] - "<item>.<port>" for every exec pin that pulsed
+ *   this frame (core/exec_frame.firedWireKeys), or undefined for none
+ * @returns {object[]} [{from: {item, port, x, y}, to: {item, port, x, y}, type, fired?}]
  *
  * @example deriveWires([]) // []
  * @example // a→b on a number port: one wire, colored by the SOURCE type
@@ -1731,7 +1753,7 @@ export function nodePortAnchors(node) {
  * @example // AN EXEC WIRE IS STORED ON THE OTHER SIDE and draws identically:
  * @example deriveWires([{itemId: "a", world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80, exec: {then: {item: "b", port: "run"}}}, plugin: {ports: () => ({outputs: [{key: "then", type: "exec"}]})}}, {itemId: "b", world: {x: 200, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({inputs: [{key: "run", type: "exec"}]})}}])[0].type // "exec"
  */
-export function deriveWires(nodes) {
+export function deriveWires(nodes, firedKeys) {
   const anchorsByItem = new Map();
   for (const n of nodes ?? []) {
     if (typeof n.plugin?.ports !== "function") continue;
@@ -1740,7 +1762,11 @@ export function deriveWires(nodes) {
   const wires = [];
   const push = (src, dst, from, to) => {
     if (!src || !dst) return;
-    wires.push({ from: { ...from, x: src.x, y: src.y }, to: { ...to, x: dst.x, y: dst.y }, type: src.type });
+    // `fired` is stamped ONLY when true, so a wire on a frame with no pulse — which
+    // is every wire on every frame of every deck that predates the frame domain — is
+    // the byte-identical record it always was, with no new key.
+    const fired = firedKeys?.has(`${from.item}.${from.port}`) ? { fired: true } : null;
+    wires.push({ from: { ...from, x: src.x, y: src.y }, to: { ...to, x: dst.x, y: dst.y }, type: src.type, ...fired });
   };
   for (const n of nodes ?? []) {
     const myAnchors = anchorsByItem.get(n.itemId) ?? [];

@@ -17,7 +17,21 @@
  *                order", which is what makes a BRANCH a branch
  *   execLatent   (ctx) => number    — declare it and the node is LATENT: it
  *                schedules its continuation that many boundaries ahead
+ *   frameStep    (ctx) => {state, fired, outputs} — declare it and the node is a
+ *                FRAME-DOMAIN node: it steps ONCE PER RENDERED FRAME and carries
+ *                state between frames, which makes it SIMULATED (core/exec_frame.js).
+ *                The slide-domain `exec*` hooks above and this one are two different
+ *                axes; a widget declares whichever it lives on, and almost never both.
+ *   activate     "<handlerId>"      — the double-click handler (web/widget_handlers.js)
  *   readout      (s) => string      — the one line the card prints
+ *   extra        object             — anything else spread onto the plugin verbatim
+ *
+ * THIS FACTORY IS A WHITELIST, SO A NEW PROTOCOL COSTS A LINE IN IT. Writing a key
+ * the list does not name gets it SILENTLY DROPPED — the plugins-half of the
+ * missing-named-import hazard CLAUDE.md records, and it has already cost this
+ * codebase a browser probe once (plugins/node_abc.js's header, on the
+ * `controlNodePlugin` side). `extra` exists as the general escape hatch; a protocol
+ * the app itself reads should get its own named line, so the drop cannot happen.
  *
  * IT NEVER DECLARES WHERE ANYTHING GOES. `nodeCard` / `nodeValueText` / `portBeads`
  * place themselves against the resolved box, per R7-10's unbypassable-layout rule,
@@ -188,14 +202,49 @@ export function execNodePlugin(spec) {
     ...(spec.execNext ? { execNext: spec.execNext } : {}),
     ...(spec.execLatent ? { execLatent: spec.execLatent } : {}),
     ...(spec.computeOutputs ? { computeOutputs: spec.computeOutputs } : {}),
+    // THE FRAME DOMAIN (core/exec_frame.js). Declaring `frameStep` is how a widget
+    // says "I am SIMULATED", and `core/document.documentIsSimulated` reads it off the
+    // plugin to decide whether a render may be strided-sharded — so a spec key that
+    // silently failed to arrive here would not produce a broken node, it would
+    // produce a WRONG VIDEO on a green exit code.
+    //
+    // IT IS LISTED EXPLICITLY BECAUSE THIS FACTORY IS A WHITELIST, and that is a
+    // measured hazard rather than a theoretical one: `core/control_nodes.js` spreads
+    // only `spec.extra`, and `plugins/node_abc.js`'s header records what a top-level
+    // `codeEditor` cost when it was dropped without a word (a dead double-click on a
+    // green build, caught by nothing in the suite). This factory has neither an
+    // `extra` nor an `activate` passthrough, so every new protocol a trigger node
+    // gains must be added on this line — see `activate` below, added with it.
+    ...(spec.frameStep ? { frameStep: spec.frameStep } : {}),
+    // A DOUBLE-CLICK HANDLER, for the same reason. Without it a trigger node CANNOT
+    // declare one at all (`core/control_nodes.js:386` has had this since it shipped),
+    // and the failure mode is silence: the widget carries no `activate`, so
+    // double-clicking it does nothing and no test asks why. The custom logic node is
+    // the first trigger node that needs it.
+    ...(spec.activate ? { activate: spec.activate } : {}),
+    ...(spec.extra ?? {}),
     /**
      * Pure function. The card, its one-line readout, the beads, the rim.
      *
      * STAYS PURE, and for a trigger node that is the whole point: the card shows
-     * what the node WOULD do, never whether it fired. Whether it fired is a fact
-     * about a POSITION, and the picture at a position already reflects it — the
-     * effect is in the values of the widgets it wrote. A "firing" flash would be
-     * state carried from frame N−1, which is the one kind this app has none of.
+     * what the node WOULD do, never whether it fired. For a SLIDE-domain node,
+     * whether it fired is a fact about a POSITION, and the picture at a position
+     * already reflects it — the effect is in the values of the widgets it wrote.
+     *
+     * ── AMENDED 2026-08-13: THE OLD PARENTHETICAL WAS OVERBROAD ──────────────
+     * This used to end *"A 'firing' flash would be state carried from frame N−1,
+     * which is the one kind this app has none of."* That was written before R7-9
+     * named SIMULATED state as a legal FOURTH kind, and the frame domain
+     * (core/exec_frame.js) is built on it — so state carried from frame N−1 is no
+     * longer the kind this app has none of. Two things about the conclusion survive
+     * intact, which is why the code below did not change:
+     *   `emit()` IS STILL PURE, and must be. Its signature carries only item state,
+     *     so a card that painted its own firing would be reading something not in
+     *     it — and two derives of one frame could then paint different cards.
+     *   THE FLASH GOES ON THE WIRE, which is DERIVED geometry rather than a widget's
+     *     emitted picture (core/derive.deriveWires takes the fired set as an
+     *     argument, core/node_chrome.wireOps paints it). That is where the user
+     *     asked for it anyway: *"the wires connecting them should change color"*.
      */
     emit(s, _target, world) {
       const box = nodeBox(s);

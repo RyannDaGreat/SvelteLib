@@ -1171,6 +1171,30 @@ export const WIRE_HALO_INK = NODE_BODY;
 export const WIRE_HALO_OPACITY = 0.55;
 
 /**
+ * THE FLASH — what a wire looks like on a frame its trigger fired.
+ *
+ * > *"On frames where triggers fire, the wires connecting them should change color
+ * > to show that something happened."* (user, 2026-08-12)
+ *
+ * ── WHY A NEAR-WHITE AND NOT A HUE ─────────────────────────────────────────
+ * Every hue in this app's wire vocabulary already MEANS something: `portColor` gives
+ * each port TYPE its own, and that is the one thing a wire's colour says. A flash in
+ * some sixth hue would read as "this wire changed type", which is the opposite of
+ * true. A near-white is outside the type palette entirely, so it reads as
+ * BRIGHTNESS — the wire lighting up — rather than as a different kind of value. It is
+ * also the same answer Unreal reached for its exec pins, and for the same reason
+ * `core/nodeflow.js` gives for the exec colour being deliberately unsaturated:
+ * control is not a kind of value.
+ *
+ * ── AND IT IS THICKER, BECAUSE COLOUR ALONE IS NOT AN ANSWER ────────────────
+ * A flash that is only a hue change is invisible to a colour-blind viewer and nearly
+ * invisible on a projector. The width carries the same information redundantly, which
+ * is the accessible construction and costs nothing.
+ */
+export const WIRE_FLASH_INK = "#f2f6ff";
+export const WIRE_FLASH_WIDTH_EXTRA = 1.5;
+
+/**
  * Pure function. The display-list ops for ONE wire, in WORLD space: a halo stroke
  * and the wire itself, both along the same cubic bezier.
  *
@@ -1185,7 +1209,15 @@ export const WIRE_HALO_OPACITY = 0.55;
  * core/derive.nodePortAnchors (which is what makes a wire land on a ROTATED or
  * SCALED node's beads with no trigonometry here).
  *
- * @param {object} wire - one core/derive.deriveWires record ({from: {x, y}, to: {x, y}, type})
+ * A WIRE THAT FIRED THIS FRAME (`fired: true`, stamped by core/derive.deriveWires
+ * from the frame domain's step) is painted in WIRE_FLASH_INK and thicker. It is a
+ * pure function of the record, so the flash reaches every consumer the wire itself
+ * does — the editor, presentation mode, PNG export, PDF, SVG and the video render
+ * job — with no per-backend work, and it therefore SURVIVES AN EXPORT. That is not
+ * incidental: whether a trigger fired on frame N is a function of the same inputs
+ * frame N is a function of, so a rendered video shows the flashes the presenter saw.
+ *
+ * @param {object} wire - one core/derive.deriveWires record ({from: {x, y}, to: {x, y}, type, fired?})
  * @returns {object[]} display-list commands (halo first, then the wire)
  *
  * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"}).length // 2
@@ -1194,6 +1226,10 @@ export const WIRE_HALO_OPACITY = 0.55;
  * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"}).map((o) => o.strokeWidth) // [4.5, 2.5]
  * @example // the wire carries the SOURCE type's colour (ir.js has parsed it to RGBA)
  * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "audio"})[1].stroke.length // 4
+ * @example // A FIRED wire is thicker than the same wire at rest …
+ * @example wireOps({from: {x: 0, y: 0}, to: {x: 9, y: 0}, type: "exec", fired: true})[1].strokeWidth // 4
+ * @example // … and its halo widens with it, so the outline stays proportional
+ * @example wireOps({from: {x: 0, y: 0}, to: {x: 9, y: 0}, type: "exec", fired: true})[0].strokeWidth // 6
  */
 export function wireOps(wire) {
   const d = wireBezierPath(wire.from, wire.to);
@@ -1201,9 +1237,10 @@ export function wireOps(wire) {
   // — a wire's end sits AT its bead's centre, so a flat cap would leave the cable
   // stopping half a bead short of the socket it plugs into.
   const caps = { strokeCapStart: "round", strokeCapEnd: "round" };
+  const width = WIRE_WIDTH + (wire.fired ? WIRE_FLASH_WIDTH_EXTRA : 0);
   return [
-    path({ d, fill: null, stroke: WIRE_HALO_INK, strokeWidth: WIRE_WIDTH + WIRE_HALO_EXTRA, opacity: WIRE_HALO_OPACITY, ...caps }),
-    path({ d, fill: null, stroke: portColor(wire.type), strokeWidth: WIRE_WIDTH, ...caps }),
+    path({ d, fill: null, stroke: WIRE_HALO_INK, strokeWidth: width + WIRE_HALO_EXTRA, opacity: WIRE_HALO_OPACITY, ...caps }),
+    path({ d, fill: null, stroke: wire.fired ? WIRE_FLASH_INK : portColor(wire.type), strokeWidth: width, ...caps }),
   ];
 }
 

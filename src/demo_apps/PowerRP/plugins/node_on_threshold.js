@@ -21,13 +21,25 @@
  * times it wiggled on the way, because a tween is an interpolation and not a
  * recording.
  *
- * ── NO HYSTERESIS, AND THE REASON IS INSTRUCTIVE ────────────────────────────
+ * ── NO HYSTERESIS *ON THIS AXIS*, AND THE REASON IS INSTRUCTIVE ─────────────
  * A real Schmitt trigger has two thresholds and a LATCH — its output depends on
  * which threshold it last crossed, which is history, not on the two samples in hand.
  * With exactly two samples, a "hysteresis" knob would be a control that changed
- * almost nothing while claiming to debounce, which is worse than not having it. The
- * audio-domain Schmitt trigger still exists where it belongs and where its input is
- * continuous: plugins/audio_trigger.js.
+ * almost nothing while claiming to debounce, which is worse than not having it.
+ *
+ * ── AMENDED 2026-08-13: THAT ARGUMENT IS SCOPED TO THE SLIDE DOMAIN ─────────
+ * It used to be stated without the scope, and read as a claim about the app. It is
+ * not: the load-bearing clause is its own *"which is history"*, and since R7-9 there
+ * IS a legal channel for history (SIMULATED state, core/simulation_history.js). On a
+ * PER-FRAME axis samples arrive continuously, so there is a genuine stream for
+ * hysteresis to debounce and the latch is one boolean per node per step — which is
+ * exactly what the `prev`/`cur` tables hold.
+ *
+ * So the paragraph above STAYS TRUE WHERE IT STANDS, about THIS widget, and the
+ * frame-domain Schmitt trigger is a different widget on a different axis:
+ * `plugins/node_schmitt.js`, whose header carries the other half of this reasoning.
+ * The audio-rate one is a third, where its input is continuous by construction:
+ * `plugins/audio_trigger.js`. Three axes, three files, one idea.
  */
 
 import { EXEC_NODE_CAT, execNodePlugin } from "../core/exec_nodes.js";
