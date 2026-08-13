@@ -50,7 +50,13 @@ import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 // THE NODE-GRAPH SEAM (see deriveRenderTree). One-way: nodeflow.js imports nothing
 // from this module, so the port/type/connection layer stays independently testable
 // in bare node with no derivation in the picture.
-import { EXEC_KEY, evaluateNodeGraph, portLayout } from "./nodeflow.js";
+import { EXEC_KEY, evaluateNodeGraph, portLayout, resolveNode, topoOrder } from "./nodeflow.js";
+// THE FRAME DOMAIN — per-frame triggers (core/exec_frame.js). Its step is driven from
+// deriveRenderTree, the one pass that produces the picture; see the call site for why
+// running several times per frame is safe rather than merely tolerated.
+import { firedWireKeys, stepFrameDomain } from "./exec_frame.js";
+import { beginSimulationStep, cameraMaxTimestep } from "./simulation_history.js";
+import { particleTime } from "../render_gpu/particle_clock.js";
 
 /**
  * Query (reads the registry; reports once on a refused pair). THE MORPH
@@ -531,6 +537,65 @@ export function deriveRenderTree(state, registry, project = "") {
   // guarded on a plugin actually declaring ports — so every existing document
   // derives byte-identically, with the very same state objects.
   const nodeValues = evaluateNodeGraph(items, registry).values;
+  // ── THE FRAME DOMAIN'S ONE DRIVER (core/exec_frame.js) ─────────────────────
+  // Per-frame triggers step HERE, at the same seam the node graph resolves, for the
+  // reason stated just above about the graph itself: a node's readout and the wire
+  // feeding it must not be one frame apart, and this is the pass that produces the
+  // picture. A Schmitt trigger's pulse and the counter's new tally therefore reach
+  // the canvas on the frame they happened.
+  //
+  // CALLING IT FROM A FUNCTION THAT RUNS SEVERAL TIMES PER FRAME IS SAFE, AND THAT
+  // IS THE WHOLE POINT OF THE DESIGN RATHER THAN AN OVERSIGHT. `stepFrameDomain`
+  // reads `prev` and writes `cur` in core/simulation_history.js's two tables, which
+  // roll ONLY when the clock moves — so the 2-3 derives web/CanvasView.svelte
+  // performs on a hover produce the identical answer and leave the identical table
+  // (pinned by tests/execframe_test.js's Δt = 0 check). A frozen consumer — a
+  // thumbnail, the minimap, a PNG export — writes nothing at all, structurally.
+  //
+  // AND IT COSTS A DECK WITHOUT ONE NOTHING: `stateUsesFrameDomain` is a scan for a
+  // plugin declaring `frameStep` and returns before allocating anything, so every
+  // document that predates this derives byte-identically.
+  // `beginSimulationStep`, NOT `simulationTimestep`, and the difference is the whole
+  // mechanism rather than a choice between two spellings of "how long is this frame".
+  // MEASURED: with `simulationTimestep` the deck never ticked. That function OBSERVES
+  // the clock and never ROLLS the history tables (its own docblock is explicit —
+  // "Query→value (observes the clock; never rolls the history)"), so `prev` was never
+  // published, every node read `firstStep` as true forever, and every latch sat at its
+  // initial condition while the clock ran. `beginSimulationStep` is the one that rolls
+  // `prev ← cur` — and it rolls ONLY when the clock has moved, which is precisely what
+  // makes calling it from a function that runs several times per frame correct.
+  const frame = stepFrameDomain(items, registry, beginSimulationStep(particleTime(), cameraMaxTimestep(state)));
+  // WHICH PINS PULSED, published for `deriveWires` to colour with. It is a module
+  // cell rather than a return value because `deriveRenderTree` returns a NODE LIST
+  // and every one of its ~20 callers destructures it as one; widening that signature
+  // to thread a second value would touch every pixel consumer in the app, including
+  // files other lanes hold open. The cell is written by the pass that computed it and
+  // read by `deriveWires` moments later in the same walk — and it is REPLACED, never
+  // mutated, so a reader either sees this frame's set or the previous one's, never a
+  // half-built one. A deck with no frame nodes writes the same frozen empty set every
+  // time, so nothing that predates this can observe the cell at all.
+  lastFiredWires = frame.pulses > 0 ? firedWireKeys(frame.fired) : NO_FIRED_WIRES;
+  for (const [id, outputs] of Object.entries(frame.outputs)) {
+    // MERGED OVER the graph's own answer rather than replacing it: a frame node may
+    // publish some ports statically (a threshold readout) and some per-step (a
+    // tally), and every reader downstream — the display's `nodePorts`, an equation
+    // reading `= counter.out` — should see one set of values.
+    if (nodeValues[id]) nodeValues[id] = { ...nodeValues[id], outputs: { ...nodeValues[id].outputs, ...outputs } };
+  }
+  // AND THE CONSUMERS' INPUTS ARE RE-RESOLVED, because merging an output is only half
+  // of it. `evaluateNodeGraph` above ran BEFORE the step, so a display wired to a
+  // counter still holds the tally as it was at the START of this frame — MEASURED in
+  // the browser: the counter climbed 0 → 1 → 2 while the display beside it read 0
+  // forever, which looks exactly like a broken display rather than a stale read.
+  // Re-resolving in topological order lets this frame's values propagate the length of
+  // the chain, and it is skipped entirely when nothing stepped.
+  if (Object.keys(frame.outputs).length > 0) {
+    for (const id of topoOrder(items).order) {
+      if (frame.outputs[id] || !nodeValues[id]) continue; // a stepper keeps what it published
+      const re = resolveNode(items, registry, id, (srcId) => nodeValues[srcId]?.outputs);
+      if (re) nodeValues[id] = re;
+    }
+  }
   // `active` is a universal widget property (default true). Delete in the UI
   // keyframes active:false — the item KEEPS its identity and properties and
   // simply isn't derived on slides where it's inactive (this is how objects
@@ -1753,7 +1818,28 @@ export function nodePortAnchors(node) {
  * @example // AN EXEC WIRE IS STORED ON THE OTHER SIDE and draws identically:
  * @example deriveWires([{itemId: "a", world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80, exec: {then: {item: "b", port: "run"}}}, plugin: {ports: () => ({outputs: [{key: "then", type: "exec"}]})}}, {itemId: "b", world: {x: 200, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({inputs: [{key: "run", type: "exec"}]})}}])[0].type // "exec"
  */
-export function deriveWires(nodes, firedKeys) {
+/** The empty fired set, shared — so a deck with no frame nodes allocates nothing and
+ *  every reader gets one identity to compare against. */
+const NO_FIRED_WIRES = Object.freeze(new Set());
+
+/** Which exec pins pulsed on the most recent `deriveRenderTree` pass. Written there,
+ *  read by `deriveWires` — see the write site for why this is a cell rather than a
+ *  return value, and why replacing (never mutating) it is what keeps it safe. */
+let lastFiredWires = NO_FIRED_WIRES;
+
+/**
+ * Query. The exec pins that pulsed on the most recent derive — what `deriveWires`
+ * colours with when no set is passed explicitly.
+ *
+ * @returns {Set<string>} "<item>.<port>" keys, empty when nothing fired
+ *
+ * @example // firedWiresThisFrame().size // 0 on a deck with no per-frame triggers
+ */
+export function firedWiresThisFrame() {
+  return lastFiredWires;
+}
+
+export function deriveWires(nodes, firedKeys = lastFiredWires) {
   const anchorsByItem = new Map();
   for (const n of nodes ?? []) {
     if (typeof n.plugin?.ports !== "function") continue;

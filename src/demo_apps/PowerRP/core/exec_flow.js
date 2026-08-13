@@ -364,6 +364,20 @@ function boundaryWrites(base, prev, registry, slideIndex, pending) {
     if (!state || state.active === false) continue;
     const plugin = registryPlugin(registry, state.type);
     if (!plugin || nodeExecKind(plugin, state) !== "event") continue;
+    // A FRAME-DOMAIN NODE IS NOT ONE OF THIS DOMAIN'S EVENTS, and skipping it here is
+    // not an optimisation — it is the difference between a working deck and a THROWN
+    // FRAME. `nodeExecKind` reads PORTS, and a Schmitt trigger's ports (an exec out,
+    // no exec in) are indistinguishable from an On Reveal's, so this walk classified
+    // it as an event and called the `execEvent` it does not have: "plugin.execEvent
+    // is not a function", out of app.svelte.js's `nodes()`, on every derive of any
+    // deck containing one. MEASURED by tests/execframe_probe.js — the node suites
+    // drive stepFrameDomain directly and never reach this walk, so nothing else could
+    // have caught it.
+    //
+    // The two domains' sources are told apart by WHICH HOOK THEY DECLARE, which is
+    // the same question `execKindProblem` asks and the same one
+    // `core/exec_frame.frameNodeIsSimulated` asks — never by a type list.
+    if (typeof plugin.execEvent !== "function") continue;
     const ctx = { id, self: state, inputs: graph[id]?.inputs ?? {}, prevInputs: prevGraph[id]?.inputs ?? {}, prevSelf: prev?.items?.[id] ?? null, state: base, prev, slideIndex };
     if (!plugin.execEvent(ctx)) continue;
     for (const p of declaredPorts(plugin, state).outputs) {

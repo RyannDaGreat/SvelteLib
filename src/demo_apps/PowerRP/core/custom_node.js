@@ -263,21 +263,54 @@ export function customNodeProblem(src) {
 }
 
 /**
- * Query (reads the compile cache; NEVER compiles). The PORTS `src` declares, as the
- * evaluator compiled them — `{inputs: [], outputs: []}` for a source nothing has
- * compiled yet, or one that failed.
+ * Query (compiles through the memo on first sight; pure thereafter). The PORTS `src`
+ * declares — `{inputs: [], outputs: []}` for a blank source or one that failed.
  *
- * THIS IS WHAT `declaredPorts` CALLS, and it is why the compile is cached rather
- * than run per call: port layout, wire derivation, `connectionRefusal` and the bead
- * hit test all ask, several times per frame per node.
+ * THIS IS WHAT `declaredPorts` CALLS, and the caching is why: port layout, wire
+ * derivation, `connectionRefusal` and the bead hit test all ask, several times per
+ * frame per node.
+ *
+ * ── IT COMPILES RATHER THAN ONLY READING THE CACHE, AND THAT WAS A REAL BUG ──
+ * The first version was a pure cache read, matching `projectScriptProblem`'s
+ * non-perturbing contract. MEASURED BY tests/execframe_probe.js: a FRESHLY INSERTED
+ * custom node then had NO BEADS AT ALL, because nothing had compiled its spec yet —
+ * `declaredPorts` must be a pure function of STATE, and a version that depends on
+ * whether some other pass happened to run first is not one. The widget would grow its
+ * ports later, when an unrelated evaluation compiled the spec, which is exactly the
+ * kind of "it works if you wiggle something" behaviour this codebase legislates
+ * against.
+ *
+ * COMPILING HERE IS SAFE WHERE `projectScriptProblem`'s WOULD NOT BE, and the
+ * difference is the host. That one refuses to compile because it would have to invent
+ * a host, and a UI-supplied one would overwrite the live cell this pass's exported
+ * functions read their clock through. This needs no host at all: it reads only the
+ * PORT DECLARATION, which the spec body assigns before any function it exports could
+ * run. So the null host below can never reach an exported function — and if a spec
+ * reads `time` at its TOP LEVEL, the shared jail refuses it loudly (that is the
+ * memoized-compile rule, and the refusal is the right answer here too).
  *
  * @example // customNodePorts("") // {inputs: [], outputs: []}
+ * @example // customNodePorts("ports.outputs=[{key:'o',type:'number'}]; exports.compute=()=>({o:1});").outputs[0].key // "o"
  */
 export function customNodePorts(src) {
   const source = typeof src === "string" ? src : "";
   if (source.trim() === "") return EMPTY_SPEC.ports;
-  return specCache.get(source)?.result.ports ?? EMPTY_SPEC.ports;
+  const cached = specCache.get(source);
+  if (cached) return cached.result.ports;
+  // NO HOST: see the docblock. A port declaration is assigned by the spec body, which
+  // cannot legally read the clock at its top level anyway.
+  return compileCustomNode(source, PORTLESS_HOST).ports;
 }
+
+/** The host handed to a compile that only wants the PORT DECLARATION. Its readers
+ *  throw, which is correct: reaching one would mean a spec read `time` or `random` at
+ *  its TOP LEVEL, and the shared jail already refuses that for the memoized-compile
+ *  reason (a value read there would be frozen forever). */
+const PORTLESS_HOST = Object.freeze({
+  random: () => { throw new Error("`random` is unavailable at a custom node spec's top level — read it inside compute() or step(), which run per frame"); },
+  time: () => { throw new Error("`time` is unavailable at a custom node spec's top level — read it inside compute() or step(), which run per frame"); },
+  pointer: () => null,
+});
 
 /**
  * Query (reads the compile cache; NEVER compiles). Does `src` declare `exports.step`

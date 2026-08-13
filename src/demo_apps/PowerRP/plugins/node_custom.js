@@ -51,6 +51,22 @@
  * the document before a render job may shard, and a WRONGLY-PERMITTED strided shard
  * renders a plausible wrong video on a green exit code, while a wrongly-refused one
  * costs some parallelism.
+ *
+ * ── THE ONE LIMITATION, STATED RATHER THAN DISCOVERED ──────────────────────
+ * A CUSTOM NODE'S DATA INPUTS GET NO INSPECTOR KNOB ROW. Every other node widget's
+ * `inputs.<port>` rows are baked into a plugin-level `inspector` ARRAY, and that
+ * array is static at every consumer (web/Inspector.svelte reads
+ * `sel.plugin.inspector`); only OUTPUT properties currently get a per-state path
+ * (`outputPropertyRows(plugin, state)`). This widget's ports are not known until a
+ * spec compiles, so there is no static set to bake.
+ *
+ * So its inputs are WIREABLE and READABLE but not typeable: an unwired one arrives
+ * as its port type's zero, and a spec that wants an authored constant should read a
+ * `params`-style value from `self` or default it in `compute`. `tests/exec_flow_test.js`
+ * exempts `authoredPorts` widgets from the every-data-input-has-a-row sweep and
+ * carries the same note. Lifting this means making `inspector` state-aware for EVERY
+ * widget, which is a change to a contract twenty files read — not something to
+ * special-case here.
  */
 
 import { EXEC_NODE_CAT, execNodePlugin } from "../core/exec_nodes.js";

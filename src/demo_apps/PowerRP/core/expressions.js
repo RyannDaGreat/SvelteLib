@@ -4242,6 +4242,22 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   for (const id of Object.keys(out.items ?? {})) {
     const plugin = outputPublisher(id);
     if (!plugin) continue;
+    // ── A FRAME-DOMAIN NODE IS A CLOCK READ (core/exec_frame.js) ─────────────
+    // Declaring it here is what makes the per-frame trigger family WORK AT ALL, and
+    // the failure without it is instructive rather than obvious. A frame node reads
+    // the clock inside its own `frameStep`, which this pass never sees — so `clockRead`
+    // stayed null, THIS MEMO SERVED THE FIRST PASS'S RESULT FOREVER, and
+    // `web/app.svelte.js nodes()` (which caches on the evaluated state's IDENTITY)
+    // therefore called deriveRenderTree exactly ONCE. MEASURED in the browser: the
+    // clock ran to 5.2 s while the Time node's output sat frozen at its first reading
+    // and no latch ever advanced — a completely dead patch, with no error anywhere.
+    //
+    // `readClock()` rather than a new memo axis, because the axis ALREADY EXISTS and
+    // means exactly this: "this result depends on what time it was". A frame node's
+    // result does. It costs a deck without one nothing (the predicate is a property
+    // read on a plugin), and it costs a deck WITH one exactly what any other
+    // clock-reading document already pays.
+    if (typeof plugin.frameStep === "function") readClock();
     try {
       Object.assign(out.items[id], outputPropertyInjection(plugin, settledItem(id), nodeOutputs(id)?.outputs ?? null));
     } catch (e) {

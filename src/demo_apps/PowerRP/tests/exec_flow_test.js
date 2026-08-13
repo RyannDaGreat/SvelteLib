@@ -387,6 +387,21 @@ test("pressing a wired exec OUT picks that wire up; dropping it on empty space d
 
 test("every exec OUT has an Inspector row and every exec IN deliberately has none", () => {
   for (const plugin of execPlugins) {
+    // A WIDGET WHOSE PORTS ARE THE AUTHOR'S HAS NO STATIC ROW SET TO CHECK, and that
+    // is a real limitation stated rather than papered over. `plugins/node_custom.js`
+    // derives its ports from a compiled user SPEC, so its `inputs.<port>` rows cannot
+    // be baked into a plugin-level `inspector` array the way every other widget's are
+    // — `inspector` is a static array at every consumer (web/Inspector.svelte reads
+    // `sel.plugin.inspector`), and only OUTPUT properties currently get the
+    // per-state treatment (`outputPropertyRows(plugin, state)`).
+    //
+    // THE CONSEQUENCE, so it is not discovered as a surprise: a custom node's data
+    // inputs are wireable and readable but do NOT get a knob row in the Inspector, so
+    // an unwired one uses whatever the spec's `compute` defaults it to rather than a
+    // typed-in value. Wiring is the intended way to feed a custom node; a per-state
+    // input-row path is the follow-up that would lift this, and it belongs with
+    // whoever makes `inspector` state-aware for every widget rather than for one.
+    if (plugin.authoredPorts) continue;
     const rows = plugin.inspector;
     const ports = plugin.ports(plugin.defaults);
     for (const p of ports.outputs.filter((o) => o.type === EXEC_TYPE))

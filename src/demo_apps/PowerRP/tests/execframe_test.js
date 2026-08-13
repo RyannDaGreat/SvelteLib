@@ -39,6 +39,7 @@ import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
 import { deriveWires } from "../core/derive.js";
 import { wireOps, WIRE_FLASH_INK } from "../core/node_chrome.js";
 import { documentIsSimulated, newDocument, repairedDocument, stridedShardRefusal, uuid } from "../core/document.js";
+import { execOverlayAt } from "../core/exec_flow.js";
 import { DEMO_PRESETS, buildPresetItems } from "../plugins/demo_presets.js";
 import { MATH_OPS } from "../plugins/node_math.js";
 
@@ -321,6 +322,33 @@ check("a deck of only PURE trigger-family nodes still shards", () => {
   assert.equal(stridedShardRefusal(repair.doc, registry), null);
 });
 
+check("the SLIDE domain does not mistake a frame node for one of its events", () => {
+  // MEASURED BY THE BROWSER PROBE, and it threw on every derive of any deck
+  // containing a Schmitt trigger: `nodeExecKind` reads PORTS, and a frame node's
+  // (an exec OUT, no exec IN) are indistinguishable from an On Reveal's — so
+  // core/exec_flow.js's boundary walk classified it as an event and called the
+  // `execEvent` it does not have. The node suites drive stepFrameDomain directly and
+  // never reach that walk, which is why this check exists in the shape it does:
+  // it runs the SLIDE-domain overlay over a frame-domain deck.
+  const doc = newDocument();
+  const trigger = uuid();
+  const target = uuid();
+  doc.slides[0].delta.items[target] = { type: "rect", x: 0, y: 0, w: 10, h: 10 };
+  doc.slides[0].delta.items[trigger] = {
+    type: "node_schmitt", x: 100, y: 100, w: 170, h: 120,
+    low: 0.1, high: 0.5, level: 0, mode: "rise", inputs: {},
+    // A REAL EXEC WIRE, because `documentUsesExec` is a structural scan and an
+    // empty `exec` map would make the whole walk cost nothing — which is exactly
+    // the case that did NOT throw, and would have passed a weaker test.
+    exec: { then: { item: target, port: "run" } },
+  };
+  const repair = repairedDocument(doc, registry);
+  assert.doesNotThrow(
+    () => execOverlayAt(repair.doc, 0, registry, (s) => s),
+    "the slide-domain walk called execEvent on a frame-domain node",
+  );
+});
+
 console.log("exec_frame: the wire flash");
 
 check("a fired wire paints in the flash colour and thicker; a resting one is untouched", () => {
@@ -342,8 +370,10 @@ check("deriveWires stamps `fired` from the frame domain, and nothing without it"
     { itemId: "a", world: { x: 0, y: 0, rotation: 0, scale: 1 }, state: { w: 100, h: 80, exec: { then: { item: "b", port: "run" } } }, plugin: { ports: () => ({ outputs: [{ key: "then", type: "exec" }] }) } },
     { itemId: "b", world: { x: 200, y: 0, rotation: 0, scale: 1 }, state: { w: 100, h: 80 }, plugin: { ports: () => ({ inputs: [{ key: "run", type: "exec" }] }) } },
   ];
-  // NO ARGUMENT: byte-identical to what every caller that predates the frame domain
-  // got — no `fired` key at all, not `fired: false`.
+  // NO ARGUMENT defaults to the LAST DERIVE's fired set (that is how render_gpu's
+  // scene walker gets the flash without its signature changing), and on a deck with
+  // no frame nodes that set is empty — so this is byte-identical to what every caller
+  // predating the frame domain got: no `fired` key at all, not `fired: false`.
   const resting = deriveWires(nodes);
   assert.equal(resting.length, 1);
   assert.equal("fired" in resting[0], false);
