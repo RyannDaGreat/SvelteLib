@@ -1704,6 +1704,60 @@ export function normalizeStrokeSpace(cmdName, src = {}) {
   return { strokeScreenSpace: true };
 }
 
+/**
+ * THE UNIVERSAL SCREEN-SPACE-STROKE SEAM — the fourth member of the applyStroke*
+ * family, and the one that was missing for its whole life.
+ *
+ * User, 2026-08-12: "Im solidly convinced that the screen-space size checkbox for
+ * stroke does jack shit". It did nothing, and the reason was that this function did
+ * not exist. Every OTHER half of the feature was built and correct: the property is
+ * declared on the SHARED bundles (core/properties.js strokedBox/strokedBorder), the
+ * normalizer above is written and tested, the op builders accept the key, and
+ * paint_skia's strokePaint divides by the divisor when the op carries the flag. The
+ * only broken link was that nothing ever put the flag ON an op — so 20 widgets
+ * showed a checkbox wired to nothing.
+ *
+ * WHY A STAMPER AND NOT 20 PLUGIN EDITS: the user's own words when he asked for the
+ * feature were "A boolean on the SHARED bundle, so every stroke-bearing widget gets
+ * it at once". Its three siblings (trim, offset, join) are each stamped onto every
+ * plugin's ops at ONE ports.js seam from state, with no plugin aware of them. This
+ * is that same gesture, and doing it per-plugin would be the design the bundle was
+ * chosen to avoid — plus 20 places for the 21st widget to forget.
+ *
+ * THE OWNERSHIP RULE IS THE SIBLINGS' RULE, VERBATIM: stamp a cmd that owns a
+ * stroke, recurse into an effectSubtree's own content, and NEVER descend into a
+ * cropSubtree's foreign content. The `cmd.stroke != null` guard is also what makes
+ * this safe for the ops that CANNOT honour it — `polyline` (line.js's round-cap
+ * branch) carries its width in `cmd.width` with no `stroke` field, so it is skipped
+ * by construction rather than by a special case.
+ *
+ * IDENTITY SHORT-CIRCUITS TO THE SAME ARRAY REFERENCE, so a widget that never opts
+ * in is byte-identical — the absent-is-legacy contract every stroke extra keeps.
+ *
+ * @param {object} state - the widget's folded state (read for strokeScreenSpace)
+ * @param {object[]} cmds - the ops to stamp
+ * @returns {object[]} cmds, with the flag stamped onto stroked ops (or unchanged)
+ *
+ * @example applyStrokeSpace({}, [{op: "rect", stroke: [0,0,0,1]}])[0].strokeScreenSpace // undefined
+ * @example applyStrokeSpace({strokeScreenSpace: true}, [{op: "rect", stroke: [0,0,0,1], strokeWidth: 2}])[0].strokeScreenSpace // true
+ * @example applyStrokeSpace({strokeScreenSpace: true}, [{op: "rect", fill: [1,0,0,1]}])[0].strokeScreenSpace // undefined (no stroke to scale)
+ */
+export function applyStrokeSpace(state, cmds) {
+  const space = normalizeStrokeSpace("applyStrokeSpace", state ?? {});
+  if (Object.keys(space).length === 0) return cmds;
+  return cmds.map((cmd) => stampStrokeSpace(cmd, space));
+}
+
+/** Pure helper for applyStrokeSpace: the stampStrokeTrim recursion, same
+ *  ownership rule (own stroke + own effect wrapper, never foreign crop content). */
+function stampStrokeSpace(cmd, space) {
+  let out = cmd;
+  if (cmd.stroke != null) out = { ...out, ...space };
+  if (cmd.op === "effectSubtree" && Array.isArray(cmd.content))
+    out = { ...out, content: cmd.content.map((c) => stampStrokeSpace(c, space)) };
+  return out;
+}
+
 export function normalizeStrokeJoin(cmdName, src = {}) {
   const out = {};
   const join = src.strokeJoin;

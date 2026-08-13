@@ -1217,6 +1217,33 @@ export function strokeMaterialIsOn(state) {
 }
 
 /**
+ * Pure function. Does this widget have a POSTER image set? The `visibleWhen` for
+ * the `showThumbnail` toggle — a choice between the still and the clip is
+ * meaningless when there is no still, so the row hides rather than sitting inert
+ * (the `ditherEmphasis` precedent; see the `thumbnail` row's own comment for why
+ * this one hides where `bitDepth` does not).
+ *
+ * THE THREE SPELLINGS OF "NO THUMBNAIL" ARE ALL ONE ANSWER, and that is the whole
+ * reason this is a named predicate rather than a truthiness check inline: absent
+ * (a document written before the row existed), `null` (the Inspector's clear
+ * affordance, and the default the fill writes) and `""` all mean nothing is set.
+ * `emit` reads the same three the same way.
+ *
+ * Args:
+ *   state (object): the widget's evaluated state (only `.thumbnail` is read)
+ *
+ * Returns:
+ *   boolean — true when a poster image is set, so the toggle has two things to choose between
+ *
+ * @example hasThumbnail({ thumbnail: "/asset/Deck/poster.png" }) // true
+ * @example hasThumbnail({ thumbnail: null }) // false (cleared with the × affordance)
+ * @example hasThumbnail({}) // false (a pre-poster document never wrote the key)
+ */
+export function hasThumbnail(state) {
+  return typeof state?.thumbnail === "string" && state.thumbnail.length > 0;
+}
+
+/**
  * Pure function. Should the MITER LIMIT row show? Only when the stroke is on AND
  * its join is Miter — the limit is a knob ON the miter, meaningless for round or
  * bevel (neither can grow a spike, so neither has a length to cap). This is the
@@ -1326,6 +1353,19 @@ export const PROPS = {
   "rotationAnchor.x": { label: "Rot anchor X", kind: "number", category: "transform", help: "The X of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
   "rotationAnchor.y": { label: "Rot anchor Y", kind: "number", category: "transform", help: "The Y of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
   z: { label: "Z order", kind: "number", category: "transform", help: "Stacking order: higher numbers draw on top of lower ones. Use Bring to Front / Send to Back to reorder without typing." },
+  // THE ASPECT CHAIN LOCK's stored leaf (backburner AF; see ASPECT_LOCK_KEY for
+  // why it is stored rather than panel-local, and why it is not keyframeable).
+  // It carries NO `default`, so composing it into the transform bundle adds
+  // nothing to any widget's stored state — absent IS off. It is declared here
+  // rather than only in COMPOUNDS because core needs to NAME its kind (Tier 0
+  // validates every "="-bindable slot against a declared kind) and because
+  // core/expressions.js resolves `self.aspectLocked` like any other leaf.
+  // IT IS DELIBERATELY NOT IN `BUNDLES.transform`, and that absence is what
+  // keeps it out of every widget's row list: it surfaces as the Size compound's
+  // CHAIN GLYPH, which reads the leaf directly. A `hidden` row aspect was
+  // considered and rejected — nothing in the Inspector reads one, so declaring it
+  // would have been an aspect that only looks like it does something.
+  aspectLocked: { label: "Lock aspect ratio", kind: "boolean", category: "transform", keyframes: false, help: "While locked, editing width writes height (and vice versa) to preserve the widget's current proportions, and a corner or edge resize drag keeps them too." },
   // Declared here ONLY so core can NAME its kind: Tier 0 says every property is
   // "="-bindable, and resultKindForSlot needs a kind to validate against. There is
   // deliberately NO `default` — nothing composes `active` from a BUNDLES list, and
@@ -1774,6 +1814,38 @@ export const PROPS = {
   src: { label: "Source", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The image or video this widget shows — pick from the project's assets, upload a file, or drag one in from the Asset Explorer or Finder." },
   // `frames` (the filmstrip's FRAME LIST) is declared with the rest of the
   // filmstrip's rows at the bottom of this registry — it is a LIST, not a count.
+  // ── THE VIDEO POSTER (user: "for powerpoint, they have thumbnail files for
+  // their videos to be shown before playing … we have to have an optional
+  // thumbnail parameter on videos - that has a toggle between whether we show
+  // the thumbnail image or show the video") ──────────────────────────────────
+  // TWO ROWS, NOT ONE, because they answer two different questions and PowerPoint
+  // asks both: WHICH still (an image asset, optional) and WHETHER it is showing
+  // instead of the clip. A single tri-state ("off | thumbnail | video") would make
+  // choosing a poster and displaying it the same act, so an author could not keep a
+  // poster attached while previewing the video — which is exactly the state a PPTX
+  // import lands in (see plugins/video.js's POSTER section).
+  //
+  // NULLABLE, and its default is `null` — the transition `sound` discipline (THE
+  // `nullable` ROW ASPECT above): an absent poster is NOTHING, and "" is not a
+  // legible spelling of that. `null` is also what makes the addition FREE for
+  // every existing deck, and that is MEASURED rather than assumed: a `null` leaf
+  // in a delta is the DELETE SENTINEL, so `withMissingDefaultsFilled` writes it
+  // once, `foldState` folds it straight back to ABSENT, and `emit` sees
+  // `undefined` — the same value it would have seen had the row never existed.
+  // The fill is quiet (version skew, not a deletion) and idempotent on the second
+  // pass. So a pre-poster video renders byte-identically and re-saves clean.
+  thumbnail: { label: "Thumbnail", kind: "asset", assetKinds: ["image"], assetForm: "url", nullable: true, default: null, category: "formatting", help: "An optional still image to show in place of the video — PowerPoint's poster frame. Pick an image asset, or clear it (×) for none. The Show thumbnail toggle below chooses which one is actually displayed." },
+  // THE TOGGLE. Default FALSE so a video keeps showing the video: attaching a
+  // poster must not silently replace what the widget already draws, and a PPTX
+  // import that carries a poster in deliberately leaves this off (our players are
+  // click-to-play, so the poster is AVAILABLE, not forced — stated in
+  // core/pptx_translate/media.js).
+  // HIDDEN UNTIL THERE IS A THUMBNAIL, the `ditherEmphasis` precedent: a toggle
+  // between a picture and a clip is meaningless when one of the two does not
+  // exist. Unlike `bitDepth` (which means something alone and therefore stays
+  // visible), this row has NOTHING to choose between with no poster set — so it
+  // hides rather than sitting there inert.
+  showThumbnail: { label: "Show thumbnail", kind: "boolean", category: "formatting", default: false, visibleWhen: hasThumbnail, help: "Show the thumbnail image instead of the video. Off (the default) plays the video as usual; on, the widget draws the still — which is also what a headless render draws when it cannot decode video." },
   autoplay: { label: "Autoplay", kind: "boolean", category: "formatting", default: true, help: "Start playing as soon as the slide loads. Requires Muted on — browsers block autoplay with sound." },
   loop: { label: "Loop", kind: "boolean", category: "formatting", default: true, help: "Restart the clip from the beginning each time it reaches the end, so it plays forever." },
   muted: { label: "Muted", kind: "boolean", category: "formatting", default: true, help: "Play with no sound. Turn off for audio, but note that browsers won't autoplay an unmuted clip." },
@@ -2359,6 +2431,28 @@ export const STROKE_OFFSET_KEYS = ["strokeOffset"];
  *  tests/stroke_join_keys_test.js turns from a convention into a gate. */
 export const STROKE_JOIN_KEYS = ["strokeJoin", "strokeMiter"];
 
+/**
+ * THE SCREEN-SPACE-WIDTH key, single-sourced for the reason the three lists above
+ * are — and it is the one that PROVED the reason, by being the only universal
+ * stroke option written as a bare literal in the two bundles instead of a shared
+ * name.
+ *
+ * The cost of that asymmetry was the whole feature on five widgets. The bundle
+ * composers (rect, the media family, …) got the row; the hand-splicing widgets —
+ * circle, shape, polygon, paint_path — splice `...STROKE_TRIM_KEYS,
+ * ...STROKE_JOIN_KEYS` and so inherited every universal stroke option EXCEPT this
+ * one, because it was not in a list to splice. They never showed the checkbox at
+ * all, which is the quieter half of the user's "does jack shit" report: on the
+ * bundle widgets the knob was visible and inert, and on these it was missing.
+ *
+ * `line` is DELIBERATELY NOT a subject: its round-cap branch emits `polyline` and
+ * its flat-cap branch emits a FILLED path whose cap geometry is baked at world
+ * width, so there is no stroke width for a divisor to scale. See
+ * tests/screen_space_test.js, which asserts that exclusion rather than leaving it
+ * to be re-litigated.
+ */
+export const STROKE_SPACE_KEYS = ["strokeScreenSpace"];
+
 export const BUNDLES = {
   transform: ["x", "y", "cx", "cy", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
   // The endpoint-pair transform every arrow-family widget shares (from/to
@@ -2373,9 +2467,9 @@ export const BUNDLES = {
   // in strokedBox) so EVERY stroked box inherits drawing-on/caps for free; they
   // carry no default (absent-is-legacy), so composing them changes no widget's
   // stored state or rendering until a knob moves.
-  strokedBorder: ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "strokeScreenSpace", "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
+  strokedBorder: ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, ...STROKE_SPACE_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
   // The full filled-and-stroked box: fill + the border slice (trim keys included).
-  strokedBox: ["fill", "stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "strokeScreenSpace", "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
+  strokedBox: ["fill", "stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, ...STROKE_SPACE_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
   // EDGE-CROP INSETS (manifest "Edge-crop insets"): the four per-edge source
   // trims. Media widgets (image/video) compose this; groups will too (their
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
@@ -2431,6 +2525,305 @@ export const BUNDLES = {
   // `bundleDefaults("dither")` and gets identical rows, help and visibility.
   dither: ["bitDepth", "ditherMode", "ditherBayerSize", "ditherEmphasis"],
 };
+
+/* ═══ COMPOUND ROWS (WORKSTREAM COMPOUND_, backburner CY) ═══════════════════
+ *
+ * ── WHAT THE USER ASKED FOR (verbatim) ────────────────────────────────────
+ * "For some properties, we should be able to have dropdowns. We already do this
+ * for things like gradients btw. For like colors etc, we can have triangles that
+ * indicate dropdown next to the property name, which push the property name to
+ * the right a little (they're always visible those arrows) and so colors can be
+ * dropped down into R,G,B and then the color would actually be a compount
+ * keyframe (you know how sections can be none, some or all for keyframes? Same
+ * for these properties that have subproperties. We might even have
+ * sub-subproperties so leave the architecture clean to implement that in the
+ * future. For now, XY and HW are 2-vectors, RGB is a 3-vecrtor, and XY can be
+ * controlled similar to rot in that if not dropped down we might have a drag pad
+ * where we click and drag that pad to move the x and y values which are like
+ * > [X] [Y] [dragpad] unless dropped down then it would be like  v [DragPad] \n
+ * [X] [Y]"
+ *
+ * ── WHAT A COMPOUND ROW *IS*, AND WHAT IT DELIBERATELY IS NOT ─────────────
+ * A compound is PURE GROUPING OVER EXISTING LEAF ROWS. `x` and `y` are already
+ * separate delta leaves with their own keyframes, their own equations and their
+ * own undo units; a compound adds a PARENT ROW that renders a disclosure
+ * triangle, an aggregate keyframe diamond and (optionally) a joint editor —
+ * and NOTHING about storage changes. There is no `xy` key in any document, no
+ * migration, and a document written before compounds exist is byte-identical to
+ * one written after. That is the whole reason XY and WH could ship first: they
+ * are the compounds whose leaves the document ALREADY has.
+ *
+ * A compound is therefore NOT a way to make a scalar leaf into a vector. `color`
+ * is ONE hex string today, so an honest RGB compound needs real `color.r/g/b`
+ * delta leaves and a loud repair migration — a separate, larger piece of work.
+ * It is NOT declared here, because declaring it would render a tri-state diamond
+ * over three paths the document cannot hold: a control that lies about what it
+ * keyframes. (See the workstream report; the plan is written down, not faked.)
+ *
+ * ── ARBITRARY DEPTH IS THE DECLARATION'S SHAPE, NOT A FUTURE REFACTOR ─────
+ * The user asked for sub-subproperties, so a child is spelled the same way a
+ * parent is: `{key, label, children: [...]}` where a child is EITHER a leaf key
+ * (a string) or another compound node. `compoundLeafKeys` recurses, and
+ * `Inspector.svelte` renders the tree recursively through the same snippet, so
+ * a three-level compound needs no new code — only a declaration. Nothing in
+ * this file or in the Inspector counts levels.
+ *
+ * ── THE TRI-STATE IS THE SECTION GRAMMAR, REUSED VERBATIM ─────────────────
+ * The user's own reference is sections ("you know how sections can be none, some
+ * or all for keyframes? Same for these"). So a compound's diamond is
+ * core/section_keyframes.js's bubble over a DIFFERENT path set: a section reads
+ * every row in a category, a compound reads every LEAF UNDER THIS NODE (at any
+ * depth). Same `sectionTriState`, same HALF→ALL ruling, same one-undo-unit
+ * toggle, same ‹ › union jump — reused rather than restated, which is why a
+ * compound diamond and a section diamond cannot ever disagree about what "some"
+ * means. web/Inspector.svelte mounts the very same SectionKeyframeControls
+ * component; only the paths and the title differ.
+ */
+
+/**
+ * THE COMPOUND DECLARATIONS. Keyed by the compound's own id (unique among row
+ * keys — a compound row occupies a row slot, and core/multiselect.js treats a
+ * repeated key as a plugin defect).
+ *
+ * `leafFor` names the plugin-declared LEAF ROW each child maps to, so the
+ * compound reuses that row's label, help, bounds and control verbatim instead of
+ * restating them (the copy-paste drift this whole registry exists to kill).
+ * `editor` names the JOINT control the parent row shows when the compound is
+ * COLLAPSED (and, for a pad, larger when expanded); absent = no joint editor,
+ * the parent row is triangle + label + diamond alone.
+ */
+export const COMPOUNDS = {
+  // POSITION — the user's worked example. Collapsed: `▸ [X] [Y] [pad]`.
+  // Expanded: `▾ [big pad]` with the X and Y rows beneath it.
+  xy: {
+    label: "Position",
+    editor: "pad2d",
+    category: "transform",
+    help: "The widget's top-left corner as one X/Y pair. Drag the pad to move both at once; the triangle opens X and Y as their own rows. The diamond keyframes BOTH — hollow when neither is keyed here, half when one is, filled when both are.",
+    children: ["x", "y"],
+  },
+  // SIZE — the same grouping over w/h, and the row the ASPECT CHAIN LOCK
+  // (backburner AF) hangs on: a chain is a statement about the RATIO of two
+  // leaves, so it belongs on the row that owns both of them and nowhere else.
+  wh: {
+    label: "Size",
+    editor: "pad2d",
+    category: "transform",
+    aspectLock: true,
+    help: "The widget's width and height as one pair. Drag the pad to resize both at once; the chain link ties them to their current ratio, so editing either writes the other. The diamond keyframes BOTH.",
+    children: ["w", "h"],
+  },
+};
+
+/**
+ * THE PER-ITEM ASPECT-LOCK LEAF (backburner AF). An ordinary boolean stored
+ * property, absent = OFF, so every existing document is byte-identical and a
+ * deck written before the chain existed loads with no repair.
+ *
+ * WHY A STORED LEAF AND NOT A PANEL-LOCAL TOGGLE: the lock changes what a RESIZE
+ * GESTURE does (web/canvas/dragKinds.js), not merely what the Inspector writes.
+ * A viewer-local toggle would make the same drag produce different geometry on
+ * two machines, and would be lost the moment the panel unmounted — while the
+ * author's intent ("this logo is 16:9 and must stay that way") is a fact about
+ * the ITEM. It is deliberately NOT keyframeable: a ratio constraint that tweened
+ * on and off mid-transition would silently rewrite w/h keyframes the author set
+ * by hand, which is the quiet wrongness this codebase forbids.
+ */
+export const ASPECT_LOCK_KEY = "aspectLocked";
+
+/**
+ * Pure function. Every LEAF key under a compound node, at ANY depth, in
+ * declaration order. THE recursion — no caller counts levels.
+ *
+ * A child is a leaf when it is a string; an object child is a nested compound
+ * and is descended into. A node with no children yields `[]` rather than
+ * throwing, so a declaration under construction degrades to "a compound that
+ * keyframes nothing" and the Inspector's own `sectionBubbleApplies` then
+ * declines to render a dead diamond.
+ *
+ * Args:
+ *   node (object): a COMPOUNDS entry (or a nested child node)
+ *
+ * Returns:
+ *   string[]: leaf property keys
+ *
+ * Examples:
+ *     >>> compoundLeafKeys(COMPOUNDS.xy)
+ *     ['x', 'y']
+ *     >>> compoundLeafKeys({children: ["w", "h"]})
+ *     ['w', 'h']
+ *     >>> // ARBITRARY DEPTH: a hypothetical transform compound of two compounds
+ *     >>> compoundLeafKeys({children: [{key: "xy", children: ["x", "y"]},
+ *     ...                              {key: "wh", children: ["w", "h"]}, "rotation"]})
+ *     ['x', 'y', 'w', 'h', 'rotation']
+ *     >>> compoundLeafKeys({children: []})
+ *     []
+ */
+export function compoundLeafKeys(node) {
+  const out = [];
+  for (const child of node.children ?? []) {
+    if (typeof child === "string") out.push(child);
+    else out.push(...compoundLeafKeys(child));
+  }
+  return out;
+}
+
+/**
+ * Pure function. Resolves a compound DECLARATION against the rows a widget
+ * actually declares, yielding the render tree the Inspector walks — or `null`
+ * when the widget does not declare ALL of the compound's leaves.
+ *
+ * ALL, NOT SOME, AND THAT IS THE LOAD-BEARING RULE. A compound whose leaves are
+ * partly present would render a "Position" row that moves X and silently drops
+ * Y, and its diamond would report "all keyframed" while keying one leaf. A
+ * widget that declares only some leaves keeps its plain rows, unchanged — which
+ * is also what makes this safe to apply to EVERY plugin at once without auditing
+ * them: an arrow (from.x/to.x, no `x`) simply gets no Position compound.
+ *
+ * The resolved node carries the compound's own aspects plus `rows` — the
+ * widget's REAL row objects, in the compound's declared order — so the Inspector
+ * renders a child through the same propRow it would have rendered standalone.
+ *
+ * Args:
+ *   node (object): a COMPOUNDS entry (or nested child node)
+ *   rowsByKey (Map<string, object>): the widget's declared rows, by key
+ *   key (string): this node's id (the COMPOUNDS key, or a nested child's `key`)
+ *
+ * Returns:
+ *   object|null: {key, label, compound: true, children: [...], ...aspects}
+ *
+ * Examples:
+ *     >>> const byKey = new Map([["x", {key: "x", label: "X"}], ["y", {key: "y", label: "Y"}]])
+ *     >>> resolveCompound(COMPOUNDS.xy, byKey, "xy").children.map((c) => c.key)
+ *     ['x', 'y']
+ *     >>> // a widget missing a leaf gets NO compound (its plain rows stand)
+ *     >>> resolveCompound(COMPOUNDS.xy, new Map([["x", {key: "x"}]]), "xy")
+ *     null
+ */
+export function resolveCompound(node, rowsByKey, key) {
+  const children = [];
+  for (const child of node.children ?? []) {
+    if (typeof child === "string") {
+      const leaf = rowsByKey.get(child);
+      if (!leaf) return null;
+      children.push(leaf);
+    } else {
+      const nested = resolveCompound(child, rowsByKey, child.key);
+      if (!nested) return null;
+      children.push(nested);
+    }
+  }
+  const { children: _decl, ...aspects } = node;
+  return { key, compound: true, ...aspects, children };
+}
+
+/**
+ * Pure function. Rewrites a widget's row array so that every compound whose
+ * leaves are ALL present becomes ONE compound row, mounted at the position of
+ * its FIRST leaf, with the remaining leaves removed from the top level.
+ *
+ * MOUNTED AT THE FIRST LEAF, so a category's reading order is preserved: the
+ * transform bundle lists x, y, cx, cy, w, h, … and the Position compound takes
+ * x's slot, leaving cx/cy exactly where the author expects them. Appending
+ * compounds instead would have shuffled Transform's order for every widget in
+ * the app to satisfy an implementation detail.
+ *
+ * IT IS A PURE REWRITE OF ROWS, so nothing downstream needs to know compounds
+ * exist unless it renders them: `groupRows`, the multi-selection intersection
+ * and the section bubble all keep taking row arrays.
+ *
+ * Args:
+ *   rows (object[]): a widget's resolved inspector rows
+ *   compounds (object): a COMPOUNDS-shaped table (defaults to COMPOUNDS)
+ *
+ * Returns:
+ *   object[]: rows with compounds folded in
+ *
+ * Examples:
+ *     >>> const rows = [{key: "x"}, {key: "y"}, {key: "z"}]
+ *     >>> withCompoundRows(rows).map((r) => r.key)
+ *     ['xy', 'z']
+ *     >>> // the compound sits where its FIRST leaf was, not at the end:
+ *     >>> withCompoundRows([{key: "z"}, {key: "x"}, {key: "y"}]).map((r) => r.key)
+ *     ['z', 'xy']
+ *     >>> // an incomplete set is left completely alone
+ *     >>> withCompoundRows([{key: "x"}, {key: "z"}]).map((r) => r.key)
+ *     ['x', 'z']
+ */
+export function withCompoundRows(rows, compounds = COMPOUNDS) {
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  /** Which compound (if any) each leaf key belongs to, and each compound's node. */
+  const mountAt = new Map(); // leafKey -> compound row (only the FIRST leaf)
+  const absorbed = new Set(); // every leaf key the compound now owns
+  for (const [key, node] of Object.entries(compounds)) {
+    const resolved = resolveCompound(node, byKey, key);
+    if (!resolved) continue;
+    const leaves = compoundLeafKeys(node);
+    // A leaf already absorbed by an earlier compound must not be claimed twice —
+    // two compounds sharing a leaf would render it under both and keyframe it
+    // twice from one click. First declaration wins, loudly ordered by COMPOUNDS.
+    if (leaves.some((k) => absorbed.has(k))) continue;
+    mountAt.set(leaves[0], resolved);
+    for (const k of leaves) absorbed.add(k);
+  }
+  const out = [];
+  for (const r of rows) {
+    if (mountAt.has(r.key)) out.push(mountAt.get(r.key));
+    else if (!absorbed.has(r.key)) out.push(r);
+  }
+  return out;
+}
+
+/**
+ * Pure function. The width and height a locked ASPECT RATIO implies when ONE of
+ * the pair is edited — the whole of backburner AF's arithmetic, in one place so
+ * the Inspector field and the canvas resize gesture cannot derive it differently.
+ *
+ * THE RATIO COMES FROM THE VALUES AT THE START OF THE EDIT, not from a stored
+ * ratio leaf: the lock means "keep the shape it has now", and storing a number
+ * would let the stored ratio and the visible box disagree the moment anything
+ * else wrote w or h (a keyframe tween, an equation, an undo).
+ *
+ * SIGN IS PRESERVED, because a negative extent is a FLIP (core/geometry.js "THE
+ * FLIP") and not a smaller number: locking the aspect of a horizontally flipped
+ * widget must keep it flipped. The magnitude scales; the sign is the edited
+ * value's own for the driven axis... except that the driven axis keeps ITS OWN
+ * sign, so flipping W while locked does not also flip H.
+ *
+ * A ZERO DRIVER IS NOT AN ERROR AND HAS NO RATIO: from w=0 there is no shape to
+ * preserve, so the other axis is left exactly as it was rather than being sent to
+ * 0 (which would collapse the widget to a point on one keystroke and lose the
+ * author's other dimension with it).
+ *
+ * Args:
+ *   axis ("w"|"h"): which leaf the author edited
+ *   value (number): the new value of that leaf
+ *   before ({w: number, h: number}): both values before the edit
+ *
+ * Returns:
+ *   {w: number, h: number}: both values after the edit
+ *
+ * Examples:
+ *     >>> aspectLockedPair("w", 200, {w: 100, h: 50})
+ *     { w: 200, h: 100 }
+ *     >>> aspectLockedPair("h", 25, {w: 100, h: 50})
+ *     { w: 50, h: 25 }
+ *     >>> // a FLIP keeps the driven axis's own sign
+ *     >>> aspectLockedPair("w", -200, {w: 100, h: 50})
+ *     { w: -200, h: 100 }
+ *     >>> // no ratio to preserve from a zero: the other axis is untouched
+ *     >>> aspectLockedPair("w", 200, {w: 0, h: 50})
+ *     { w: 200, h: 50 }
+ */
+export function aspectLockedPair(axis, value, before) {
+  const driver = axis === "w" ? before.w : before.h;
+  const driven = axis === "w" ? before.h : before.w;
+  if (!Number.isFinite(driver) || driver === 0 || !Number.isFinite(driven)) {
+    return axis === "w" ? { w: value, h: before.h } : { w: before.w, h: value };
+  }
+  const scaled = Math.sign(driven || 1) * Math.abs(driven) * (Math.abs(value) / Math.abs(driver));
+  return axis === "w" ? { w: value, h: scaled } : { w: scaled, h: value };
+}
 
 /**
  * Pure function. Resolves one property key to a ROW object: {key, ...def,

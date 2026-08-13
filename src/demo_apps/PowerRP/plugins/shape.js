@@ -27,7 +27,7 @@
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
-import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS, STROKE_SPACE_KEYS } from "../core/properties.js";
 import { shapePath } from "../core/shapes.js";
 import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import * as T from "../core/transform.js";
@@ -61,7 +61,7 @@ export const shapePlugin = {
     // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always HAD
     // render support at the ports seam; it just never declared the rows, which
     // is why a gear with a texture-brush stroke showed no phase/draw-on knobs).
-    ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
+    ...props(...STROKE_SPACE_KEYS, ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
     ...props("opacity"),
     ...bundle("effects"),
   ],

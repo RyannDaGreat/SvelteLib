@@ -21,7 +21,40 @@
 import assert from "node:assert/strict";
 import { screenSpaceDivisor } from "../core/clip.js";
 import { rect, path, text as textOp, normalizeStrokeSpace } from "../render_gpu/ir.js";
-import { BUNDLES } from "../core/properties.js";
+import { BUNDLES, STROKE_SPACE_KEYS } from "../core/properties.js";
+import { createRegistry } from "../core/registry.js";
+import { registerPlugins } from "../plugins/index.js";
+import { sceneIR } from "../render_gpu/ports.js";
+
+const registry = createRegistry();
+registerPlugins(registry);
+
+/** Query→build. A derived node for `plugin` at a fixed world, carrying `extra` over
+ *  the plugin's own defaults — the universal_effects_test.js idiom. A visible
+ *  strokeWidth is forced so there is always a stroked op for the flag to land on. */
+function widgetNode(plugin, extra) {
+  return {
+    itemId: "i",
+    type: plugin.type,
+    plugin,
+    world: { x: 0, y: 0, rotation: 0, scale: 1 },
+    state: { ...plugin.defaults, x: 0, y: 0, w: 200, h: 150, rotation: 0, scale: 1, stroke: "#000000", strokeWidth: 4, ...extra },
+  };
+}
+
+/** Pure function. Every op in a flat IR array that OWNS a stroke — the ops the
+ *  stamper is contracted to reach, and the only ones a divisor could apply to. */
+function strokedOps(cmds) {
+  const out = [];
+  const walk = (list) => {
+    for (const c of list) {
+      if (c.stroke != null) out.push(c);
+      if (Array.isArray(c.content)) walk(c.content);
+    }
+  };
+  walk(cmds);
+  return out;
+}
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed += 1; console.log(`  ok  ${name}`); };
@@ -81,6 +114,75 @@ test("(6) IT REACHES THE OPS THAT CAN STROKE, and the shared bundles offer it", 
   // an OPTION FOR STROKE"), so every stroke-bearing widget inherits it at once.
   for (const b of ["strokedBorder", "strokedBox"])
     assert.ok(BUNDLES[b].includes("strokeScreenSpace"), `BUNDLES.${b} does not offer the option`);
+  // The key is single-sourced (STROKE_SPACE_KEYS) rather than a literal in each
+  // bundle. It was a literal, and that is exactly why the four hand-splicing shape
+  // widgets never got the row: there was no list for them to splice.
+  assert.deepEqual(STROKE_SPACE_KEYS, ["strokeScreenSpace"]);
+});
+
+/**
+ * ── (8)-(10): THE ASSERTIONS WHOSE ABSENCE LET THIS SHIP INERT ───────────────
+ *
+ * User, 2026-08-12: "Im solidly convinced that the screen-space size checkbox for
+ * stroke does jack shit". He was right, and tests (5)-(6) above are the reason
+ * nobody noticed: they assert that the IR BUILDER accepts the key, and that the
+ * BUNDLE offers the row. Both passed for the feature's whole broken life, because
+ * neither one joins the two halves. Nothing ever asked the question in between —
+ * does a REAL WIDGET, given the state its own checkbox writes, emit an op carrying
+ * the flag? — and the answer was no for every widget in the app except the media
+ * family (which reaches it through decorate.js, a helper the shape widgets do not
+ * call).
+ *
+ * So these drive `sceneIR` over real registered plugins. That is deliberately the
+ * whole pipeline and not `plugin.emit()` alone: the fix is a STAMPER at the ports
+ * seam (ir.js applyStrokeSpace), so a test that called emit() directly would miss
+ * it entirely and a test that only checked the stamper in isolation would not
+ * prove the seam is wired into the walk.
+ */
+test("(8) IT REACHES A REAL WIDGET'S OPS — rect and circle, through the ports seam", () => {
+  for (const type of ["rect", "circle"]) {
+    const plugin = registry.get(type);
+    assert.ok(plugin, `${type} is not registered — the gate has no subject`);
+    const on = strokedOps(sceneIR([widgetNode(plugin, { strokeScreenSpace: true })]));
+    assert.ok(on.length > 0, `${type}: emitted no stroked op to carry the flag`);
+    assert.ok(
+      on.every((o) => o.strokeScreenSpace === true),
+      `${type}: the checkbox is ON but ${on.filter((o) => o.strokeScreenSpace !== true).length}/${on.length} stroked ops do not carry strokeScreenSpace — this is the "does jack shit" defect`,
+    );
+  }
+});
+
+test("(9) OFF IS BYTE-IDENTICAL — the absent-is-legacy contract, on real widgets", () => {
+  for (const type of ["rect", "circle"]) {
+    const plugin = registry.get(type);
+    for (const off of [{}, { strokeScreenSpace: false }]) {
+      const ops = strokedOps(sceneIR([widgetNode(plugin, off)]));
+      assert.ok(ops.length > 0, `${type}: no stroked op emitted for the OFF control`);
+      assert.ok(
+        ops.every((o) => !("strokeScreenSpace" in o)),
+        `${type}: an un-opted widget emitted the key — false must never become a field, or every pre-feature document's ops change shape`,
+      );
+    }
+  }
+});
+
+test("(10) LINE IS EXCLUDED ON PURPOSE — baked cap geometry has no width to scale", () => {
+  // line's round-cap branch emits `polyline` (width in cmd.width, no cmd.stroke)
+  // and its flat-cap branch emits a FILLED path whose caps were built at world
+  // width. The stamper's `cmd.stroke != null` rule skips both by construction —
+  // asserted here so the exclusion is a recorded decision rather than something a
+  // later reader "fixes" into a knob that cannot work.
+  const plugin = registry.get("line");
+  assert.ok(plugin, "line is not registered");
+  assert.ok(
+    !(plugin.inspector ?? []).some((r) => r.key === "strokeScreenSpace"),
+    "line must not offer a checkbox its geometry cannot honour — a visible inert knob is the defect this whole suite exists for",
+  );
+  const ops = sceneIR([widgetNode(plugin, { strokeScreenSpace: true })]);
+  assert.ok(
+    ops.every((o) => !("strokeScreenSpace" in o)),
+    "line emitted the flag onto an op that cannot honour it",
+  );
 });
 
 test("(7) TEXT SHARES THE RULE AND THE DIVISOR (#283) — same opt-in, same absence", () => {

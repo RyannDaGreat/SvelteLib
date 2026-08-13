@@ -113,7 +113,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num, polygonPathD, ellipsePoints } from "../core/shapes.js";
 import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
-import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
+import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS, STROKE_SPACE_KEYS } from "../core/properties.js";
 import { elementActive, visibleElements, visibleIndices, withElementFieldValue, withElementInserted } from "../core/lists.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
@@ -705,7 +705,7 @@ export const polygonPlugin = {
     // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always HAD
     // render support at the ports seam; it just never declared the rows, which
     // is why a gear with a texture-brush stroke showed no phase/draw-on knobs).
-    ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
+    ...props(...STROKE_SPACE_KEYS, ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
     ...props("opacity"),
   ],
   /**

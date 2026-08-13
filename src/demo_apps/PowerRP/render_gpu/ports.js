@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, applyStrokeSpace, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
 import { morphPaths, payloadToPathD, assertMorphPaths, midMorphFillRule } from "../core/morph.js";
 import { statePaint, STATE_PAINT_MARK } from "../core/morph_payload.js";
 import { isVisibleFxToken, visibleLevel, isPaintShaped, modeParams, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
@@ -714,7 +714,7 @@ function emitNodeBody(node, byId, display) {
   // an op, so resolveMaterialFillPaints above never saw it — manimIR resolves it
   // itself, and a scene-sampling material needs the scene (manimSketchStroke).
   const inked = manimIR(node, cmds, byId);
-  const body = applyActiveFade(fxState, applyStrokeJoin(fxState, applyStrokeOffset(fxState, applyStrokeTrim(fxState, applyNodeEffects(fxNode, inked)))));
+  const body = applyActiveFade(fxState, applyStrokeSpace(fxState, applyStrokeJoin(fxState, applyStrokeOffset(fxState, applyStrokeTrim(fxState, applyNodeEffects(fxNode, inked))))));
   // THE OWNER TAG — this node's identity, hung on the ONE push that opens its op
   // run, so the PAINT-TIME boundary can name the item it had to contain
   // (render_gpu/skia/paint_skia.js paintFlat; flattenIR carries the tag down onto
