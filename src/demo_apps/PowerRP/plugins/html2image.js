@@ -439,6 +439,469 @@ export function uncapturedAffordance(w, h, html = "") {
 }
 
 /**
+ * ── THE PRESET LIBRARY (R7-39) ────────────────────────────────────────────────
+ * "I don't know how to test this because it's very boring looking right now.
+ * Because there's no presets." Thirteen READY-TO-CAPTURE designs — each a
+ * complete, self-contained HTML/CSS source an author can drop in and press
+ * Capture on immediately. This is the widget's first impression, so every
+ * source aims for real typographic and colour quality rather than a placeholder
+ * layout with a caption changed.
+ *
+ * EVERY PRESET WRITES EXACTLY `{html}` — the mermaid precedent
+ * (plugins/mermaid.js: "each preset writes `definition` as one undo unit"),
+ * applied to this widget's one meaningful leaf. Never the `capture` asset (that
+ * would defeat the "capture is an explicit user action" law above), never
+ * `captureW`/`captureH` (every design here is happy at the widget's own
+ * DEFAULT_CAPTURE_W x DEFAULT_CAPTURE_H, so there is no same-key-set need to
+ * open that door), and never a placement key.
+ *
+ * EACH SOURCE PASSES THE WIDGET'S OWN GUARDS: no external URL (foreignSubresources
+ * in web/html2image.js would refuse it at capture time — everything here is inline
+ * CSS, no CDN, no webfont, no remote image), and no backtick or `${` (these strings
+ * live inside a JS template literal one scope up from DEFAULT_HTML, and the same
+ * failure mode applies — a `${` would silently interpolate rather than render
+ * literally, a backtick would close the literal early).
+ *
+ * EACH SOURCE'S FIRST LINE IS ITS OWN DISTINCT ROOT CLASS NAME
+ * (`<div class="titlecard">`, `<div class="stattile">`, …). sourcePreview() above
+ * shows exactly this line on an uncaptured widget, and it is the ONLY thing that
+ * tells two uncaptured preset instances apart before either is captured — a
+ * shared "<div class="wrap">" opener across presets would make every uncaptured
+ * card in a deck look identical.
+ */
+const TITLE_CARD_HTML = `<div class="titlecard">
+  <div class="eyebrow">Q3 Product Review</div>
+  <h1>Everything We<br>Shipped This<br>Quarter</h1>
+  <div class="rule"></div>
+  <div class="sub">Design, Platform &amp; Growth &middot; August 2026</div>
+</div>
+
+<style>
+  body { background: #0a0e1a; }
+  .titlecard {
+    box-sizing: border-box; height: 100%; padding: 64px 68px;
+    display: flex; flex-direction: column; justify-content: center;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #f4f6ff;
+    background:
+      radial-gradient(80% 120% at 85% -10%, rgba(236,72,153,0.35) 0%, rgba(236,72,153,0) 55%),
+      radial-gradient(70% 100% at -10% 110%, rgba(59,130,246,0.30) 0%, rgba(59,130,246,0) 55%),
+      linear-gradient(160deg, #12172b 0%, #090c16 100%);
+  }
+  .eyebrow {
+    font-size: 16px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase;
+    color: #f472b6; margin-bottom: 18px;
+  }
+  h1 {
+    margin: 0; font-size: 64px; line-height: 1.05; font-weight: 800; letter-spacing: -0.02em;
+  }
+  .rule { width: 84px; height: 5px; border-radius: 3px; margin: 30px 0 20px;
+    background: linear-gradient(90deg, #f472b6, #60a5fa); }
+  .sub { font-size: 19px; color: #9aa3c7; font-weight: 500; }
+</style>`;
+
+const STAT_TILE_HTML = `<div class="stattile">
+  <div class="label">Monthly Active Users</div>
+  <div class="row">
+    <div class="num">2.4<span class="unit">M</span></div>
+    <div class="delta up">&#9650; 18.2%</div>
+  </div>
+  <div class="caption">vs. previous 30 days</div>
+</div>
+
+<style>
+  body { background: #ffffff; }
+  .stattile {
+    box-sizing: border-box; height: 100%; padding: 40px 44px;
+    display: flex; flex-direction: column; justify-content: center; gap: 14px;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #f7f8fc; border: 1px solid #e4e7f2; border-radius: 20px;
+  }
+  .label { font-size: 15px; font-weight: 600; color: #6b7290; letter-spacing: 0.02em; }
+  .row { display: flex; align-items: baseline; gap: 16px; }
+  .num { font-size: 76px; font-weight: 800; letter-spacing: -0.03em; color: #171a2e;
+    font-variant-numeric: tabular-nums; }
+  .unit { font-size: 34px; font-weight: 700; color: #4c5170; margin-left: 2px; }
+  .delta { font-size: 17px; font-weight: 700; padding: 6px 12px; border-radius: 999px; }
+  .delta.up { color: #15803d; background: #dcfce7; }
+  .caption { font-size: 14px; color: #9297b3; }
+</style>`;
+
+const GRADIENT_QUOTE_HTML = `<div class="panel">
+  <div class="mark">&#8220;</div>
+  <p class="quote">Simplicity is the ultimate form of sophistication &mdash; and the hardest thing to keep.</p>
+  <div class="attrib">
+    <div class="dash"></div>
+    <div class="who">Design Notes, Chapter 4</div>
+  </div>
+</div>
+
+<style>
+  body { background: #1a0b2e; }
+  .panel {
+    box-sizing: border-box; height: 100%; padding: 56px 60px;
+    display: flex; flex-direction: column; justify-content: center;
+    font-family: Georgia, "Times New Roman", serif; color: #fdf4ff;
+    background: linear-gradient(135deg, #4c1d95 0%, #7e22ce 45%, #c026d3 100%);
+  }
+  .mark { font-family: Georgia, serif; font-size: 96px; line-height: 0.5; color: rgba(255,255,255,0.35);
+    font-weight: 700; margin-bottom: 8px; }
+  .quote { margin: 0; font-size: 36px; line-height: 1.35; font-style: italic; font-weight: 500; }
+  .attrib { display: flex; align-items: center; gap: 16px; margin-top: 32px; }
+  .dash { width: 40px; height: 2px; background: rgba(255,255,255,0.6); }
+  .who { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 15px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: rgba(255,255,255,0.75); font-weight: 600; }
+</style>`;
+
+const CODE_SNIPPET_HTML = `<div class="codewin">
+  <div class="titlebar">
+    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+    <span class="filename">fold.js</span>
+  </div>
+  <pre><code><span class="kw">export function</span> <span class="fn">foldDelta</span>(<span class="pr">state</span>, <span class="pr">delta</span>) {
+  <span class="kw">const</span> next = { ...state };
+  <span class="kw">for</span> (<span class="kw">const</span> [key, value] <span class="kw">of</span> <span class="pr">delta</span>) {
+    next[key] = value;
+  }
+  <span class="kw">return</span> next;
+}</code></pre>
+</div>
+
+<style>
+  body { background: #0d1117; }
+  .codewin {
+    box-sizing: border-box; height: 100%; display: flex; flex-direction: column;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    background: #0d1117; border: 1px solid #30363d; border-radius: 14px; overflow: hidden;
+  }
+  .titlebar { display: flex; align-items: center; gap: 8px; padding: 14px 18px;
+    background: #161b22; border-bottom: 1px solid #30363d; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.red { background: #ff5f57; } .dot.yellow { background: #febc2e; } .dot.green { background: #28c840; }
+  .filename { margin-left: 10px; font-size: 13px; color: #8b949e; font-weight: 500; }
+  pre { margin: 0; padding: 26px 28px; flex: 1; overflow: hidden; }
+  code { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 17px; line-height: 1.65; color: #c9d1d9; white-space: pre; }
+  .kw { color: #ff7b72; } .fn { color: #d2a8ff; } .pr { color: #79c0ff; }
+</style>`;
+
+const COMPARISON_TABLE_HTML = `<div class="comparecard">
+  <table>
+    <thead>
+      <tr><th class="row-label"></th><th>Starter</th><th class="hi">Pro</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="row-label">Projects</td><td>3</td><td class="hi">Unlimited</td></tr>
+      <tr><td class="row-label">Exports</td><td>720p</td><td class="hi">4K</td></tr>
+      <tr><td class="row-label">Collaborators</td><td>1</td><td class="hi">10</td></tr>
+      <tr><td class="row-label">Support</td><td>Community</td><td class="hi">Priority</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<style>
+  body { background: #f1f2f7; }
+  .comparecard {
+    box-sizing: border-box; height: 100%; padding: 30px;
+    display: flex; align-items: center;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  table { width: 100%; border-collapse: collapse; background: #ffffff; border-radius: 16px;
+    overflow: hidden; box-shadow: 0 1px 0 #e3e5ef; }
+  th, td { padding: 16px 20px; text-align: center; font-size: 16px; }
+  .row-label { text-align: left; color: #6b7290; font-weight: 600; font-size: 14px; }
+  thead th { font-size: 15px; font-weight: 700; color: #2c2f45; border-bottom: 2px solid #edeef5; }
+  thead th.hi { color: #ffffff; background: #4338ca; }
+  tbody td { border-bottom: 1px solid #edeef5; color: #454969; font-weight: 500; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td.hi { background: #eef0ff; color: #3730a3; font-weight: 700; }
+</style>`;
+
+const BADGE_ROW_HTML = `<div class="badgerow">
+  <div class="title">Built With</div>
+  <div class="badges">
+    <span class="badge b1">Svelte 5</span>
+    <span class="badge b2">WebGL2</span>
+    <span class="badge b3">Skia</span>
+    <span class="badge b4">Vite</span>
+    <span class="badge b5">Node</span>
+    <span class="badge b6">Python</span>
+  </div>
+</div>
+
+<style>
+  body { background: #ffffff; }
+  .badgerow {
+    box-sizing: border-box; height: 100%; padding: 40px;
+    display: flex; flex-direction: column; justify-content: center; gap: 22px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .title { font-size: 14px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+    color: #9297b3; }
+  .badges { display: flex; flex-wrap: wrap; gap: 12px; }
+  .badge { padding: 11px 20px; border-radius: 999px; font-size: 16px; font-weight: 700; }
+  .b1 { background: #fde2e2; color: #b91c1c; }
+  .b2 { background: #dbeafe; color: #1d4ed8; }
+  .b3 { background: #dcfce7; color: #15803d; }
+  .b4 { background: #ede9fe; color: #6d28d9; }
+  .b5 { background: #fef3c7; color: #92400e; }
+  .b6 { background: #cffafe; color: #0e7490; }
+</style>`;
+
+const TIMELINE_HTML = `<div class="timeline">
+  <div class="step">
+    <div class="dot done"></div>
+    <div class="body"><div class="t">Research</div><div class="d">Interviews &amp; competitive audit</div></div>
+  </div>
+  <div class="step">
+    <div class="dot done"></div>
+    <div class="body"><div class="t">Prototype</div><div class="d">Three directions, one validated</div></div>
+  </div>
+  <div class="step">
+    <div class="dot active"></div>
+    <div class="body"><div class="t">Build</div><div class="d">In progress &mdash; 60% complete</div></div>
+  </div>
+  <div class="step">
+    <div class="dot pending"></div>
+    <div class="body"><div class="t">Launch</div><div class="d">Targeting next quarter</div></div>
+  </div>
+</div>
+
+<style>
+  body { background: #ffffff; }
+  .timeline {
+    box-sizing: border-box; height: 100%; padding: 40px 44px;
+    display: flex; flex-direction: column; justify-content: center; gap: 0;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .step { display: flex; gap: 20px; position: relative; padding-bottom: 34px; }
+  .step:not(:last-child)::before {
+    content: ""; position: absolute; left: 9px; top: 22px; bottom: 0; width: 2px; background: #e2e4f0;
+  }
+  .dot { width: 20px; height: 20px; border-radius: 50%; flex: none; margin-top: 2px;
+    border: 3px solid #e2e4f0; background: #ffffff; }
+  .dot.done { background: #16a34a; border-color: #16a34a; }
+  .dot.active { background: #ffffff; border-color: #2563eb; box-shadow: 0 0 0 4px rgba(37,99,235,0.15); }
+  .t { font-size: 19px; font-weight: 700; color: #171a2e; }
+  .d { font-size: 15px; color: #767b9c; margin-top: 3px; }
+</style>`;
+
+const KANBAN_COLUMN_HTML = `<div class="col">
+  <div class="head"><span class="dot"></span>In Progress<span class="count">3</span></div>
+  <div class="card">
+    <div class="tag tag-design">Design</div>
+    <div class="ctitle">Onboarding flow redesign</div>
+    <div class="meta">Due Fri &middot; 2 comments</div>
+  </div>
+  <div class="card">
+    <div class="tag tag-eng">Engineering</div>
+    <div class="ctitle">Migrate asset store to v2</div>
+    <div class="meta">Due Mon &middot; 5 comments</div>
+  </div>
+  <div class="card">
+    <div class="tag tag-copy">Copy</div>
+    <div class="ctitle">Rewrite empty states</div>
+    <div class="meta">No due date</div>
+  </div>
+</div>
+
+<style>
+  body { background: #eef0f6; }
+  .col {
+    box-sizing: border-box; height: 100%; padding: 22px;
+    display: flex; flex-direction: column; gap: 14px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .head { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 700;
+    color: #454969; text-transform: uppercase; letter-spacing: 0.05em; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; }
+  .count { margin-left: auto; background: #dfe1ee; color: #6b7290; font-size: 13px; font-weight: 700;
+    padding: 2px 9px; border-radius: 999px; }
+  .card { background: #ffffff; border-radius: 12px; padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(20,22,40,0.08); display: flex; flex-direction: column; gap: 8px; }
+  .tag { align-self: flex-start; font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 6px;
+    text-transform: uppercase; letter-spacing: 0.04em; }
+  .tag-design { background: #ede9fe; color: #6d28d9; }
+  .tag-eng { background: #dbeafe; color: #1d4ed8; }
+  .tag-copy { background: #fce7f3; color: #be185d; }
+  .ctitle { font-size: 15.5px; font-weight: 600; color: #1f2238; line-height: 1.3; }
+  .meta { font-size: 12.5px; color: #9297b3; }
+</style>`;
+
+const GLASS_PANEL_HTML = `<div class="scene">
+  <div class="glass">
+    <div class="icon">&#9729;</div>
+    <div class="title">Cloud Sync</div>
+    <div class="body">Every change saves automatically and syncs across your devices in real time.</div>
+  </div>
+</div>
+
+<style>
+  body { background: #0a1128; }
+  .scene {
+    box-sizing: border-box; height: 100%; padding: 46px;
+    display: flex; align-items: center; justify-content: center;
+    background:
+      radial-gradient(60% 80% at 20% 20%, rgba(56,189,248,0.55) 0%, rgba(56,189,248,0) 60%),
+      radial-gradient(60% 80% at 85% 80%, rgba(168,85,247,0.5) 0%, rgba(168,85,247,0) 60%),
+      linear-gradient(160deg, #0a1128 0%, #0d0620 100%);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .glass {
+    width: 100%; box-sizing: border-box; padding: 38px 40px; border-radius: 24px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.35);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.4), 0 20px 50px rgba(0,0,0,0.35);
+    color: #ffffff;
+  }
+  .icon { font-size: 40px; margin-bottom: 14px; }
+  .title { font-size: 28px; font-weight: 800; margin-bottom: 10px; }
+  .body { font-size: 16px; line-height: 1.55; color: rgba(255,255,255,0.85); max-width: 34ch; }
+</style>`;
+
+const RECEIPT_HTML = `<div class="paper">
+  <div class="shop">SLIDE &amp; CO.</div>
+  <div class="addr">142 Presentation Ave &middot; Vector City</div>
+  <div class="tear"></div>
+  <div class="line"><span>Deck Template</span><span>$0.00</span></div>
+  <div class="line"><span>Widget Presets x12</span><span>$0.00</span></div>
+  <div class="line"><span>Render Time</span><span>0.67s</span></div>
+  <div class="tear"></div>
+  <div class="line total"><span>TOTAL</span><span>$0.00</span></div>
+  <div class="thanks">THANK YOU FOR RENDERING</div>
+</div>
+
+<style>
+  body { background: #d8dae0; }
+  .paper {
+    box-sizing: border-box; height: 100%; padding: 30px 34px;
+    display: flex; flex-direction: column; gap: 10px;
+    background: #fdfdf8; color: #26261f;
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 15px;
+  }
+  .shop { font-size: 20px; font-weight: 700; letter-spacing: 0.06em; text-align: center; }
+  .addr { text-align: center; font-size: 12px; color: #6b6b5e; margin-bottom: 4px; }
+  .tear { border-top: 2px dashed #b9b9a8; margin: 6px 0; }
+  .line { display: flex; justify-content: space-between; }
+  .line.total { font-weight: 700; font-size: 17px; }
+  .thanks { text-align: center; font-size: 12px; letter-spacing: 0.1em; color: #8a8a78; margin-top: 8px; }
+</style>`;
+
+const TERMINAL_HTML = `<div class="term">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="tabname">zsh &mdash; 80x24</span></div>
+  <div class="body">
+    <div class="ln"><span class="prompt">&#10095;</span> npm run build</div>
+    <div class="ln out">vite v5.4.0 building for production...</div>
+    <div class="ln out ok">&#10003; 214 modules transformed.</div>
+    <div class="ln out ok">&#10003; built in 1.82s</div>
+    <div class="ln"><span class="prompt">&#10095;</span> <span class="cursor">&#9608;</span></div>
+  </div>
+</div>
+
+<style>
+  body { background: #000000; }
+  .term {
+    box-sizing: border-box; height: 100%; display: flex; flex-direction: column;
+    background: #161821; border-radius: 12px; overflow: hidden;
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    border: 1px solid #2a2d3a;
+  }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; background: #1e2130; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+  .tabname { margin-left: 8px; font-size: 12px; color: #6b7185; }
+  .body { flex: 1; padding: 20px 22px; display: flex; flex-direction: column; gap: 9px; }
+  .ln { font-size: 16px; color: #dfe2f0; }
+  .prompt { color: #4ade80; margin-right: 8px; }
+  .out { color: #8b91ab; padding-left: 26px; }
+  .out.ok { color: #4ade80; }
+  .cursor { color: #dfe2f0; }
+</style>`;
+
+const CHART_BARS_HTML = `<div class="barschart">
+  <div class="head">Quarterly Revenue</div>
+  <div class="chart">
+    <div class="bar" style="height:38%"><span class="v">$1.2M</span></div>
+    <div class="bar" style="height:52%"><span class="v">$1.7M</span></div>
+    <div class="bar" style="height:47%"><span class="v">$1.5M</span></div>
+    <div class="bar hi" style="height:88%"><span class="v">$2.9M</span></div>
+  </div>
+  <div class="labels"><span>Q1</span><span>Q2</span><span>Q3</span><span>Q4</span></div>
+</div>
+
+<style>
+  body { background: #ffffff; }
+  .barschart {
+    box-sizing: border-box; height: 100%; padding: 34px 38px;
+    display: flex; flex-direction: column;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  .head { font-size: 15px; font-weight: 700; color: #454969; margin-bottom: 20px; }
+  .chart { flex: 1; min-height: 0; display: flex; align-items: flex-end; gap: 22px; }
+  .bar { flex: 1; border-radius: 8px 8px 3px 3px; background: linear-gradient(180deg, #93c5fd, #3b82f6);
+    position: relative; display: flex; justify-content: center; }
+  .bar.hi { background: linear-gradient(180deg, #6ee7b7, #10b981); }
+  .v { position: absolute; top: -26px; font-size: 13px; font-weight: 700; color: #2c2f45; white-space: nowrap; }
+  .labels { display: flex; gap: 22px; margin-top: 10px; }
+  .labels span { flex: 1; text-align: center; font-size: 13px; color: #9297b3; font-weight: 600; }
+</style>`;
+
+const PROFILE_CARD_HTML = `<div class="profilecard">
+  <div class="avatar">MK</div>
+  <div class="name">Maya Kessler</div>
+  <div class="role">Senior Product Designer</div>
+  <div class="stats">
+    <div class="stat"><div class="n">47</div><div class="l">Projects</div></div>
+    <div class="stat"><div class="n">312</div><div class="l">Reviews</div></div>
+    <div class="stat"><div class="n">4.9</div><div class="l">Rating</div></div>
+  </div>
+</div>
+
+<style>
+  body { background: #f4f2ee; }
+  .profilecard {
+    box-sizing: border-box; height: 100%; padding: 40px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    background: #ffffff; border-radius: 22px; border: 1px solid #eae7df;
+  }
+  .avatar { width: 88px; height: 88px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 30px; font-weight: 800; color: #ffffff;
+    background: linear-gradient(135deg, #fb923c, #ec4899); margin-bottom: 6px; }
+  .name { font-size: 23px; font-weight: 800; color: #201d18; }
+  .role { font-size: 15px; color: #8a8577; margin-bottom: 18px; }
+  .stats { display: flex; gap: 34px; padding-top: 18px; border-top: 1px solid #eee9df; width: 100%;
+    justify-content: center; }
+  .stat { text-align: center; }
+  .n { font-size: 22px; font-weight: 800; color: #201d18; }
+  .l { font-size: 12px; color: #a39c8a; font-weight: 600; margin-top: 2px; }
+</style>`;
+
+/**
+ * THE THIRTEEN, IN GALLERY ORDER. Text/marketing cards first (the widget's most
+ * obvious use), then data-shaped cards, then the more illustrative/textured ones
+ * — an author scanning top-to-bottom meets the safest, most broadly useful
+ * layouts first.
+ */
+const PRESETS = [
+  { name: "Title Card", description: "A hero title slide over a layered dark gradient — an eyebrow line, a big multi-line headline and a short subtitle. Press Capture to render.", props: { html: TITLE_CARD_HTML } },
+  { name: "Stat Tile", description: "A single big metric with a unit and an up/down delta pill, on a soft card — the shape a dashboard KPI tile actually takes. Press Capture to render.", props: { html: STAT_TILE_HTML } },
+  { name: "Gradient Quote", description: "A pull-quote in serif italic over a violet-to-magenta gradient, with an oversized opening quotation mark and an attribution line. Press Capture to render.", props: { html: GRADIENT_QUOTE_HTML } },
+  { name: "Code Snippet Card", description: "A macOS-style code window — traffic-light dots, a filename tab, and a hand-colored JetBrains Mono snippet (keywords, function names, parameters each their own color). Press Capture to render.", props: { html: CODE_SNIPPET_HTML } },
+  { name: "Comparison Table", description: "A two-plan pricing/feature comparison table with the higher tier's column highlighted in a solid accent color. Press Capture to render.", props: { html: COMPARISON_TABLE_HTML } },
+  { name: "Badge Row", description: "A row of wrapping pill badges, each its own hue, for naming a stack of tools or tags at a glance. Press Capture to render.", props: { html: BADGE_ROW_HTML } },
+  { name: "Timeline", description: "A vertical step timeline — done, active and pending stages linked by a connecting rail, each with a title and a one-line note. Press Capture to render.", props: { html: TIMELINE_HTML } },
+  { name: "Kanban Column", description: "A single Trello-style board column: a header with a live count, stacked task cards each carrying a colored category tag and metadata line. Press Capture to render.", props: { html: KANBAN_COLUMN_HTML } },
+  { name: "Glassmorphic Panel", description: "A frosted-glass panel — translucent fill, a bright border and an inner highlight — floating over a two-tone glow backdrop. Press Capture to render.", props: { html: GLASS_PANEL_HTML } },
+  { name: "Receipt", description: "A monospace paper receipt with dashed tear lines between sections and a line-item total, styled like a point-of-sale printout. Press Capture to render.", props: { html: RECEIPT_HTML } },
+  { name: "Terminal Window", description: "A dark terminal window with traffic-light dots, a tab title and a colored command/output transcript ending on a blinking-style cursor glyph. Press Capture to render.", props: { html: TERMINAL_HTML } },
+  { name: "Chart-ish Bars", description: "A small quarterly bar chart built from pure CSS flex bars (no chart library, no canvas) with value labels and a highlighted final bar. Press Capture to render.", props: { html: CHART_BARS_HTML } },
+  { name: "Profile Card", description: "A centered contact/profile card — initials avatar, name, role and a row of three stat counters below a divider. Press Capture to render.", props: { html: PROFILE_CARD_HTML } },
+];
+
+/**
  * Command (async; browser-only). Captures the SELECTED widget's `html` to an image
  * asset and writes the ref onto `capture` as one undo unit.
  *
@@ -486,6 +949,10 @@ export const html2imagePlugin = {
   // search aliases below.
   title: "HTML to Image",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // THE PRESET LIBRARY (R7-39) — see the big comment above PRESETS for the law
+  // each row obeys. ONE FLAT array, the qrcode.js declaration form: no family
+  // split is needed because every row here writes the same single key (`html`).
+  presets: PRESETS,
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the
   // shared full-screen Monaco editor on the `html` source. The "code_modal"
   // precedent exactly — this widget carries no editor UI of its own.
