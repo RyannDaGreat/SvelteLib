@@ -28,6 +28,8 @@ import { audioDisplayTitle, audioKnobValues } from "../core/audio_nodes.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { readAudioScene } from "../core/audio_mirror_diff.js";
+// The range/enum rule and its one declared exception live in ONE place — see the check below.
+import { patchViolations } from "./patchIntegrity.js";
 import { foldState, repairedDocument } from "../core/document.js";
 import { readFileSync } from "node:fs";
 
@@ -194,16 +196,21 @@ check("every knob override is a knob the module really has", () => {
 check("every knob override is INSIDE that knob's declared range", () => {
   // A value outside the range is one the engine clamps, so the document would say
   // one thing and the sound would do another — silently.
-  for (const p of DEMO_PATCHES)
-    for (const n of p.nodes) {
-      const spec = registry.get(n.type).audioSpec;
-      if (!spec) continue;
-      for (const [key, value] of Object.entries(n.knobs ?? {})) {
-        const knob = spec.knobs.find((k) => k.key === key);
-        if (knob.discrete) assert.ok(knob.options.includes(value), `${p.id}.${n.id}.${key} = ${value} is not among ${JSON.stringify(knob.options)}`);
-        else assert.ok(value >= knob.min && value <= knob.max, `${p.id}.${n.id}.${key} = ${value} is outside [${knob.min}, ${knob.max}]`);
-      }
-    }
+  //
+  // ── WHY THIS DELEGATES INSTEAD OF ASSERTING (workstream DX, 2026-08-13) ──
+  // `tests/patch_integrity_test.js` now owns this rule, together with the ONE declared
+  // exception it needs: axo-drseq's three `gain1: 16` step-index multiplies, which are a
+  // known defect (the AudioParam clamps them to 1) deliberately left visible in the data
+  // rather than written down to a number the author never meant. A second copy of the
+  // range rule HERE would need a second copy of that exception list, and the day the
+  // math-node fix lands the two would be lifted at different times — which is the same
+  // hand-maintained-list defect this file's own header calls out five times. So the rule
+  // is stated once and read from its owner; what stays here is the fact that this suite
+  // covers the range axis at all, so removing it from the other file turns this red.
+  const all = [];
+  for (const p of DEMO_PATCHES) all.push(...patchViolations(p, registry));
+  const ranges = all.filter((v) => v.includes("outside") || v.includes("is not one of"));
+  assert.deepEqual(ranges, [], `knob values the engine would clamp:\n  ${ranges.join("\n  ")}`);
 });
 
 check("EVERY knob a blueprint names LANDS on a key the widget actually has", () => {

@@ -120,6 +120,7 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     distinct: 28, families: ["granular", "FDN/plate reverb", "wavetable", "FM", "chaotic/generative sequencing"],
   },
   deviations: [
+    "SEVEN UNRESOLVABLE VULT VALUES ARE DROPPED RATHER THAN CARRIED AS RAW INDICES, AND THAT IS A CRASH FIX. Caudal's Speed (−0.325) and the six Tangents' fifth param (`p4`, 0.6 on every one of tangent1…tangent6). A `pN` is not a knob any spec declares, so `buildPatchItems` threw on it and THE PATCH COULD NOT BE INSERTED. Tangents' p4 is a fifth param VC-10 does not model — never 0 and never absent, which says it is an input-level-like control neutral at 0.6, but a name would still not license copying the number onto a knob we do not have. Caudal's Speed is bipolar in Vult and 0…1 here, so the raw negative clamps to a stopped chain while the document claims otherwise. Both numbers are preserved in this sentence; recover them the day Vult's param enum is known.",
     "Inklen-CableColourKey x1 and VCV-Recorder x1 dropped — a cable-colour legend and a file writer, neither of them sound.",
     "Core/AudioInterface2 substituted by our audio_output — NODE_REGISTRY.md marks it `chrome`.",
     "MindMeld MixMaster + AuxExpander and all six Fundamental/Mixer instances substituted by our audio_mixer (unity summing with per-channel level). What is lost is MixMaster's per-strip EQ and metering, neither of which this patch uses; what is preserved is the SEND/RETURN, rebuilt as an acyclic dry+wet split — see the file header.",
@@ -149,10 +150,13 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     // `wave` is Bogaudio's own `configSwitch` index and 4 is `square` (BOG_LLFO_WAVES).
     { id: "llfoFast", type: "audio_vcv_llfo", col: 0, row: 4, knobs: { frequency: 12.941762, slow: "on", wave: "square", scale: 1 } },
     { id: "walk", type: "audio_vcv_walk", col: 0, row: 5, knobs: { rate: 0.3139, scale: 0.3193 } },
-    // `speed` is Caudal's param 0; the harvested value is left as found and is outside
-    // our 0…1 knob, because Rack clamps before saving so a stored −0.325 proves Vult's
-    // own Speed knob is bipolar. Its bounds are closed source, so no rescale is invented.
-    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 6, knobs: { speed: -0.325 } },
+    // `speed` is Caudal's param 0. THE HARVESTED −0.325 IS DROPPED and the knob sits at its
+    // default: Rack clamps before saving, so a stored −0.325 proves Vult's own Speed knob is
+    // bipolar while VC-10 models it 0…1, and its real bounds are closed source so no rescale
+    // is invented. Writing the raw number anyway made the document say −0.325 while our
+    // engine clamped it to 0 — a stopped pendulum, stated nowhere. See vcv-ambient-drone's
+    // Caudal for the same call and the full reasoning.
+    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 6 },
     // ── COLUMN 1 — the two sample-and-holds that decide what the machine does ─
     { id: "sh1", type: "audio_vcv_samplehold", col: 1, row: 0 },
     { id: "reseedEdge", type: "audio_trigger", col: 1, row: 1, knobs: { pulseMs: 5 } },
@@ -197,14 +201,14 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     { id: "fade1", type: "audio_vcv_fade", col: 10, row: 0, knobs: { in: 0.9425, out: 0.9127 } },
     // Tangents' param 0 is the Cutoff CV, so it is converted out of Vult's own 0…1 CV
     // domain into our hertz by their law (`synth/vc10_kernels.vultCvToHz`); param 1 is
-    // Resonance. `p4` is a fifth param VC-10 does not model and stays raw — see the
-    // reasoning at vcv-ambient-drone's Tangents.
-    { id: "tangent1", type: "audio_vcv_tangents", col: 10, row: 2, knobs: { cutoff: 2533, p4: 0.6 } },
-    { id: "tangent2", type: "audio_vcv_tangents", col: 10, row: 3, knobs: { cutoff: 1730, p4: 0.6 } },
-    { id: "tangent3", type: "audio_vcv_tangents", col: 10, row: 4, knobs: { cutoff: 8228, p4: 0.6 } },
-    { id: "tangent4", type: "audio_vcv_tangents", col: 10, row: 5, knobs: { cutoff: 1532, p4: 0.6 } },
-    { id: "tangent5", type: "audio_vcv_tangents", col: 10, row: 6, knobs: { cutoff: 1642, resonance: 0.1575, p4: 0.6 } },
-    { id: "tangent6", type: "audio_vcv_tangents", col: 10, row: 7, knobs: { cutoff: 1559, resonance: 0.1625, p4: 0.6 } },
+    // Resonance. `p4` is a fifth param VC-10 does not model, so it is DROPPED rather than
+    // written raw — see the reasoning at vcv-ambient-drone's Tangents.
+    { id: "tangent1", type: "audio_vcv_tangents", col: 10, row: 2, knobs: { cutoff: 2533 } },
+    { id: "tangent2", type: "audio_vcv_tangents", col: 10, row: 3, knobs: { cutoff: 1730 } },
+    { id: "tangent3", type: "audio_vcv_tangents", col: 10, row: 4, knobs: { cutoff: 8228 } },
+    { id: "tangent4", type: "audio_vcv_tangents", col: 10, row: 5, knobs: { cutoff: 1532 } },
+    { id: "tangent5", type: "audio_vcv_tangents", col: 10, row: 6, knobs: { cutoff: 1642, resonance: 0.1575 } },
+    { id: "tangent6", type: "audio_vcv_tangents", col: 10, row: 7, knobs: { cutoff: 1559, resonance: 0.1625 } },
     // ── COLUMN 11 — the granulator and the remaining fades ────────────────
     { id: "simpl", type: "audio_vcv_simpliciter", col: 11, row: 0 },
     { id: "fade3", type: "audio_vcv_fade", col: 11, row: 2, knobs: { in: 10, out: 3 } },
@@ -835,6 +839,7 @@ export const VCV_RAMPAGE_GENERATIVE = {
     distinct: 32, families: ["granular", "FDN/plate reverb", "physical modelling", "FM", "chaotic/generative sequencing", "polyphony/voice allocation"],
   },
   deviations: [
+    "ELEVEN UNRESOLVABLE CLOSED-SOURCE DIALS ARE DROPPED RATHER THAN CARRIED AS RAW INDICES, AND THAT IS A CRASH FIX. Basal (p2 0.087, p3 0.225, p4 0.4515, p5 0.543), Instruō saich (p0 0.4755, p7 1, p8 0.5) and the four Tangents' fifth param (`p4`, 0.6 on tang1…tang4). A `pN` key is not a knob any spec declares, so `buildPatchItems` threw on it and THE PATCH COULD NOT BE INSERTED. No index→name table for these modules exists in this repo: Vult compiles from a private .vult, Instruō was never cloned and VC-10's saich spec is behaviour-only off the vendor PDF, so no param enum was ever read. Basal shows why a positional guess is not the fallback — Rack's module has at least six params and VC-10 models four, so the indices do not line up with the names even in principle. The numbers are preserved in this sentence.",
     "RAMPAGE'S TWO CV FEEDBACK LOOPS ARE BROKEN, and they are the deviation to know about. Originally `Rampage[eoc A] -> SampleHold -> VCA -> Rampage[rise CV A, fall CV A]` (and the same on channel B): the module re-times ITSELF from its own end-of-cycle. That is a directed cycle. Here the four rise/fall CVs come from four ochd taps instead, so the times still wander and no longer wander because of Rampage. The sample-and-hold and VCA that used to close the loop are kept and now attenuate CV for the quantizers, which is the other thing VCA-1 does in the original.",
     "R7-UNITS: ML Quantum emits V/oct volts and a pitch port reads SEMITONES, so `pitchNum` (a Number node holding 12) and `pitchMul1..3` (Math nodes on multiply) sit between them — three nodes the original does not have. Without them all three voices would drift inside one semitone.",
     "NYSTHI/SimplerTapeControl dropped: it is the Simpliciter's transport panel, not a sound. Stoermelder-P1/Mb (a module browser) and ModularFungi/Color12HP (a coloured blank) dropped as furniture.",
@@ -889,18 +894,29 @@ export const VCV_RAMPAGE_GENERATIVE = {
     { id: "pitchMul2", type: "node_math", col: 6, row: 1, knobs: { op: "multiply" } },
     { id: "pitchMul3", type: "node_math", col: 6, row: 2, knobs: { op: "multiply" } },
     // ── COLUMN 7 — four voices, all four pitched and gated by Rampage's edges ─
-    { id: "basal", type: "audio_vcv_basal", col: 7, row: 0, knobs: { p2: 0.087, p3: 0.225, p4: 0.4515, p5: 0.543 } },
+    // Basal's four harvested dials (p2 0.087, p3 0.225, p4 0.4515, p5 0.543) ARE DROPPED
+    // and the node inserts at its defaults. They were raw Rack param indices — Vult is
+    // closed source, no index→name table exists in this repo, and VC-10 models only four
+    // knobs (tune/oct/mod1/mod2) against a Rack module with at least six params. A `pN` is
+    // not a knob any spec declares, so these threw at insert. The numbers are kept in this
+    // patch's deviations; pairing them onto the named knobs by position would be invention.
+    { id: "basal", type: "audio_vcv_basal", col: 7, row: 0 },
     { id: "fmop", type: "audio_vcv_fmop", col: 7, row: 1, knobs: { attack: 0.2, decay: 0.9998, sustain: 1, release: 0.9998, feedback: 0.342, level: 1, envToLevel: "on" } },
     { id: "plaits", type: "audio_vcv_plaits", col: 7, row: 2, knobs: { harmonics: 0.203, timbre: 0.4955, morph: 0.5, timbre_cv: 0.198, lpg_color: 0.5, lpg_decay: 0.5 } },
-    { id: "saich", type: "audio_vcv_saich", col: 7, row: 3, knobs: { p0: 0.4755, p7: 1, p8: 0.5 } },
+    // saich's three harvested dials (p0 0.4755, p7 1, p8 0.5) ARE DROPPED, same call and
+    // same reason: Instruō was never cloned, VC-10's spec is `behaviourOnly` off the vendor
+    // PDF, so no param enum was ever read and the indices name nothing. Numbers preserved
+    // in this patch's deviations.
+    { id: "saich", type: "audio_vcv_saich", col: 7, row: 3 },
     // ── COLUMN 8 — THE ENVELOPE HAT (voiceVca) and four lowpass gates ──────
     { id: "voiceVca", type: "audio_vca", col: 8, row: 0, knobs: { gain: 1 } },
-    // Cutoff CV → hertz, Resonance and the cutoff attenuverter as-is; `p4` stays raw.
-    // The reasoning for all four is at vcv-ambient-drone's Tangents.
-    { id: "tang1", type: "audio_vcv_tangents", col: 8, row: 1, knobs: { cutoff: 411, resonance: 0.3885, cutoffAtten: 0.156, p4: 0.6 } },
-    { id: "tang2", type: "audio_vcv_tangents", col: 8, row: 2, knobs: { cutoff: 2586, p4: 0.6 } },
-    { id: "tang3", type: "audio_vcv_tangents", col: 8, row: 3, knobs: { cutoff: 1047, resonance: 0.111, cutoffAtten: 0.309, p4: 0.6 } },
-    { id: "tang4", type: "audio_vcv_tangents", col: 8, row: 4, knobs: { cutoff: 1025, cutoffAtten: 0.201, p4: 0.6 } },
+    // Cutoff CV → hertz, Resonance and the cutoff attenuverter as-is; `p4` IS DROPPED (it
+    // is Tangents' fifth param, which VC-10 does not model, so the key landed on no leaf
+    // and threw). The reasoning for all four is at vcv-ambient-drone's Tangents.
+    { id: "tang1", type: "audio_vcv_tangents", col: 8, row: 1, knobs: { cutoff: 411, resonance: 0.3885, cutoffAtten: 0.156 } },
+    { id: "tang2", type: "audio_vcv_tangents", col: 8, row: 2, knobs: { cutoff: 2586 } },
+    { id: "tang3", type: "audio_vcv_tangents", col: 8, row: 3, knobs: { cutoff: 1047, resonance: 0.111, cutoffAtten: 0.309 } },
+    { id: "tang4", type: "audio_vcv_tangents", col: 8, row: 4, knobs: { cutoff: 1025, cutoffAtten: 0.201 } },
     // ── COLUMN 9 — one delay per voice, which is what makes it a WASH ──────
     { id: "delay", type: "audio_delay", col: 9, row: 0, knobs: { time: 0.602, feedback: 0.6635, wet: 0.5, dry: 0.5 } },
     { id: "chrono1", type: "audio_vcv_chronoblob2", col: 9, row: 1, knobs: { time: 0.68, feedback: 0.434, mix: 1 } },

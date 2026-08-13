@@ -508,7 +508,8 @@ export const VCV_AMBIENT_DRONE = {
     "FELINE'S TWO CV JACKS BECOME ONE SUMMED INPUT — `Feline.cpp:43-44` adds CV1_1 and CV2_1 into cutoff, so a Mixer does the same addition. Here that means Add5's shifted chaos and WHITE NOISE arrive on the cutoff together, which is what makes the filter hiss-modulated rather than smoothly swept. The per-jack attenuverters (0.192 and 0.228) are lost, so both arrive at full depth.",
     "Plateau #1's `Input high cut CV` attenuverter (−0.309) has no counterpart on VC-5's node, which exposes the CV jack without a depth trim; the cable itself is wired.",
     "NYSTHI/complexSimpler plays a WAV the patch names on the author's D:\\ drive ('Birds and Cars.wav'). We do not have it, so this node is a placeholder rather than our Sampler — a sampler with no buffer is silent and looks finished, which is the failure the placeholder scheme exists to make loud.",
-    "Vult Vessek, Caudal and Tangents, JW Add5, Bogaudio Reftone/PEQ6, Squinky Super and complexSimpler are placeholders. Vult is CLOSED SOURCE — its DSP is generated from a private .vult — so those rows carry raw port indices and raw param floats: R7-UNITS cannot convert a quantity whose identity is unknown.",
+    "Vult Vessek, Caudal and Tangents, JW Add5, Bogaudio Reftone/PEQ6, Squinky Super and complexSimpler are placeholders. Vult is CLOSED SOURCE — its DSP is generated from a private .vult — so R7-UNITS cannot convert a quantity whose identity is unknown.",
+    "THE UNRESOLVED VULT ROWS ARE NOW DROPPED RATHER THAN CARRIED AS RAW INDICES, AND THAT IS THE FIX FOR A CRASH, NOT A TIDY-UP. They used to be written as `pN` knob keys and `iN` wire ports — the only true thing known about them. But a `pN` is not a knob any spec declares and an `iN` is not a port, so `buildPatchItems` threw (`node \"vessek\" … has no knob \"p1\"`) and THE PATCH COULD NOT BE INSERTED AT ALL: the palette command that builds it crashed on this entry. Carrying an unresolvable value only looks like preservation while nothing reads it; the moment something did, it was a landmine. What is dropped: Vessek's eleven dials (p1 −0.0092, p4 2, p6 0.0135, p7 0.225, p10 0.5, p21 0.462, p22 1, p23 0.669, p24 0.79, p25 0.639, p26 −0.774) and its six modulation-matrix cables (add5.volt_1→i3, caudal.y_3→i4, add5.volt_2→i5, caudal.y_4→i6, caudal.x_2→i7, caudal.x_1→i8); Tangents' fifth unmodelled param (p4 0.6); and Caudal's Speed (−0.327, bipolar in Vult, 0…1 here, so our engine would clamp it to a stopped chain while the document read −0.327). THE NUMBERS SURVIVE IN THIS SENTENCE, which is the right home for a quantity no knob can hold: recover them the day Vult's param enum is known, and DO NOT guess an alignment onto the named knobs in the meantime — Vessek declares seventeen and the survey gives eleven numbers, so any pairing would play confidently and be wrong.",
     "BOGAUDIO PEQ6 IS DECLARED AS ITS OWN TYPE (`audio_vcv_peq6`) AND THAT NEEDS A RULING. VC-3b has written `audio_vcv_peq`, a 2..14-band PEQ with THREE inputs — in, frequency CV, bandwidth CV — and no per-band level CV jacks. The C++ has them (`LEVEL1_INPUT` … `LEVEL6_INPUT` at indices 3, 5, 7, 9, 11, 13) and this patch's whole formant trick is six cables into them. Either VC-3b's node gains the jacks or this patch loses its subject; until that is decided the placeholder keeps the patch honest.",
   ],
   nodes: [
@@ -518,11 +519,14 @@ export const VCV_AMBIENT_DRONE = {
     // index and the name agree here; the number simply is not what the knob takes.
     { id: "reftone", type: "audio_vcv_reftone", col: 0, row: 0, knobs: { pitch: "A", octave: 4 } },
     // `speed`, not `p0` — Caudal's param 0 is the Speed knob the manual lists first, and
-    // vcv-microcosm already spells it that way. THE VALUE IS LEFT AS HARVESTED AND IS
-    // OUT OF OUR KNOB'S RANGE: Rack clamps a param to its own bounds before saving, so a
-    // stored −0.327 proves Vult's Speed knob is BIPOLAR while VC-10 models it as 0…1. The
-    // rescale needs Vult's real bounds, which are closed source, so it is not guessed here.
-    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 1, knobs: { speed: -0.327 } },
+    // vcv-microcosm already spells it that way. THE HARVESTED −0.327 IS DROPPED AND THE
+    // KNOB SITS AT ITS DEFAULT. Rack clamps a param to its own bounds before saving, so a
+    // stored −0.327 proves Vult's Speed knob is BIPOLAR while VC-10 models it as 0…1, and
+    // the rescale needs Vult's real bounds, which are closed source. Writing the raw number
+    // anyway is the worst of the three options: our engine clamps it to 0, so the DOCUMENT
+    // would read −0.327 while the SOUND is a stopped chain, and the Inspector would show a
+    // knob outside its own track. Absent-and-recorded beats present-and-lying.
+    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 1 },
     { id: "noiseW", type: "audio_noise", col: 0, row: 2, knobs: { color: "white", level: 1 } },
     { id: "noiseP", type: "audio_noise", col: 0, row: 3, knobs: { color: "pink", level: 1 } },
     // squinkylabs is open, so these four are read off `composites/Super.h`'s own
@@ -533,10 +537,15 @@ export const VCV_AMBIENT_DRONE = {
     // ADD5 IS THE HINGE OF THE WHOLE PATCH: six chaotic voltages in, six unipolar copies
     // out, and those copies are what the EQ's band levels and Vessek's timbre inputs read.
     { id: "add5", type: "audio_vcv_add5", col: 1, row: 1 },
-    {
-      id: "vessek", type: "audio_vcv_vessek", col: 2, row: 0,
-      knobs: { p1: -0.0092, p4: 2, p6: 0.0135, p7: 0.225, p10: 0.5, p21: 0.462, p22: 1, p23: 0.669, p24: 0.79, p25: 0.639, p26: -0.774 },
-    },
+    // VESSEK'S ELEVEN HARVESTED DIALS ARE DROPPED, AND THE NODE INSERTS AT ITS DEFAULTS.
+    // They were stored as `p1, p4, p6, p7, p10, p21…p26` — RAW RACK PARAM INDICES, because
+    // Vult is closed source and R7-UNITS could not name them (the deviation note below says
+    // so). But a `pN` key is not a knob VC-10 declares, and `buildPatchItems` throws on a
+    // knob naming nothing — so this node is why the whole patch crashed the palette command
+    // rather than merely sounding wrong. An index cannot be carried and must not be
+    // GUESSED onto a named knob: Vessek has seventeen, the survey gives eleven numbers, and
+    // any alignment between them would be invention that plays confidently and is wrong.
+    { id: "vessek", type: "audio_vcv_vessek", col: 2, row: 0 },
     // THREE OF THE FOUR VULT DIALS RESOLVE, AND THE FOURTH DOES NOT.
     // `p2` is the only one the corpus ever stores NEGATIVE (−1.0 elsewhere), and an
     // attenuverter is the only ±1 control Tangents has, so p2 is `cutoffAtten`. `p1` is
@@ -544,10 +553,13 @@ export const VCV_AMBIENT_DRONE = {
     // a zero input gain would silence them — leaving `resonance`. `p0` is the Cutoff CV
     // the manual lists first, converted out of Vult's 0…1 CV domain into our hertz by
     // their own law (`synth/vc10_kernels.vultCvToHz(0.5)`).
-    // `p4` STAYS RAW: Tangents has a fifth param VC-10 does not model, it is never 0 and
-    // never absent, and both of those say it is an input-level-like control whose neutral
-    // is 0.6 rather than 0 — so even its name would not license copying the number across.
-    { id: "tangents", type: "audio_vcv_tangents", col: 2, row: 3, knobs: { cutoff: 1047, resonance: 0.3495, cutoffAtten: 0.618, p4: 0.6 } },
+    // `p4` IS DROPPED. It was carried as a raw index on the reasoning that Tangents has a
+    // fifth param VC-10 does not model, never 0 and never absent, so probably an
+    // input-level-like control neutral at 0.6. All of that is still true and none of it
+    // makes `p4` a knob: VC-10 declares cutoff/cutoffAtten/resonance/drive and nothing
+    // else, so the key landed on no leaf and threw. A param we do not model is recorded in
+    // `deviations`, which is where the other unmodelled Vult controls already are.
+    { id: "tangents", type: "audio_vcv_tangents", col: 2, row: 3, knobs: { cutoff: 1047, resonance: 0.3495, cutoffAtten: 0.618 } },
     { id: "felineCv", type: "audio_mixer", col: 2, row: 5, knobs: { level1: 1, level2: 1, master: 1 } },
     {
       id: "peq6", type: "audio_vcv_peq6", col: 3, row: 0,
@@ -610,18 +622,14 @@ export const VCV_AMBIENT_DRONE = {
     { from: "caudal", fromPort: "x_4", to: "add5", toPort: "volt_4" },
     { from: "caudal", fromPort: "y_1", to: "add5", toPort: "volt_5" },
     { from: "caudal", fromPort: "y_2", to: "add5", toPort: "volt_6" },
-    // VESSEK'S `i3`…`i8` ARE UNRESOLVED AND ARE LEFT AS INDICES ON PURPOSE. They are the
-    // six jacks of Vult's MODULATION-ASSIGNMENT section, whose destinations live in the
-    // module's own JSON rather than in the cable, and VC-10 replaced that matrix with four
-    // fixed CV inlets (its D-VULTMOD). Naming them would require Vessek's param enum,
-    // which is closed source. A wrong CV destination is inaudible as an error and ruinous
-    // as a sound, so these six wires keep the only true thing about them: their index.
-    { from: "add5", fromPort: "volt_1", to: "vessek", toPort: "i3" },
-    { from: "caudal", fromPort: "y_3", to: "vessek", toPort: "i4" },
-    { from: "add5", fromPort: "volt_2", to: "vessek", toPort: "i5" },
-    { from: "caudal", fromPort: "y_4", to: "vessek", toPort: "i6" },
-    { from: "caudal", fromPort: "x_2", to: "vessek", toPort: "i7" },
-    { from: "caudal", fromPort: "x_1", to: "vessek", toPort: "i8" },
+    // VESSEK'S `i3`…`i8` ARE DROPPED, NOT CARRIED AS INDICES — see the deviation note.
+    // They were the six jacks of Vult's MODULATION-ASSIGNMENT section, whose destinations
+    // live in the module's own JSON rather than in the cable, and VC-10 replaced that
+    // matrix with four fixed CV inlets (its D-VULTMOD). Naming them would require Vessek's
+    // param enum, which is closed source. A wrong CV destination is inaudible as an error
+    // and ruinous as a sound — but an index is not a port, and `buildPatchItems` refuses a
+    // wire naming one, so the patch could not be INSERTED AT ALL. A dropped cable listed in
+    // `deviations` is the honest form of "unresolved"; a wire to `i3` was the crashing one.
     // ── THE FORMANT SHAPER: six band levels, six chaotic voltages ─────────────
     { from: "vessek", fromPort: "out", to: "peq6", toPort: "in" },
     { from: "add5", fromPort: "volt_1", to: "peq6", toPort: "level1_cv" },
