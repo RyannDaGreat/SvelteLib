@@ -16,6 +16,7 @@
   import PresentDock from "./PresentDock.svelte";
   import SlideNav from "./SlideNav.svelte";
   import { isStatic } from "./storageMode.js";
+  import { Html2ImageAutoRender } from "./html2imageAutoRender.js";
   import { offlineRequirement } from "./connectivity.js";
   import { searchIconifyCells } from "../plugins/iconify.js"; // the offline probe's hook (see __powerrp_searchIconify)
   import { commandUnavailableReason, PLURAL_SCOPE } from "../core/commands.js";
@@ -625,6 +626,31 @@
   const zipParam = new URLSearchParams(location.search).get(ZIP_PARAM);
   if (zipParam) openBootZip(zipParam);
   else app.restoreDraft().catch((e) => console.error(`PowerRP boot: restoring the unsaved draft failed — ${e?.message ?? e}`));
+
+  // ── THE HTML TO IMAGE AUTO-RENDERER (R7-43a) ────────────────────────────────
+  // User: "i don't want to have to press capture. it should be automatic in every
+  // way, when the html property changes so shohuld that."
+  //
+  // The service watches for widgets whose stored picture no longer matches their
+  // stored HTML and re-renders them. It is started HERE, in the shell, because it is
+  // strictly an EDITOR behaviour: playback, video export and cli/render.js read the
+  // captured asset and never the source, so nothing in a render path may import it
+  // (core/html2image_staleness.js's determinism note).
+  //
+  // WOKEN BY `onDocumentChanged` AND NOT BY AN `$effect`. A render WRITES the document
+  // this watcher READS, and an effect doing both is the effect_update_depth_exceeded
+  // failure this file's other comments record. The callback runs after the commit has
+  // landed, so there is no reactive edge to close.
+  //
+  // THE FIRST CALL IS THE ARRIVAL CASE, and it is the half R7-43a added: a deck whose
+  // widgets carry no picture (or a picture with no provenance) renders on OPEN, with
+  // no gesture at all. It runs after the boot load paths above so the document it
+  // scans is the one that was actually restored.
+  const autoRender = new Html2ImageAutoRender(app);
+  const stopAutoRender = app.onDocumentChanged(() => autoRender.notify());
+  window.__powerrp_html2imageAutoRender = autoRender; // probe hook (renderCount, isRendering, lastError)
+  autoRender.notify();
+  $effect(() => () => { stopAutoRender(); autoRender.dispose(); });
 
   /**
    * Command (async). The `?zip=<url>` boot path: download the archive with REAL

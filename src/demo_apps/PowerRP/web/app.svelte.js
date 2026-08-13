@@ -2578,6 +2578,12 @@ export class PowerRPApp {
     this.handleSelection = snap.handleSelection ?? [];
     this.slideIndex = Math.min(snap.slideIndex, snap.doc.slides.length - 1);
     if (snap.viewport) this.canvasActions?.setViewport(snap.viewport);
+    // UNDO AND REDO ARE DOCUMENT CHANGES TOO. This is not symmetry for its own sake:
+    // R7-43a's rule is that staleness is a property of the DOCUMENT, so undoing an
+    // html edit must be re-examined exactly like making one. (It normally renders
+    // NOTHING — undo restores the source, the asset ref and the fingerprint as one
+    // commit, so the widget lands FRESH and reuses its old picture.)
+    this.#documentChanged();
   }
 
   commit(doc) {
@@ -2588,6 +2594,45 @@ export class PowerRPApp {
       localStorage.setItem(AUTOSAVE_KEY, serialize(doc));
     } catch (e) {
       console.warn("Autosave failed:", e); // quota etc. — report, keep working
+    }
+    this.#documentChanged();
+  }
+
+  /**
+   * WATCHERS THE DOCUMENT WAKES — the seam a service uses to say "the document moved,
+   * look again". Registered by the editor shell (web/App.svelte), empty everywhere
+   * else, which is what keeps this file importable by the CLI and the node suites.
+   *
+   * A PLAIN CALLBACK LIST AND NOT AN `$effect`, deliberately: its first consumer
+   * (web/html2imageAutoRender.js) WRITES the document in response to reading it, and
+   * an effect that reads `doc` and commits `doc` is the `effect_update_depth_exceeded`
+   * failure App.svelte's own comments record. A callback invoked AFTER the write has
+   * landed has no reactive edge to close.
+   */
+  #docWatchers = [];
+
+  /** Command. Registers a document watcher, returning its unsubscribe (the shell's
+   * teardown calls it). */
+  onDocumentChanged(fn) {
+    this.#docWatchers.push(fn);
+    return () => { this.#docWatchers = this.#docWatchers.filter((w) => w !== fn); };
+  }
+
+  /**
+   * Command. Wakes every document watcher.
+   *
+   * A WATCHER THAT THROWS MUST NOT TAKE THE COMMIT WITH IT — the document has already
+   * changed and the undo entry is already written, so an exception here would leave
+   * the app inconsistent over what is, from `commit`'s point of view, someone else's
+   * bookkeeping. Reported loudly and the remaining watchers still run.
+   */
+  #documentChanged() {
+    for (const fn of this.#docWatchers) {
+      try {
+        fn();
+      } catch (e) {
+        console.error("A document watcher threw (the commit itself already landed):", e);
+      }
     }
   }
 
