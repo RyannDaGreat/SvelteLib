@@ -482,8 +482,14 @@ test("proof shapes: both register into a full built-in registry and inherit the 
     // The claim is PARITY WITH A BUILT-IN, derived from one — not a transcription
     // of today's pool, which would have to be re-typed every time a generic tool
     // is added and says nothing about asset plugins when it is.
-    assert.deepEqual(plugin.toolGroups.map((g) => g.id), registry.get("rect").toolGroups.map((g) => g.id),
-      `${type}: an asset plugin must inherit exactly the tool groups a native bbox widget does`);
+    // Preset families are excluded from the parity claim: they are per-plugin
+    // CONTENT declarations (a plugin's own `presets:`/`presetFamilies:`), not part
+    // of the generic bbox tool contract this asserts — rect gained a "presets"
+    // group under the R7-39 presets law, and an asset plugin without presets is
+    // not thereby second-class. Ids are "presets" (flat) or "presets.<id>".
+    const genericGroups = (p) => p.toolGroups.map((g) => g.id).filter((id) => id !== "presets" && !id.startsWith("presets."));
+    assert.deepEqual(genericGroups(plugin), genericGroups(registry.get("rect")),
+      `${type}: an asset plugin must inherit exactly the GENERIC tool groups a native bbox widget does`);
     assert.equal(plugin.anchors(plugin.defaults).length, 9, "the nine standard anchors");
   }
   // The TEMPLATE composes the effects bundle itself (it declares the rows and

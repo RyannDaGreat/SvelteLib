@@ -56,6 +56,7 @@
   import { onMount } from "svelte";
   import Modal from "../../../lib/Modal.svelte";
   import GatedIconButton from "./GatedIconButton.svelte";
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import {
     createSurgeGuiSession,
     keyLayout,
@@ -626,13 +627,14 @@
              word, not a glyph — there is no icon that reads as "fit to window"),
              so it is written out here rather than through GatedIconButton, which
              exists for the icon case. -->
-        <button
-          type="button"
-          class="surge-btn"
-          aria-disabled={!session}
-          title={session ? "Fit the editor to the window" : "Fit the editor to the window — unavailable until the Surge editor finishes loading"}
-          onclick={() => { if (session) fitZoom(); }}
-        >Fit</button>
+        <Tooltip text={session ? "Fit the editor to the window" : "Fit the editor to the window — unavailable until the Surge editor finishes loading"}>
+          <button
+            type="button"
+            class="surge-btn"
+            aria-disabled={!session}
+            onclick={() => { if (session) fitZoom(); }}
+          >Fit</button>
+        </Tooltip>
       </span>
     </div>
 
