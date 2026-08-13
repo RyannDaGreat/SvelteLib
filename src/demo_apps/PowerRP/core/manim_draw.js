@@ -129,6 +129,11 @@
  */
 
 import { curveLength, curveTuple, partialCubic, subpathFromTuples } from "./morph_geometry.js";
+// The shared fail-closed unit clamp. This file's own copy passed NaN through, and
+// `trimSubpathByLength` is why that mattered: a NaN fraction is false for BOTH its
+// `f <= 0` and `f >= 1` guards, so it fell into the trim math instead of returning
+// the "draw nothing" / "draw whole" answers those guards exist to give.
+import { clamp01Or0 as clamp01 } from "./unit_interval.js";
 
 /**
  * THE PHASE BOUNDARY. Hard-coded at 0.5 in BOTH Manim implementations, across
@@ -194,17 +199,6 @@ export function smooth(t) {
 export function doubleSmooth(t) {
   const x = clamp01(t);
   return x < 0.5 ? 0.5 * smooth(2 * x) : 0.5 + 0.5 * smooth(2 * x - 1);
-}
-
-/**
- * Pure function. Clamps to [0, 1].
- *
- * @example clamp01(-3) // 0
- * @example clamp01(0.4) // 0.4
- * @example clamp01(2) // 1
- */
-function clamp01(t) {
-  return t < 0 ? 0 : t > 1 ? 1 : t;
 }
 
 /**

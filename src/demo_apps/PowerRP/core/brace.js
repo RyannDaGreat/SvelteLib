@@ -45,6 +45,8 @@
  * KAPPA basis core/svg_paths.js uses for exactly this reason.
  */
 
+import { clamp01Or0 as clamp01 } from "./unit_interval.js";
+
 /**
  * Quarter-turn cubic constant: a control point KAPPA·r along the tangent makes a
  * cubic match a circular quarter-arc to within ~0.02%. Same value and same reason
@@ -264,13 +266,15 @@ export function handleSegments(s) {
 }
 
 /** Pure function. Clamp to 0..1, treating a non-finite value as 0 rather than
- *  poisoning the geometry with NaN.
+ *  poisoning the geometry with NaN. THE SHARED fail-closed clamp, imported at the
+ *  top of this file — its own copy of the body is where that contract was first
+ *  reasoned out, and core/unit_interval.js now states it once for all nine former
+ *  copies. Re-exported so `plugins/brace.js` and tests/brace_test.js keep reading
+ *  `clamp01` from the module they already depend on.
  *  @example clamp01(0.4) // 0.4
  *  @example clamp01(5) // 1
  *  @example clamp01(NaN) // 0 */
-export function clamp01(v) {
-  return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
-}
+export { clamp01 };
 
 /**
  * Pure function. An SVG path `d` for a brace between two points, bulging to a

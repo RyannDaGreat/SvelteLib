@@ -49,6 +49,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { clamp01Or0 as clamp01 } from "../../core/unit_interval.js";
 import { randUnit } from "../../core/particles.js"; // the seeded (seed,i,stream) hash — the sparkler's, reused so a stored seed is property state
 import { elementActive } from "../../core/lists.js"; // the shared per-element visibility read — hidden stops ramp straight past, byte-identically to never authoring them
 import { unitNormal } from "../../core/geometry.js"; // THIS file's name, but not this file's home: it imports the two brush modules below, so they could not import back
@@ -106,15 +107,19 @@ export function lerp(a, b, t) {
 }
 
 /**
- * Pure function. Clamps x into [0, 1].
+ * Pure function. Clamps x into [0, 1] — THE SHARED fail-closed clamp
+ * (core/unit_interval.js `clamp01Or0`), imported at the top of this file and
+ * re-exported under this name. The comparison-chain copy it replaces passed a
+ * non-finite value through, and both call sites here feed it straight into a
+ * SORT KEY (`clamp01(p.midpoint)` as a gradient stop offset and as a width-profile
+ * knot). A NaN key makes the comparator inconsistent, so an absent `midpoint` put
+ * the middle colour wherever the sort happened to leave it rather than at 0.
  *
  * @example clamp01(0.3) // 0.3
  * @example clamp01(1.5) // 1
  * @example clamp01(-0.2) // 0
  */
-export function clamp01(x) {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+export { clamp01 };
 
 /**
  * Pure function. The fractional part of x, always in [0, 1) (a negative input

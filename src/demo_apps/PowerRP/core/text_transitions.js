@@ -18,6 +18,8 @@
  * DOM-free / bare-node (the tests enforce it). No plugin or renderer imports.
  */
 
+import { clamp01Or0 as clamp01 } from "./unit_interval.js";
+
 // FNV-1a 32-bit constants (the reference offset basis + prime). Used for the
 // deterministic seed hash and reused as the multiply step of the index mixer.
 const FNV_OFFSET_BASIS = 0x811c9dc5;
@@ -30,7 +32,10 @@ const SCRAMBLE_GLYPHS = "!<>-_/[]{}=+*^?#%&@$~";
 
 /**
  * Pure function. Clamps a number into [0, 1] — the alpha guard shared by every
- * transition (a tween may briefly overshoot; endpoints must still be exact).
+ * transition (a tween may briefly overshoot; endpoints must still be exact). THE
+ * SHARED fail-closed clamp (core/unit_interval.js `clamp01Or0`), imported at the
+ * top of this file and re-exported under this name for the suites that read it
+ * from here.
  *
  * @param {number} x - any number
  * @returns {number} x confined to [0, 1]
@@ -39,9 +44,7 @@ const SCRAMBLE_GLYPHS = "!<>-_/[]{}=+*^?#%&@$~";
  * @example clamp01(0.5) // 0.5
  * @example clamp01(1.7) // 1
  */
-export function clamp01(x) {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+export { clamp01 };
 
 /**
  * Pure function. FNV-1a hash of a string → a uint32. The deterministic seed

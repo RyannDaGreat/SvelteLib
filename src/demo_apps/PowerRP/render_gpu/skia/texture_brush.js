@@ -79,6 +79,7 @@ import { randUnit } from "../../core/particles.js";
 import { reportOnce } from "../../core/report.js";
 import { unitNormal } from "../../core/geometry.js"; // the stroke family's shared perpendicular (was a local `leftNormalTB` copy)
 import { parseColor } from "../ir.js";
+import { clamp01Or0 as clamp01 } from "../../core/unit_interval.js";
 import { getSkiaImage } from "../gpu/image_registry.js";
 import { BRUSH_TEXTURES, textureIds, getTexture, textureUrl, firstTextureOf } from "./brush_textures/manifest.js";
 
@@ -109,15 +110,18 @@ const STREAM_JITTER = 0;           // per-segment colour-jitter magnitude
 // ── pure math helpers (doctested, bare-node executable) ───────────────────────
 
 /**
- * Pure function. Clamps x into [0, 1].
+ * Pure function. Clamps x into [0, 1] — THE SHARED fail-closed clamp
+ * (core/unit_interval.js `clamp01Or0`), imported at the top of this file and
+ * re-exported under this name. The comparison-chain copy it replaces passed a
+ * non-finite value through, which mattered at `clamp01(d / L)`: a zero-length
+ * contour makes `d / L` NaN, and that became the arc fraction driving both the
+ * taper and the texture U coordinate.
  *
  * @example clamp01(0.3) // 0.3
  * @example clamp01(1.5) // 1
  * @example clamp01(-0.2) // 0
  */
-export function clamp01(x) {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
+export { clamp01 };
 
 /**
  * Pure function. Linear interpolation from a to b at parameter t.

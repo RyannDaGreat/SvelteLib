@@ -62,6 +62,7 @@ export const EDITOR_FREEZE_TIME = 2;
 export const PARTICLE_HARD_CAP = 4000;
 
 import { reportOnce } from "./report.js";
+import { clamp01Or0 as clamp01 } from "./unit_interval.js";
 
 // ── deterministic hashing ─────────────────────────────────────────────────────
 
@@ -307,14 +308,16 @@ export function particleAt(p, i, t) {
   return { x, y, r, alpha, age };
 }
 
-/** Pure function. Clamps to [0, 1].
+/** Pure function. Clamps to [0, 1] — THE SHARED fail-closed clamp
+ * (core/unit_interval.js `clamp01Or0`), re-exported under this name. The
+ * comparison-chain copy this replaces passed NaN/undefined straight THROUGH
+ * (every comparison with NaN is false), which was an accident of the expression
+ * rather than a contract anything here wanted.
  * @example clamp01(-0.5) // 0
  * @example clamp01(0.5)  // 0.5
  * @example clamp01(2)    // 1
  */
-export function clamp01(v) {
-  return v < 0 ? 0 : v > 1 ? 1 : v;
-}
+export { clamp01 };
 
 /**
  * Pure function. THE emitter simulation: all particles alive at time `t`, as a
