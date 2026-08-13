@@ -64,6 +64,7 @@
 import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { NODE_INPUT_ROW_KIND } from "./nodeflow.js";
+import { VEC2_ROW_KIND } from "./vector_values.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
 import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeLabels, interpParamKeyFor, isInterpKey, isInterpParamKey, modeParams, modesForKey } from "./interp_modes.js";
@@ -882,6 +883,17 @@ export function linearEndpointsToAngle(from, to) {
  *             sequence) — see core/lists.js, which owns that mechanism and whose
  *             checkListDeclaration the import-time guard below runs over every
  *             list row.
+ *   vec2    → Vector2Pad over a SINGLE slot holding an `[x, y]` tuple, plus two
+ *             numeric boxes — the collapsed `[X] [Y] [pad]` grammar R7-36 names,
+ *             mounted as one control because the value here is ONE value.
+ *             DISTINCT FROM THE COMPOUND ROW, and the difference is the whole
+ *             reason this kind exists: a COMPOUND (core/properties.js COMPOUNDS)
+ *             is GROUPING over two rows the widget already declares separately,
+ *             so it writes two leaf paths; a `vec2` row's value is a single
+ *             stored tuple with no leaves to group, so it writes one. A global
+ *             variable is the case that has no leaves (core/var_kinds.js), which
+ *             is why the vec2 VAR KIND waited on this control and not the
+ *             reverse.
  *   nodeinput → a NODE WIDGET'S INPUT PORT: which output of which item is wired
  *             into it (core/nodeflow.js's `{item, port}`). A dropdown over the
  *             type-compatible outputs on the slide, plus a clear that
@@ -895,8 +907,9 @@ export function linearEndpointsToAngle(from, to) {
  * @example ROW_KINDS.includes("checkbox") // false (retired — see RETIRED_ROW_KINDS)
  * @example ROW_KINDS.includes("list") // true
  * @example ROW_KINDS.includes(NODE_INPUT_ROW_KIND) // true
+ * @example ROW_KINDS.includes(VEC2_ROW_KIND) // true
  */
-export const ROW_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "richtext", "action", LIST_ROW_KIND, NODE_INPUT_ROW_KIND];
+export const ROW_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "richtext", "action", LIST_ROW_KIND, NODE_INPUT_ROW_KIND, VEC2_ROW_KIND];
 
 /**
  * The row kinds that edit a NUMBER, so a value stored under them has an ORDERING

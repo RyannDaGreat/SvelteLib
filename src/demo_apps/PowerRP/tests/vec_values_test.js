@@ -22,8 +22,10 @@ import {
   paintColorPath, paintColorRefusal, foldColorComponent,
   makeVector, isNumericTensor, vectorValues, shapeMismatchRefusal, zipTensors,
   vectorBinaryOp, vectorMapFunction, vectorMapVariadic, vectorFor, vectorToStored,
+  VEC2_ROW_KIND, isVec2Value,
 } from "../core/vector_values.js";
 import { interpolate } from "../core/interpolators.js";
+import { ROW_KINDS } from "../core/properties.js";
 import { VAR_KINDS, VAR_KIND_ZEROS } from "../core/var_kinds.js";
 
 let passed = 0;
@@ -524,13 +526,22 @@ test("a vec2 variable's STORED value carries no runtime tag", () => {
   assert.equal(isNumericTensor(state.vars.origin), false);
 });
 
-test("there is deliberately NO vec2 VAR KIND yet — the control does not exist", () => {
-  // Recorded as an assertion so the omission is visible rather than forgotten.
-  // The evaluator half works (the tests above); the panel control does not, and
-  // compound_props_test pins that every kind must name a real row kind.
-  assert.ok(!VAR_KINDS.includes("vec2"),
-    "declaring the kind without a control would put an uneditable variable in the panel");
-  assert.equal(VAR_KIND_ZEROS.vec2, undefined);
+test("the vec2 VAR KIND ships, and it ships WITH a control (the omission, resolved)", () => {
+  // THIS TEST USED TO ASSERT THE OPPOSITE, and the flip is the point. It pinned
+  // "there is deliberately NO vec2 var kind" — an assertion of HONESTY, not of
+  // permanence: the kind was withheld because declaring it without a control
+  // would have put an uneditable variable in the panel. The control now exists
+  // (VEC2_ROW_KIND, Vector2Pad over a single tuple slot), so the same spirit is
+  // now served by asserting the kind and its control landed TOGETHER.
+  assert.ok(VAR_KINDS.includes("vec2"), "the vec2 variable kind is declared");
+  assert.ok(ROW_KINDS.includes(VEC2_ROW_KIND),
+    "and it names a REAL row kind — the invariant the omission was protecting");
+  // The zero is a PLAIN tuple: the `__vec` tag is a runtime wrapper the
+  // evaluator adds on read, and a zero carrying one would write it into every
+  // new variable's first keyframe.
+  assert.deepEqual(VAR_KIND_ZEROS.vec2, [0, 0]);
+  assert.equal(isNumericTensor(VAR_KIND_ZEROS.vec2), false, "the STORED zero carries no tag");
+  assert.ok(isVec2Value(VAR_KIND_ZEROS.vec2), "and it is a legal vec2 value of its own kind");
 });
 
 console.log(`vec_values_test: ${passed} passed${process.exitCode ? " (WITH FAILURES)" : ""}`);

@@ -92,11 +92,12 @@ export function fontVarRowAspects() {
  * `number` FIRST because it is the default and the overwhelming majority; the
  * rest are ordered by how often a deck wants them.
  */
-export const VAR_KINDS = ["number", "color", "boolean", "text", "font"];
+export const VAR_KINDS = ["number", "vec2", "color", "boolean", "text", "font"];
 
 /** The picker's labels. Sentence case, matching every other select in the app. */
 export const VAR_KIND_LABELS = {
   number: "Number",
+  vec2: "2-vector",
   color: "Color",
   boolean: "Boolean",
   text: "Text",
@@ -119,6 +120,11 @@ export const VAR_KIND_LABELS = {
  */
 export const VAR_KIND_ZEROS = {
   number: 0,
+  // A PLAIN TUPLE, carrying no runtime tag. `makeVector`'s `__vec` wrapper is
+  // added by the evaluator on READ and must never reach a saved document
+  // (pinned in tests/vec_values_test.js); a zero that carried one would put the
+  // tag into every new variable's first keyframe.
+  vec2: [0, 0],
   color: "#ffffff",
   boolean: false,
   text: "",
@@ -134,6 +140,7 @@ export const VAR_KIND_ZEROS = {
  */
 export const VAR_KIND_NOTES = {
   number: "A plain number — the default, and what every variable was before kinds existed. Scrub it, type it, or bind it to an equation.",
+  vec2: "A 2-vector — an [x, y] pair edited as two boxes plus a drag pad. Read it whole (= origin) or by component (= origin.x), and compose it with vector algebra: a widget bound to = origin + offset moves when either does.",
   color: "A colour, edited with the swatch picker. Bind a widget's fill to it (= brandColor) to recolour a whole deck from one row.",
   boolean: "True or false. Useful driven through an equation — a widget's Visible row bound to = showNotes turns a whole layer on and off.",
   text: "A string. Bind a text widget's content to it (= caption) to write one line once and show it on many slides.",
@@ -141,24 +148,29 @@ export const VAR_KIND_NOTES = {
 };
 
 /**
- * WHY THERE IS NO `vec2` VARIABLE KIND YET — a deliberate omission, recorded so
- * the next contributor does not re-derive it.
+ * THE `vec2` KIND SHIPPED (workstream VECUI_), and the omission it replaces is
+ * kept here rather than deleted, because the REASON it waited is the rule.
  *
- * R7-38 point 4 asks for a whole vector bound to a variable, and the EVALUATOR
- * half of that already works: a variable whose stored value is a `[x, y]` tuple
- * reads as a vector, enters the algebra, and projects with `.x`/`.y`
- * (core/expressions.js refValue; pinned in tests/vec_values_test.js). What is
- * missing is the CONTROL. `tests/compound_props_test.js` pins the invariant that
- * every VAR_KINDS member names a real ROW_KINDS control, so that the variables
- * panel can mount the Property Panel's own editor for it — and there is no
- * 2-vector row kind, because a compound row is grouping over two EXISTING leaf
- * rows and a variable has no leaves to group.
+ * WHAT THIS FILE USED TO SAY: there was no vec2 kind because there was no vec2
+ * CONTROL. The evaluator half had worked since the value layer — a variable
+ * holding an `[x, y]` tuple reads as a vector, enters the algebra and projects
+ * with `.x`/`.y` (core/expressions.js refValue) — but declaring a kind whose
+ * control does not exist would have put a variable in the panel that the panel
+ * cannot edit: the "control that lies about its own affordance" failure this
+ * codebase ruled against for the save dot. So the kind waited, and the omission
+ * was recorded as an ASSERTION so it stayed visible.
  *
- * Declaring the kind without the control would put a variable in the panel that
- * the panel cannot edit — the "control that lies about its own affordance"
- * failure this codebase already ruled against for the save dot. So the kind
- * waits on a real vec2 control, and the tuple path stays usable meanwhile by
- * anyone who writes the value.
+ * WHAT UNBLOCKED IT: `VEC2_ROW_KIND` (core/vector_values.js) — a real ROW_KINDS
+ * entry whose control is Vector2Pad over a SINGLE slot holding the tuple. The
+ * old note correctly diagnosed why the R7-36 compound row could not serve: a
+ * compound is GROUPING over two leaf rows the widget already declares, and a
+ * variable has no leaves to group. The answer was a control whose value IS the
+ * tuple, not a grouping over parts of one.
+ *
+ * So the invariant `tests/compound_props_test.js` pins — every VAR_KINDS member
+ * names a real ROW_KINDS control — is satisfied the ordinary way, by building
+ * the control, rather than by relaxing the rule. That is what the omission was
+ * protecting, and it is still protecting it for the next kind.
  */
 
 /**

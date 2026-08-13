@@ -187,6 +187,7 @@ import { ROW_KINDS, PROPS, interpRowFor, rowSupportsInterp } from "./properties.
 import { MORPH_KEY, MORPH_DEFAULT } from "./morph_property.js";
 import { LIST_ROW_KIND } from "./lists.js";
 import { NODE_INPUT_ROW_KIND } from "./nodeflow.js";
+import { VEC2_ROW_KIND } from "./vector_values.js";
 
 /**
  * The category the universal rows file under. It matches the id
@@ -342,11 +343,27 @@ export const PRESENTATIONAL_ROW_ASPECTS = [
  * to want, and it is ONE undo unit through the same setPreview → commitPreview path
  * as any other row.
  *
+ * VEC2 QUALIFIES, and it passes the same test `nodeinput` does. A `vec2` row's
+ * value is ONE self-contained `[x, y]` tuple stored at ONE slot, so the joint
+ * seam's "one already-computed value fanned out to N paths" is exactly what it
+ * needs — writing `[10, 20]` to three selected items means all three hold that
+ * pair, which is what it says. NOTHING ABOUT THE VALUE IS RELATIVE TO ITS HOLDER,
+ * which is the property that disqualifies `richtext` (a splice against the item's
+ * own runs) and would disqualify a hypothetical delta-vector: an absolute pair is
+ * shareable, an offset from each item's own position would not be.
+ *
+ * NOTE IT IS NOT THE XY COMPOUND. The Position compound is GROUPING over the `x`
+ * and `y` NUMBER rows, so a joint edit there is already covered by "number" twice
+ * over and never consults this list — the compound is not a kind. This entry is
+ * about a row whose single slot holds the tuple (a global variable's value being
+ * the case that has no leaves at all; core/var_kinds.js).
+ *
  * @example JOINT_EDITABLE_KINDS.includes("number") // true
  * @example JOINT_EDITABLE_KINDS.includes("nodeinput") // true (one reference, N receivers)
+ * @example JOINT_EDITABLE_KINDS.includes("vec2") // true (one absolute pair, N holders)
  * @example JOINT_EDITABLE_KINDS.includes("list") // false (see JOINT_UNEDITABLE_KINDS)
  */
-export const JOINT_EDITABLE_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "action", NODE_INPUT_ROW_KIND];
+export const JOINT_EDITABLE_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "action", NODE_INPUT_ROW_KIND, VEC2_ROW_KIND];
 
 /**
  * Row kinds that INTERSECT correctly but cannot yet be edited jointly, mapped to
