@@ -14,7 +14,7 @@
  *     the mapping spec, so baking is correct here specifically).
  */
 
-import { presetShapePath, custGeomPath } from "../pptx/preset_geometry.js";
+import { presetShapePath, custGeomPath, shadeSubpathFill } from "../pptx/preset_geometry.js";
 
 /** Presets with an existing 1:1 PowerRP native widget (mapping spec §3
  * DIRECT rows). Every other preset name routes to "pptxPreset". */
@@ -114,11 +114,42 @@ export function classifyGeometry(geometryIR, wPx, hPx, paints = {}) {
  * independently colored — literal hex is the only way both survive without
  * inventing a second ink row. The svg widget's own whole-graphic `fill`
  * override row is left OFF (the artwork's own literal colors stand, exactly
- * like an unrecolored icon). Per-path `fill="norm"`/`stroke` flags (ECMA-376)
- * decide whether THAT path participates in fill/stroke at all — multi-path
- * custGeom (Merge Shapes results, holes) collapses to ONE `<path>` element
- * with every subpath's `d` concatenated (nonzero-winding fill-rule handles
- * the holes), per the mapping spec §3 "Multi-path shapes" row.
+ * like an unrecolored icon).
+ *
+ * ── ONE `<path>` ELEMENT PER SUBPATH, NOT ONE FOR THE WHOLE SHAPE ────────────
+ * This used to JOIN every subpath's `d` into a single element and decide its
+ * fill/stroke with `.some()` — "is ANY subpath filled?", "is ANY subpath
+ * stroked?". That is the same defect `plugins/pptx_preset.js` was fixed for, and
+ * it discards the very flags ECMA-376 puts on each `<a:path>`: a shape whose
+ * first subpath is a filled body and whose rest are stroke-only DETAIL LINES
+ * (chartX's diagonals, a cube's edges) had those details FLOOD-FILLED, because
+ * one `fill="norm"` anywhere turned the fill on for all of them.
+ *
+ * So each subpath becomes its own element carrying its OWN flags, and the
+ * semantics are `presetPaintOps`' — the one place these rules are already
+ * reasoned out — transposed to markup:
+ *   fill "none"          -> that subpath contributes no fill element
+ *   fill "norm"          -> the shape's own resolved fill
+ *   fill darken/lighten* -> `shadeSubpathFill` of it (LibreOffice's cube faces)
+ *   stroke false/true    -> no / one stroke element
+ * A subpath that would draw NOTHING emits no element at all, rather than an
+ * invisible one.
+ *
+ * ── PAINT ORDER IS WHY FILLS AND STROKES ARE SEPARATE PASSES ────────────────
+ * SVG paints in DOCUMENT ORDER, so emitting every fill element and then every
+ * stroke element reproduces `presetPaintOps`' `[...fills, ...strokes]` exactly:
+ * outlines land on top of bodies rather than being half-buried by whichever
+ * subpath happens to come next. It also means a stroke-only detail line is drawn
+ * over the body it annotates, which is the whole point of it being separate.
+ *
+ * ── FILL RULE ───────────────────────────────────────────────────────────────
+ * `evenodd`, PER ELEMENT, matching `presetPaintOps` — and now correct for the
+ * right reason. The old joined path relied on NONZERO winding to punch holes,
+ * which only worked because the holes shared one element with their body; with
+ * one element per subpath a ring's two contours are still in the SAME `d` (a
+ * subpath here is one `<a:path>`, which may contain several contours), so
+ * `evenodd` is what LibreOffice writes for every fill in its own PDF of these
+ * shapes.
  *
  * @param {{d:string, fill:string, stroke:boolean}[]} subpaths
  * @param {number} wPx
@@ -126,11 +157,22 @@ export function classifyGeometry(geometryIR, wPx, hPx, paints = {}) {
  * @param {{fillHex:string|null, strokeHex:string|null}} paints - null means "this shape draws no fill/stroke at all" (PAINT_NONE)
  * @returns {string}
  *
- * @example custGeomToSvgSrc([{d:"M 0,0 L 10,0 L 10,10 Z", fill:"norm", stroke:true}], 10, 10, {fillHex:"#336699", strokeHex:"#000000"}) // '<svg viewBox="0 0 10 10"><path d="M 0,0 L 10,0 L 10,10 Z" fill="#336699" stroke="#000000"/></svg>'
+ * @example custGeomToSvgSrc([{d:"M 0,0 L 10,0 L 10,10 Z", fill:"norm", stroke:true}], 10, 10, {fillHex:"#336699", strokeHex:"#000000"}) // '<svg viewBox="0 0 10 10"><path d="M 0,0 L 10,0 L 10,10 Z" fill="#336699" fill-rule="evenodd"/><path d="M 0,0 L 10,0 L 10,10 Z" fill="none" stroke="#000000"/></svg>'
+ * @example // a stroke-only detail line is NOT flood-filled by its filled sibling
+ * @example custGeomToSvgSrc([{d:"M 0,0 L 9,9 Z", fill:"norm", stroke:false}, {d:"M 0,9 L 9,0", fill:"none", stroke:true}], 9, 9, {fillHex:"#f00", strokeHex:"#000"}) // '<svg viewBox="0 0 9 9"><path d="M 0,0 L 9,9 Z" fill="#f00" fill-rule="evenodd"/><path d="M 0,9 L 9,0" fill="none" stroke="#000"/></svg>'
+ * @example // PAINT_NONE on both: every subpath draws nothing, so the svg is empty
+ * @example custGeomToSvgSrc([{d:"M 0,0 L 1,1", fill:"norm", stroke:true}], 1, 1, {fillHex:null, strokeHex:null}) // '<svg viewBox="0 0 1 1"></svg>'
  */
 export function custGeomToSvgSrc(subpaths, wPx, hPx, paints = {}) {
-  const d = subpaths.map((p) => p.d).join(" ");
-  const hasFill = subpaths.some((p) => p.fill !== "none") && paints.fillHex;
-  const hasStroke = subpaths.some((p) => p.stroke) && paints.strokeHex;
-  return `<svg viewBox="0 0 ${wPx} ${hPx}"><path d="${d}" fill="${hasFill ? paints.fillHex : "none"}" stroke="${hasStroke ? paints.strokeHex : "none"}"/></svg>`;
+  const fills = paints.fillHex
+    ? subpaths
+      .filter((p) => p.fill !== "none")
+      .map((p) => `<path d="${p.d}" fill="${shadeSubpathFill(paints.fillHex, p.fill)}" fill-rule="evenodd"/>`)
+    : [];
+  const strokes = paints.strokeHex
+    ? subpaths
+      .filter((p) => p.stroke)
+      .map((p) => `<path d="${p.d}" fill="none" stroke="${paints.strokeHex}"/>`)
+    : [];
+  return `<svg viewBox="0 0 ${wPx} ${hPx}">${[...fills, ...strokes].join("")}</svg>`;
 }
