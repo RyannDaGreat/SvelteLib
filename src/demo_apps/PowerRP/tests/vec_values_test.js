@@ -24,6 +24,7 @@ import {
   vectorBinaryOp, vectorMapFunction, vectorMapVariadic, vectorFor, vectorToStored,
 } from "../core/vector_values.js";
 import { interpolate } from "../core/interpolators.js";
+import { VAR_KINDS, VAR_KIND_ZEROS } from "../core/var_kinds.js";
 
 let passed = 0;
 const test = (name, fn) => {
@@ -340,5 +341,196 @@ test("VECTOR_KINDS is the only place component names live", () => {
 });
 
 import { readFileSync } from "node:fs";
+
+
+// ── END-TO-END THROUGH A REAL evaluateState PASS ────────────────────────────
+//
+// Everything above tests the value layer in isolation. THIS SECTION IS THE ONE
+// THAT PROVES THE FEATURE, because the whole workstream turns on a claim about
+// the EVALUATOR: that `a.pos = b.pos + c.pos` survives compilation through
+// `new Function` + `with(scope)`, where a vector cannot be produced by `+` at
+// all (Symbol.toPrimitive must return a primitive — measured TypeError). A unit
+// test of vectorBinaryOp cannot see that; only a real equation can.
+
+import { createRegistry } from "../core/registry.js";
+import { evaluateState } from "../core/expressions.js";
+import { rectPlugin } from "../plugins/rect.js";
+
+const registry = createRegistry();
+registry.register(rectPlugin);
+
+/** Query. Evaluates one document and returns {state, errors} — no memo reuse
+ *  (evaluateState memoizes on state identity, so each call builds a fresh object). */
+function evaluate(items, vars = {}) {
+  return evaluateState({ vars, items }, registry);
+}
+
+/** Query. The evaluated value of item `id`'s property `key`, asserting no errors. */
+function evalProp(items, id, key, vars = {}) {
+  const { state, errors } = evaluate(items, vars);
+  assert.equal(errors.size, 0, `unexpected errors: ${[...errors.values()].join("; ")}`);
+  return state.items[id][key];
+}
+
+/** A rect fixture. `name` is what makes an item REFERENCABLE — slugMap derives
+ *  the equation slug from it, so a fixture without one cannot be named by `= b.…`. */
+const RECT = (name, extra) => ({ ...rectPlugin.defaults, type: "rect", name, ...extra });
+
+test("E2E: a whole-vector address `.pos` evaluates to a vector", () => {
+  const v = evalProp({
+    b: RECT("b", { x: 10, y: 20 }),
+    a: RECT("a", { w: "= b.pos.x" }),
+  }, "a", "w");
+  assert.equal(v, 10, "a component of a vector address reads through the evaluator");
+});
+
+test("E2E: a.pos = b.pos + c.pos — THE user's worked example, really compiled", () => {
+  // The x leaf of `a` is bound to the SUM of two vectors, projected. If the
+  // compile rewrite regressed, this throws "Cannot convert object to primitive".
+  const { state, errors } = evaluate({
+    b: RECT("b", { x: 10, y: 20 }),
+    c: RECT("c", { x: 1, y: 2 }),
+    a: RECT("a", { x: "= (b.pos + c.pos).x", y: "= (b.pos + c.pos).y" }),
+  });
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.x, 11);
+  assert.equal(state.items.a.y, 22);
+});
+
+test("E2E: scalar broadcast through a real equation", () => {
+  const { state, errors } = evaluate({
+    b: RECT("b", { x: 3, y: 4 }),
+    a: RECT("a", { x: "= (b.pos * 2).x", y: "= (b.pos * 2).y" }),
+  });
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.x, 6);
+  assert.equal(state.items.a.y, 8);
+});
+
+test("E2E: sin/abs map elementwise over a vector in a real equation", () => {
+  const { state, errors } = evaluate({
+    b: RECT("b", { x: -5, y: -7 }),
+    a: RECT("a", { x: "= abs(b.pos).x", y: "= abs(b.pos).y" }),
+  });
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.x, 5);
+  assert.equal(state.items.a.y, 7);
+  // sin over a vector, projected — the ruling's own "sin cos etc" example.
+  assert.equal(evalProp({ b: RECT("b", { x: 0, y: 0 }), a: RECT("a", { w: "= sin(b.pos).x" }) }, "a", "w"), 0);
+});
+
+test("E2E: max(vec, scalar) broadcasts through the variadic path", () => {
+  const { state, errors } = evaluate({
+    b: RECT("b", { x: -5, y: 10 }),
+    a: RECT("a", { x: "= max(b.pos, 0).x", y: "= max(b.pos, 0).y" }),
+  });
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.x, 0, "the negative component clamps");
+  assert.equal(state.items.a.y, 10, "the positive one is untouched");
+});
+
+test("E2E: SCALAR equations are completely unaffected by the compile rewrite", () => {
+  // The back-compat guarantee: an expression with operators but no vector must
+  // evaluate exactly as it always did, through the same __op host.
+  assert.equal(evalProp({ a: RECT("a", { w: "= 2 + 3 * 4" }) }, "a", "w"), 14, "precedence survives");
+  assert.equal(evalProp({ a: RECT("a", { w: "= (2 + 3) * 4" }) }, "a", "w"), 20, "parens survive");
+  assert.equal(evalProp({ a: RECT("a", { w: "= 7 % 3" }) }, "a", "w"), 1, "modulo survives");
+  assert.equal(evalProp({ a: RECT("a", { w: "= -(1 + 1)" }) }, "a", "w"), -2, "unary minus survives");
+  assert.equal(evalProp({ a: RECT("a", { w: "= speed * 2" }) }, "a", "w", { speed: 21 }), 42, "variables survive");
+});
+
+test("E2E: a SHAPE MISMATCH surfaces through the normal equation-error path", () => {
+  // Not a crash, not a NaN that paints — an error in the errors map, with the
+  // sentence naming both lengths.
+  const { errors } = evaluate({
+    b: RECT("b", { x: 1, y: 2, fill: "#ff0000" }),
+    a: RECT("a", { x: "= (b.pos + b.fill.color).x" }),
+  });
+  assert.ok(errors.size > 0, "a 2-vec + 4-vec must be an error");
+  const text = [...errors.values()].join("; ");
+  assert.ok(/2-vector and a 4-vector/.test(text), `must name both lengths, got: ${text}`);
+});
+
+test("E2E: fill.color and its components read through the evaluator", () => {
+  const items = { b: RECT("b", { fill: "#ff8000" }), a: RECT("a", { w: "= b.fill.color.r", h: "= b.fill.color.g" }) };
+  const { state, errors } = evaluate(items);
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.w, 255);
+  assert.equal(state.items.a.h, 128);
+});
+
+test("E2E: an OFF paint's .color refuses with its sentence, not a silent black", () => {
+  const { errors } = evaluate({
+    b: RECT("b", { fill: { type: "none" } }),
+    a: RECT("a", { w: "= b.fill.color.r" }),
+  });
+  assert.ok(errors.size > 0, "an off paint must refuse");
+  assert.ok(/is Off/.test([...errors.values()].join("; ")), "the sentence must say it is off");
+});
+
+test("E2E: a colour arithmetic result lands back on a colour slot", () => {
+  // `= fill.color * 0.5` must produce a real hex a paint consumer can read.
+  const { state, errors } = evaluate({
+    b: RECT("b", { fill: "#ff8000" }),
+    a: RECT("a", { fill: "= b.fill.color * 0.5" }),
+  });
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.fill, "#80400080", "alpha scales too — the documented, pinned behaviour");
+});
+
+
+// ── VEC2 VARIABLES (R7-38 point 4: a whole vector bound to a variable) ──────
+
+test("E2E: a vec2 variable reads whole and per-component", () => {
+  const vars = { origin: [10, 20] };
+  const { state, errors } = evaluate({
+    a: RECT("a", { x: "= origin.x", y: "= origin.y" }),
+  }, vars);
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.x, 10);
+  assert.equal(state.items.a.y, 20);
+});
+
+test("E2E: a vec2 variable enters the ALGEBRA as a vector", () => {
+  const { state, errors } = evaluate({
+    a: RECT("a", { x: "= (origin + offset).x", y: "= (origin + offset).y" }),
+  }, { origin: [10, 20], offset: [1, 2] });
+  assert.equal(errors.size, 0, `errors: ${[...errors.values()].join("; ")}`);
+  assert.equal(state.items.a.x, 11);
+  assert.equal(state.items.a.y, 22);
+});
+
+test("E2E: a non-vector variable's component is refused with a sentence", () => {
+  const { errors } = evaluate({ a: RECT("a", { x: "= speed.x" }) }, { speed: 5 });
+  assert.ok(errors.size > 0, "a scalar variable has no components");
+  assert.ok(/has no component/.test([...errors.values()].join("; ")),
+    `must name the problem: ${[...errors.values()].join("; ")}`);
+});
+
+test("E2E: an UNKNOWN dotted head still reports the unknown reference", () => {
+  // The resolveRef fallback must not swallow a genuine typo into a vague error.
+  const { errors } = evaluate({ a: RECT("a", { x: "= nosuchthing.x" }) });
+  assert.ok(errors.size > 0, "an unknown head must still fail");
+  const text = [...errors.values()].join("; ");
+  assert.ok(/nosuchthing/.test(text), `must name the bad reference: ${text}`);
+});
+
+test("a vec2 variable's STORED value carries no runtime tag", () => {
+  // The tag (makeVector) is a runtime wrapper the evaluator adds on READ; a
+  // document must never contain it, or a saved deck would carry `__vec` keys.
+  const { state, errors } = evaluate({ a: RECT("a", { x: "= origin.x" }) }, { origin: [10, 20] });
+  assert.equal(errors.size, 0);
+  assert.deepEqual(state.vars.origin, [10, 20], "the variable stays a plain tuple");
+  assert.equal(isNumericTensor(state.vars.origin), false);
+});
+
+test("there is deliberately NO vec2 VAR KIND yet — the control does not exist", () => {
+  // Recorded as an assertion so the omission is visible rather than forgotten.
+  // The evaluator half works (the tests above); the panel control does not, and
+  // compound_props_test pins that every kind must name a real row kind.
+  assert.ok(!VAR_KINDS.includes("vec2"),
+    "declaring the kind without a control would put an uneditable variable in the panel");
+  assert.equal(VAR_KIND_ZEROS.vec2, undefined);
+});
 
 console.log(`vec_values_test: ${passed} passed${process.exitCode ? " (WITH FAILURES)" : ""}`);

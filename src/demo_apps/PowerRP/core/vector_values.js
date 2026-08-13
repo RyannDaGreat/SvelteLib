@@ -793,8 +793,63 @@ const VECTOR_TAG = "__vec";
  *     >>> makeVector([255, 128, 0, 255])
  *     {__vec: [255, 128, 0, 255]}
  */
-export function makeVector(data) {
-  return { [VECTOR_TAG]: data };
+export function makeVector(data, kind = null) {
+  const out = { [VECTOR_TAG]: data };
+  // NAMED COMPONENT PROJECTION. `(b.pos + c.pos).x` is the user's OWN worked
+  // example, so a vector must answer to its component names — and after
+  // arithmetic, where there is no property path left to address. The names are
+  // attached as ordinary readable properties (non-enumerable, so they never
+  // reach JSON, a delta, or a byte-comparison of a saved document) rather than
+  // through a Proxy: the equation host hands these values straight to user code
+  // under `with(scope)`, and a Proxy there would trap every probe the runtime
+  // makes.
+  //
+  // THE KIND IS OPTIONAL AND DEFAULTS TO POSITIONAL-ONLY, which keeps the
+  // algebra kind-agnostic (R7-38c): an operator produces its result with the
+  // kind it was GIVEN, and a bare `makeVector([1,2])` is still a plain 2-vec.
+  const axes = kind ? VECTOR_KINDS[kind]?.axes : axesForArity(data.length);
+  // The index is `i % data.length`, which is identity for a single naming and is
+  // what lets a 3-vec carry BOTH readings (x/y/z then r/g/b over the same three
+  // slots) from one flat list.
+  if (axes)
+    axes.forEach((axis, i) => {
+      Object.defineProperty(out, axis, { value: data[i % data.length], enumerable: false });
+    });
+  return out;
+}
+
+/**
+ * Pure function. The DEFAULT component names for a bare vector of `n` elements —
+ * how an unkinded arithmetic result still answers to `.x` / `.r`.
+ *
+ * IT IS A FALLBACK, NOT A TYPE SYSTEM. A 2-vec gets x/y and a 4-vec gets r/g/b/a
+ * because those are the only arities the shipped kinds use and the names are
+ * unambiguous at each. A 3-vec gets BOTH readings (x/y/z and r/g/b) because a
+ * 3-vec is genuinely either. Any other arity gets none — positional only — which
+ * is the honest answer rather than an invented naming.
+ *
+ * Args:
+ *   n (number): the vector's length
+ *
+ * Returns:
+ *   string[]|null
+ *
+ * Examples:
+ *     >>> axesForArity(2)
+ *     ['x', 'y']
+ *     >>> axesForArity(4)
+ *     ['r', 'g', 'b', 'a']
+ *     >>> // a 3-vec is either a point or a colour, so it answers to both:
+ *     >>> axesForArity(3)
+ *     ['x', 'y', 'z', 'r', 'g', 'b']
+ *     >>> axesForArity(7)
+ *     null
+ */
+export function axesForArity(n) {
+  if (n === 2) return ["x", "y"];
+  if (n === 3) return ["x", "y", "z", "r", "g", "b"];
+  if (n === 4) return ["r", "g", "b", "a"];
+  return null;
 }
 
 /**

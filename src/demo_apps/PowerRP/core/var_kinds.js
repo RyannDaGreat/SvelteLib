@@ -141,6 +141,27 @@ export const VAR_KIND_NOTES = {
 };
 
 /**
+ * WHY THERE IS NO `vec2` VARIABLE KIND YET — a deliberate omission, recorded so
+ * the next contributor does not re-derive it.
+ *
+ * R7-38 point 4 asks for a whole vector bound to a variable, and the EVALUATOR
+ * half of that already works: a variable whose stored value is a `[x, y]` tuple
+ * reads as a vector, enters the algebra, and projects with `.x`/`.y`
+ * (core/expressions.js refValue; pinned in tests/vec_values_test.js). What is
+ * missing is the CONTROL. `tests/compound_props_test.js` pins the invariant that
+ * every VAR_KINDS member names a real ROW_KINDS control, so that the variables
+ * panel can mount the Property Panel's own editor for it — and there is no
+ * 2-vector row kind, because a compound row is grouping over two EXISTING leaf
+ * rows and a variable has no leaves to group.
+ *
+ * Declaring the kind without the control would put a variable in the panel that
+ * the panel cannot edit — the "control that lies about its own affordance"
+ * failure this codebase already ruled against for the save dot. So the kind
+ * waits on a real vec2 control, and the tuple path stays usable meanwhile by
+ * anyone who writes the value.
+ */
+
+/**
  * Pure function. A variable's declared kind — "number" when it has none, which is
  * every variable written before kinds existed and every one the author never
  * retyped.
