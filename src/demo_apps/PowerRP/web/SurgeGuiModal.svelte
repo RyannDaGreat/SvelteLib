@@ -55,6 +55,7 @@
 <script>
   import { onMount } from "svelte";
   import Modal from "../../../lib/Modal.svelte";
+  import GatedIconButton from "./GatedIconButton.svelte";
   import {
     createSurgeGuiSession,
     keyLayout,
@@ -381,6 +382,15 @@
     }
   }
 
+  /** Query. Are the jog arrows gated shut? Two independent causes, which is why
+   *  `jogReason` below is a function of state rather than one fixed string. */
+  let jogBlocked = $derived(!session || matches.length === 0);
+
+  /** Query. WHICH condition is shutting the arrows, as a `requires` clause. A
+   *  fixed sentence would be a confident wrong answer for one of the two cases —
+   *  the same argument core/commands.js makes for a functional `requires`. */
+  let jogReason = $derived(!session ? "the Surge editor to finish loading" : "at least one patch matching the current filter");
+
   /** Command. Steps through the CURRENTLY FILTERED list — the jog buttons act on
    *  what the author can see, not on the 3,559-entry index behind it. */
   function jog(delta) {
@@ -508,20 +518,35 @@
     <!-- THE BAR: presets on the left, view controls on the right. -->
     <div class="surge-bar">
       <span class="surge-bar-group">
-        <button
-          type="button"
-          class="surge-btn"
-          aria-label="Previous patch"
-          disabled={!session || matches.length === 0}
-          onclick={() => jog(-1)}>‹</button
-        >
-        <button
-          type="button"
-          class="surge-btn"
-          aria-label="Next patch"
-          disabled={!session || matches.length === 0}
-          onclick={() => jog(1)}>›</button
-        >
+        <!-- THE JOG ARROWS. web/GatedIconButton — `aria-disabled` + a guarded
+             handler + an iconify glyph, replacing native `disabled` on a literal
+             `‹`/`›`. Both halves mattered here: the native attribute made the pair
+             unfocusable, and they carried NO tooltip, so two inert chevrons
+             explained themselves in no modality at all. The glyphs were also
+             typographic QUOTATION MARKS standing in for arrows — they inherited
+             the text font instead of the icon set, so they matched no other arrow
+             in the app.
+
+             THE REASON NAMES WHICH CONDITION IS SHUT, because there are two and a
+             fixed string would be a confident wrong answer for one of them (the
+             `requires`-may-be-a-function argument in core/commands.js, applied to
+             a non-registry control). -->
+        <GatedIconButton
+          icon="mdi:chevron-left"
+          label="Previous patch"
+          buttonClass="surge-btn"
+          disabled={jogBlocked}
+          disabledReason={jogReason}
+          onclick={() => jog(-1)}
+        />
+        <GatedIconButton
+          icon="mdi:chevron-right"
+          label="Next patch"
+          buttonClass="surge-btn"
+          disabled={jogBlocked}
+          disabledReason={jogReason}
+          onclick={() => jog(1)}
+        />
         <select
           class="surge-select surge-select-bank"
           aria-label="Patch bank"
@@ -595,7 +620,19 @@
             <option value={z}>{Math.round(z * 100)}%</option>
           {/each}
         </select>
-        <button type="button" class="surge-btn" disabled={!session} onclick={fitZoom}>Fit</button>
+        <!-- FIT carries the same contract as the jog arrows: it is a BUTTON, so a
+             native `disabled` would take it out of the tab order along with the
+             only sentence saying why it is dead. It keeps its TEXT label (it is a
+             word, not a glyph — there is no icon that reads as "fit to window"),
+             so it is written out here rather than through GatedIconButton, which
+             exists for the icon case. -->
+        <button
+          type="button"
+          class="surge-btn"
+          aria-disabled={!session}
+          title={session ? "Fit the editor to the window" : "Fit the editor to the window — unavailable until the Surge editor finishes loading"}
+          onclick={() => { if (session) fitZoom(); }}
+        >Fit</button>
       </span>
     </div>
 

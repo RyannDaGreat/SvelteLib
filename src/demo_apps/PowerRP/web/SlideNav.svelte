@@ -93,6 +93,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import CommandButton from "./CommandButton.svelte";
   import DirtyImage from "../../../lib/DirtyImage.svelte";
   import { resolveTransition, transitionType } from "../core/transitions.js";
   import { formatSeconds } from "./formatSeconds.js";
@@ -1379,18 +1380,28 @@
        See the footer note in the script for both rulings and for why the icons
        are no longer written here. -->
   <div class="nav-actions">
+    <!-- Each is a web/CommandButton — the shared surfacing, which owns the
+         `aria-disabled` + guarded-dispatch law and reads each glyph from the
+         registry entry. These five used the NATIVE `disabled` attribute until
+         then, with the delete gate written inline in this markup: a natively
+         disabled button is not focusable, so the keyboard could never reach the
+         tooltip saying why Delete was dead — the exact failure the note at :958
+         cites the rule against, one row below it.
+
+         THE DELETE GATE IS A CALLER-SIDE ONE and stays here rather than moving
+         into the registry entry, because it is about THIS surface's arithmetic:
+         `delete-slides` is perfectly available from the palette, and what is
+         refused is deleting the whole deck. It now carries a SENTENCE instead of
+         being a bare boolean, which is the half the native attribute discarded. -->
     {#each FOOTER_COMMANDS as { id, label }}
-      <Tooltip text={label()}>
-        <button
-          class="btn-icon"
-          aria-label={label()}
-          data-nav-action={id}
-          onclick={() => app.runCommand(id)}
-          disabled={id === "delete-slides" && app.doc.slides.length <= selectionCount()}
-        >
-          <iconify-icon icon={app.commands.get(id).icon} width="16" height="16"></iconify-icon>
-        </button>
-      </Tooltip>
+      <CommandButton
+        {app}
+        {id}
+        label={label()}
+        dataNavAction={id}
+        blocked={id === "delete-slides" && app.doc.slides.length <= selectionCount()}
+        blockedReason="at least one slide left over — a deck cannot have none"
+      />
     {/each}
     <!-- THE VIEW TOGGLE — the sixth control, and the user placed it here by name
          ("that could be a toggle button on the bottom where it shows delete slide,

@@ -13317,10 +13317,17 @@ audio.ae-preview-media {
   cursor: pointer;
   min-width: 2em;
 }
-.surge-btn:hover:not(:disabled) {
+/* `[aria-disabled]` reads the SAME as `:disabled` here, exactly as the `.btn`
+   block does app-wide. The jog arrows are web/GatedIconButton, which uses
+   aria-disabled + a handler guard so the control stays FOCUSABLE and its tooltip
+   reachable; without these selectors that button would grey correctly nowhere and
+   would still light up on hover while refusing to act. The `<select>`/`<input>`
+   siblings keep using the native attribute and are matched by both halves. */
+.surge-btn:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--a-hover-bg);
 }
 .surge-btn:disabled,
+.surge-btn[aria-disabled="true"],
 .surge-select:disabled,
 .surge-search:disabled {
   opacity: var(--a-disabled-opacity);
