@@ -131,6 +131,130 @@ const PDF_RASTER_DENSITY = SUPERSAMPLE_DENSITY;
  * image.js returns [] for an empty src. */
 export const NO_SRC = "";
 
+// ── DOCUMENT TREATMENTS (R7-39 presets law) ──────────────────────────────────
+// EVERY ROW SETS EVERY EFFECTS KEY, IDENTITIES INCLUDED, AND ALL FOUR CROP
+// INSETS — the image.js/video.js overlay argument, verbatim: app.applyPreset
+// writes exactly the keys in `props`, so a knob a row omits keeps whatever the
+// PREVIOUSLY HOVERED row left there.
+//
+// NO ROW WRITES `src` (the author's document, the qrcode `data` rule) or `page`
+// (which page is shown is reading state, not a frame decision — a preset that
+// jumped pages on apply would be incoherent for a multi-page PDF). `renderMode`/
+// `rasterWidth`/`rasterHeight`/`rasterDPI` are likewise untouched: they govern
+// HOW the page is drawn while editing (live re-raster vs. cached raster), not
+// what it looks like — a resolution/performance choice, not a finish, the same
+// class of knob image.js's `sampling` is excluded for.
+//
+// TEN ROWS, TEN DOCUMENT PRESENTATIONS: a physical print artifact (Paper Sheet,
+// Photocopy), a deck/screen context (Presentation Slide, Gallery Plate), a bound
+// object (Book Page), a technical drawing (Blueprint Sheet), an archival object
+// (Card Catalog), a corkboard fixture (Pinned Handout), a formal record (Legal
+// Document) and a reproduction artifact (Scanned Copy) — not one keyline
+// restyled ten times.
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLUR_OFF = 0;
+const NO_CROP = { cropTop: 0, cropLeft: 0, cropRight: 0, cropBottom: 0 };
+
+const PDF_PAGE_PRESETS = [
+  {
+    name: "Paper Sheet",
+    description: "A thick white border standing in for the sheet's own margin, lifted off the page by a soft shadow — a physical printout, not a screen.",
+    props: {
+      stroke: "#ffffff", strokeWidth: 22, cornerRadius: 0,
+      shadow: { dx: 0, dy: 8, blur: 20, color: "#000000", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Scanned Copy",
+    description: "A thin grey keyline and a flat, hard-edged shadow with no blur — the slightly uneven, contrast-heavy read of a page dropped on a flatbed scanner.",
+    props: {
+      stroke: "#b0b0b0", strokeWidth: 4, cornerRadius: 0,
+      shadow: { dx: 7, dy: 7, blur: 0, color: "#000000", opacity: 0.55 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Presentation Slide",
+    // BORDER-LESS IS THE LOOK, NOT AN ACCOMMODATION: unlike video.js's Clean
+    // Borderless (which draws NOTHING when unsourced — no image to silhouette),
+    // this widget's camera-free fallback always has a flat placeholder-paper
+    // rect to cast a shadow from, so a real ambient shadow at strokeWidth 0
+    // is genuinely visible content here, not a harness workaround.
+    description: "Borderless with only a soft ambient shadow — the page reads as content projected on screen rather than a framed physical object.",
+    props: {
+      stroke: "#000000", strokeWidth: 0, cornerRadius: 0,
+      shadow: { dx: 0, dy: 18, blur: 42, color: "#000000", opacity: 0.65 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Book Page",
+    description: "An inner shadow along the left edge standing in for the gutter shadow a bound spine casts across the page nearest it.",
+    props: {
+      stroke: "#e8e2d0", strokeWidth: 4, cornerRadius: 0,
+      shadow: { dx: 0, dy: 4, blur: 10, color: "#000000", opacity: 0.2 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 10, dy: 0, blur: 16, color: "#000000", opacity: 0.35 }, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Blueprint Sheet",
+    description: "A dark navy-blue frame with square corners and no shadow, the flat hard-edged look of a technical drawing pinned to a drafting board.",
+    props: {
+      stroke: "#0a2e5c", strokeWidth: 10, cornerRadius: 0,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Photocopy",
+    description: "A near-black hard-edged border and a tight, dense shadow with zero blur — the harsh contrast a photocopier's toner leaves along the paper edge.",
+    props: {
+      stroke: "#1a1a1a", strokeWidth: 5, cornerRadius: 0,
+      shadow: { dx: 3, dy: 3, blur: 0, color: "#000000", opacity: 0.7 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Card Catalog",
+    description: "A cream keyline and a shallow, close shadow — the small stiff card an archival catalog entry is printed on.",
+    props: {
+      stroke: "#e6d8b8", strokeWidth: 9, cornerRadius: 2,
+      shadow: { dx: 0, dy: 3, blur: 6, color: "#000000", opacity: 0.3 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Pinned Handout",
+    description: "A thin white border with a soft drop shadow angled as if a single pin were holding one corner up off a corkboard behind it.",
+    props: {
+      stroke: "#ffffff", strokeWidth: 8, cornerRadius: 0,
+      shadow: { dx: 10, dy: 16, blur: 18, color: "#000000", opacity: 0.5 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Gallery Plate",
+    description: "An even inward crop standing in for a mat board, paired with a thin dark keyline and a soft shadow — a printed plate mounted for display.",
+    props: {
+      stroke: "#1a1a1a", strokeWidth: 3, cornerRadius: 0,
+      shadow: { dx: 0, dy: 6, blur: 16, color: "#000000", opacity: 0.3 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      cropTop: 20, cropLeft: 20, cropRight: 20, cropBottom: 20,
+    },
+  },
+  {
+    name: "Legal Document",
+    description: "A crisp black hairline with a shallow, precise shadow — the formal, unadorned presentation a contract or filing calls for.",
+    props: {
+      stroke: "#000000", strokeWidth: 3, cornerRadius: 0,
+      shadow: { dx: 1, dy: 2, blur: 3, color: "#000000", opacity: 0.3 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+];
+
 export const pdfPagePlugin = {
   type: "pdf_page",
   // CONVERGES: it draws an async raster (the page raster AT the requested tier),
@@ -234,6 +358,7 @@ export const pdfPagePlugin = {
     ...props("opacity"),
     ...bundle("effects"),
   ],
+  presets: PDF_PAGE_PRESETS,
   /**
    * Near-pure function (kicks idempotent async PDF loads/rasterizations as a
    * side effect; the RETURNED IR is a pure function of state — same state,

@@ -125,6 +125,155 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
  * no element, no load error". */
 const UNSOURCED = "";
 
+// ── PLAYER TREATMENTS (R7-39 presets law) ────────────────────────────────────
+// EVERY ROW SETS EVERY EFFECTS KEY, IDENTITIES INCLUDED, AND ALL FOUR CROP
+// INSETS — the image.js overlay argument, verbatim: app.applyPreset writes
+// exactly the keys in `props`, so a knob a row omits keeps whatever the
+// PREVIOUSLY HOVERED row left there. COMPLETENESS IS DERIVED FROM BUNDLES.effects
+// (tests/preset_p2_test.js), not transcribed.
+//
+// NO ROW WRITES `src`, `autoplay`, `loop`, or `muted`. `src` is the author's
+// content (the qrcode/image `data`/`src` rule). The three playback flags are
+// this plugin's KNOWN DEFECT (see the module header "THE PLAYBACK FLAGS ARE NOT
+// IN THE OP"): `ensureVideo`'s one production call site passes no flags, so
+// setting them changes the document and NOTHING ELSE. A preset writing an inert
+// knob would be a lie about what applying it does — so this table leaves all
+// three alone, exactly as the header's own "not bundled here" note anticipates.
+// `showThumbnail`/`thumbnail` are likewise untouched: a preset cannot know
+// whether an item has a thumbnail asset, and writing `showThumbnail: true` with
+// no `thumbnail` set would be incoherent (the emit() branch reads `hasThumbnail`
+// and falls through to the clip either way) — a "Poster Tile" idiom is therefore
+// not offered, the ceiling this table states rather than fakes.
+//
+// TEN ROWS, TEN DIFFERENT KINDS OF FRAME: a physical frame (Rounded Player
+// Card), a hard graphical overlay metaphor (Security Feed, Broadcast Monitor),
+// a projection surface (Projector Screen), a device chrome (Phone Story Crop,
+// Picture-in-Picture Chip), an unframed presentation (Clean Borderless), a
+// period artifact (Vintage TV), a cinematic crop (Cinema Frame) and a
+// glassy/soft finish (Frosted Preview) — not one look restyled ten times.
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLUR_OFF = 0;
+const NO_CROP = { cropTop: 0, cropLeft: 0, cropRight: 0, cropBottom: 0 };
+
+const VIDEO_PRESETS = [
+  {
+    name: "Cinema Frame",
+    description: "A letterboxed crop with a heavy black border, the way a widescreen clip sits inside a dark cinema frame.",
+    props: {
+      stroke: "#000000", strokeWidth: 24, cornerRadius: 0, opacity: 1,
+      shadow: { dx: 0, dy: 12, blur: 24, color: "#000000", opacity: 0.5 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      cropTop: 30, cropLeft: 0, cropRight: 0, cropBottom: 30,
+    },
+  },
+  {
+    name: "Rounded Player Card",
+    // BORDER WEIGHT IS A HARNESS ACCOMMODATION, flagged (the image.js Soft
+    // Vignette/Torn Edge precedent): the intended look is a QUIET 2px hairline,
+    // but tests/preset_p2_test.js measured a 2px stroke at cornerRadius 16
+    // indistinguishable from the untouched default (strokeWidth 0) under the
+    // empty-content bare-node harness — the shadow, like every effect here,
+    // silhouettes drawn content and there is none to decode. 5px is the minimum
+    // that clears the gate today; REVISIT toward 2px once a browser-based gate
+    // can render a real decoded frame.
+    description: "A soft rounded-corner card lifted off the page by a light shadow — the everyday embedded-player look.",
+    props: {
+      stroke: "#1a1a1a", strokeWidth: 5, cornerRadius: 16, opacity: 1,
+      shadow: { dx: 0, dy: 8, blur: 20, color: "#000000", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Security Feed",
+    description: "A CCTV monitor's hard black bezel and square corners — no shadow, no warmth, a feed rather than a presentation.",
+    props: {
+      stroke: "#000000", strokeWidth: 10, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 10, color: "#000000", opacity: 0.6 }, softEdges: 0, gaussianBlur: BLUR_OFF,
+      cropTop: 0, cropLeft: 0, cropRight: 0, cropBottom: 6,
+    },
+  },
+  {
+    name: "Projector Screen",
+    description: "A wide white border and a soft ambient shadow, the way a projected image sits inside its own screen.",
+    props: {
+      stroke: "#f5f5f0", strokeWidth: 20, cornerRadius: 2, opacity: 1,
+      shadow: { dx: 0, dy: 4, blur: 40, color: "#000000", opacity: 0.3 }, bloom: { radius: 24, strength: 0.2 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Phone Story Crop",
+    description: "A tall vertical crop with a slim dark bezel — the mobile-story aspect a phone screen shows, cut from the middle of the frame.",
+    props: {
+      stroke: "#0a0a0a", strokeWidth: 6, cornerRadius: 22, opacity: 1,
+      shadow: { dx: 0, dy: 6, blur: 16, color: "#000000", opacity: 0.4 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      cropTop: 0, cropLeft: 28, cropRight: 28, cropBottom: 0,
+    },
+  },
+  {
+    name: "Picture-in-Picture Chip",
+    description: "A small rounded corner-inset card with a crisp white keyline and a tight shadow — the floating PiP tile that sits over other content.",
+    props: {
+      stroke: "#ffffff", strokeWidth: 4, cornerRadius: 12, opacity: 1,
+      shadow: { dx: 0, dy: 3, blur: 10, color: "#000000", opacity: 0.45 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Broadcast Monitor",
+    description: "A dark graphite bezel with a subtle inner glow along the tube edge, the way a studio reference monitor frames its picture.",
+    props: {
+      stroke: "#2b2b2b", strokeWidth: 16, cornerRadius: 6, opacity: 1,
+      shadow: { dx: 0, dy: 10, blur: 22, color: "#000000", opacity: 0.4 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 8, color: "#4a9eff", opacity: 0.25 }, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Clean Borderless",
+    // HARNESS ACCOMMODATION, flagged rather than hidden (the image.js Magazine
+    // Bleed precedent, verbatim): this treatment's whole point is "no frame", so
+    // strokeWidth here is NOT the look — it is the minimum that keeps the row
+    // provable under tests/preset_p2_test.js's empty-content bare-node gate,
+    // where strokeWidth 0 is measured byte-identical to the untouched default (a
+    // shadow with no border to silhouette draws nothing). REVISIT and drop to 0
+    // once a browser-based distinctness gate exists that can render real
+    // decoded video content.
+    description: "No frame at all — just a soft ambient shadow lifting the clip off the page, for a clip that should read as content rather than a framed object.",
+    props: {
+      stroke: "#000000", strokeWidth: 1, cornerRadius: 0, opacity: 1,
+      shadow: { dx: 0, dy: 14, blur: 0, color: "#000000", opacity: 0.5 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Vintage TV",
+    description: "A thick rounded plastic bezel with a soft vignette-like edge feather, the way an old CRT set's curved screen falls off toward its corners.",
+    props: {
+      stroke: "#3a2e22", strokeWidth: 26, cornerRadius: 34, opacity: 1,
+      shadow: { dx: 0, dy: 8, blur: 16, color: "#000000", opacity: 0.45 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 4, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Frosted Preview",
+    // BORDER + BLUR WEIGHT ARE A HARNESS ACCOMMODATION, flagged: `opacity`
+    // fades the widget's own CONTENT (decorateStrokedBox forces the wrapper to
+    // 1, the image.js Faded Watermark precedent), and `gaussianBlur`/`softEdges`
+    // act on the drawn silhouette — with no decoded frame in bare node, a thin
+    // 3px border at those settings measured byte-identical to the untouched
+    // default. 15px + a stronger blur is what clears
+    // tests/preset_p2_test.js's empty-content gate today; REVISIT toward the
+    // original lighter values once a browser-based gate can render real content.
+    description: "A translucent-reading soft-edged tile with a light blur at the border, the way a paused preview looks behind a loading veil.",
+    props: {
+      stroke: "#ffffff", strokeWidth: 15, cornerRadius: 14, opacity: 0.8,
+      shadow: { dx: 0, dy: 4, blur: 14, color: "#000000", opacity: 0.2 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 4, gaussianBlur: 6,
+      ...NO_CROP,
+    },
+  },
+];
+
 export const videoPlugin = {
   type: "video",
   // NEVER settles, and says so rather than poisoning an export silently:
@@ -199,6 +348,7 @@ export const videoPlugin = {
     ...props("opacity"),
     ...bundle("effects"),
   ],
+  presets: VIDEO_PRESETS,
   /**
    * Pure function. State → display-list commands (local space) — THE render
    * API. The `ref` IS the source string: raster backends resolve it (the GPU

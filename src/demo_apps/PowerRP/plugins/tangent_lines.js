@@ -376,6 +376,123 @@ export function tangentLinesAnchors(s) {
   return standardBBoxAnchors({ w: r.w, h: r.h }).map((a) => ({ id: a.id, x: r.x + a.x, y: r.y + a.y }));
 }
 
+// ── STROKE IDIOMS (R7-39 presets law) ────────────────────────────────────────
+// STROKE-ONLY, NEVER THE GEOMETRY: `a`/`b` are meant to be EQUATION-BOUND to
+// two other widgets' anchors/sizes (THE UNIFICATION — this file's header), so
+// no row here may write them — a preset that repositioned the shapes would be
+// the content violation SPEC.md §5 forbids, the same reason no preset here
+// writes `shapeKind` (which boundary a bound widget presents is that widget's
+// own business, not this connector's).
+//
+// EVERY ROW SETS EVERY EFFECTS KEY, IDENTITIES INCLUDED, AND THE FULL DASH
+// STATE (dashed/dashLength/dashGap) — the image.js/paint_path.js overlay
+// argument, verbatim: app.applyPreset writes exactly the keys in `props`, so a
+// knob a row omits keeps whatever the PREVIOUSLY HOVERED row left there (a
+// "Laser Sight" applied after "Dotted Trace" must not leave the dots on).
+//
+// TEN DASH/STROKE IDIOMS, THE arrow.js/paint_path.js RESTRAINT: geometry and
+// paint only, nothing shape-specific to invent, so this table is exactly the
+// same kind of narrow, sparse family — stroke colour, width, dash rhythm and
+// (for one row) a screen-space glow.
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLUR_OFF = 0;
+const DASH_OFF = { dashed: false, dashLength: DEFAULT_DASH_LENGTH, dashGap: DEFAULT_DASH_GAP };
+
+const TANGENT_LINES_PRESETS = [
+  {
+    name: "Construction Lines",
+    description: "A thin, pale dashed line — the quiet reference geometry a technical drawing uses to show where something WOULD line up, not the thing itself.",
+    props: {
+      stroke: "#9a9a9a", strokeWidth: 1, opacity: 0.8,
+      dashed: true, dashLength: 6, dashGap: 5,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Blueprint Guides",
+    description: "A crisp light-blue dashed line on the blueprint-sheet family's own hue, for tangents that read as part of a technical drawing rather than an annotation over one.",
+    props: {
+      stroke: "#8ecbff", strokeWidth: 1.5, opacity: 1,
+      dashed: true, dashLength: 10, dashGap: 6,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Chalk Guide",
+    description: "A soft, slightly translucent off-white dashed stroke — the same dusty chalk-on-slate idiom paint_path's Chalk preset draws, sized for a thin guiding line rather than a drawn mark.",
+    props: {
+      stroke: "#e8e4d8cc", strokeWidth: 2, opacity: 1,
+      dashed: true, dashLength: 8, dashGap: 6,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Laser Sight",
+    description: "A slim, saturated red line held solid with a tight bloom, so it reads as a beam of light rather than a drawn stroke.",
+    props: {
+      stroke: "#ff1a1a", strokeWidth: 3, opacity: 1,
+      ...DASH_OFF,
+      shadow: SHADOW_OFF, bloom: { radius: 22, strength: 0.85 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Technical Dash",
+    description: "A precise, evenly-spaced dark dash pattern with a fine stroke — drafting-standard hidden-line notation, not a decorative rhythm.",
+    props: {
+      stroke: "#1a1a1a", strokeWidth: 1.5, opacity: 1,
+      dashed: true, dashLength: 12, dashGap: 8,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Faint Reference",
+    description: "A very thin, very low-opacity solid line — present enough to trace by eye, quiet enough to never compete with what it connects.",
+    props: {
+      stroke: "#404040", strokeWidth: 1, opacity: 0.2,
+      ...DASH_OFF,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Bold Connector",
+    description: "A thick, fully opaque solid stroke in ink black — the tangent drawn as a deliberate, confident connecting line rather than a subtle guide.",
+    props: {
+      stroke: "#000000", strokeWidth: 5, opacity: 1,
+      ...DASH_OFF,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Dotted Trace",
+    description: "A short dash equal to the stroke width paired with a wide gap — the closest a stroked polyline gets to a true dotted line, tracing rather than connecting.",
+    props: {
+      stroke: "#3a3a3a", strokeWidth: 3, opacity: 1,
+      dashed: true, dashLength: 3, dashGap: 10,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Highlight Beam",
+    description: "A wide, translucent, saturated-yellow band with a soft glow — a beam of emphasis meant to draw the eye along the connection rather than describe geometry precisely.",
+    props: {
+      stroke: "#ffe14dcc", strokeWidth: 10, opacity: 1,
+      ...DASH_OFF,
+      shadow: SHADOW_OFF, bloom: { radius: 20, strength: 0.4 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Survey Line",
+    description: "A long-dash, short-gap rhythm in a muted surveyor's orange — the taut string-line idiom a site plan or a land survey draws between two markers.",
+    props: {
+      stroke: "#d97a3a", strokeWidth: 2, opacity: 1,
+      dashed: true, dashLength: 20, dashGap: 4,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+];
+
 export const tangentLinesPlugin = {
   type: "tangent_lines",
   ephemeral: EPHEMERAL.NONE,
@@ -414,6 +531,7 @@ export const tangentLinesPlugin = {
     { key: "dashGap", label: "Dash gap", kind: "number", min: 0, category: "tangent", help: "Length of the empty gap between dashes. Only applies when Dashed is on." },
     ...bundle("effects"),
   ],
+  presets: TANGENT_LINES_PRESETS,
   /**
    * Pure function. State → display-list commands. Reads the two evaluated shapes
    * (numbers by emit time), computes the two external tangent segments, and
