@@ -830,13 +830,23 @@ export const DEG2RAD = Math.PI / HALF_TURN_DEG;
  * NOT a new key: reusing `display` is what keeps this a zero-migration change —
  * every stored angle in every deck and preset keeps its exact value.
  *
- * @param {{display?: string}} row - a material/inspector param row
+ * THE OTHER SPELLING. A plugin-material row (core/material_plugins.js) declares
+ * `unit: "degrees"` instead, and it means the OPPOSITE — stored DEGREES, because a
+ * data schema has no dial behind it and its author is answering "what unit is this
+ * number". Both spellings are resolved HERE so that no caller has to know there are
+ * two; a row carries one or the other, and declaring BOTH is refused rather than
+ * silently resolved, since the two keys would be making contradictory claims.
+ *
+ * @param {{display?: string, unit?: string}} row - a material/inspector param row
  * @returns {"radians"|"degrees"}
  *
  * @example angleStorageUnit({name: "lightAngle", kind: "angle", display: "degrees"}) // "radians"
  * @example angleStorageUnit({name: "lightAngle", kind: "angle"}) // "degrees"
+ * @example angleStorageUnit({name: "rotation", kind: "angle", unit: "degrees"}) // "degrees"
  */
 export function angleStorageUnit(row) {
+  if (row?.display === "degrees" && row?.unit === "degrees")
+    throw new Error(`angleStorageUnit: row "${row.name ?? "?"}" declares BOTH display:"degrees" (stores radians) and unit:"degrees" (stores degrees) — these contradict; keep one`);
   return row?.display === "degrees" ? "radians" : "degrees";
 }
 

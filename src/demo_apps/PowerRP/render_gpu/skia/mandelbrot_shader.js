@@ -198,6 +198,7 @@
 
 import { parseColor } from "../ir.js";
 import { bakeRampLut, cyclicRampStops, linearToSrgb, srgbToLinear } from "../../core/ramps.js";
+import { schemaAngleRadians } from "../../core/properties.js";
 
 // ── sizes (compile-time in the SkSL, so exported for the plugin and the tests) ─
 
@@ -1219,8 +1220,6 @@ const INTERIOR_LABELS = {
 };
 const INTERIOR_CODE = { off: 0, derivative: 1 };
 
-// degrees → radians for the light-angle knob (the user edits familiar degrees).
-const DEG2RAD = Math.PI / 180;
 
 /**
  * Smallest `zoomExponent` the Inspector / paint UI accepts. NEGATIVE, because the
@@ -1284,7 +1283,12 @@ export const MANDELBROT_FILL_PARAMS = [
   { name: "triangleAmount", kind: "number", default: 0.3, min: 0, max: 1, step: 0.01, label: "Cloth (triangle average)", help: "Triangle Inequality Average: the same idea as Silk but built from the orbit's LENGTH instead of its angle, so it looks nothing like it and the two mix well — silk over woven cloth. 0 is exactly off." },
   // ── THE LIGHT (relief + glow) ────────────────────────────────────────────────
   { name: "shadeAmount", kind: "number", default: 0.45, min: 0, max: 1, step: 0.01, label: "Relief", help: "Lambert shading from the orbit's derivative, which gives the set a lit three-dimensional relief with no extra samples at all. 0 is exactly off." },
-  { name: "lightAngle", kind: "angle", display: "degrees", default: -45, label: "Light angle", help: "Direction TO the light for the relief (screen space; -90 is straight above). KEYFRAME THIS for a light sweeping across the fractal." },
+  // STORES DEGREES, so NO `display: "degrees"` (which declares radians — see
+  // core/properties.angleStorageUnit). This row carried that key while
+  // mandelbrotUniformParams multiplied by π/180, so the dial and the shader
+  // disagreed by 57.3x; the COLOUR_PRESETS store literal degrees (-45, -60), which
+  // is what settles which of the two was telling the truth.
+  { name: "lightAngle", kind: "angle", default: -45, label: "Light angle", help: "Direction TO the light for the relief (screen space; -90 is straight above). KEYFRAME THIS for a light sweeping across the fractal." },
   { name: "lightHeight", kind: "number", default: 1.5, min: 0, label: "Light height", help: "How far the relief light sits out of the plane. Low is dramatic raking shadow; high flattens the relief toward evenly lit." },
   { name: "glowAmount", kind: "number", default: 0.3, min: 0, label: "Boundary glow", help: "Brightens pixels the distance estimate says are within a hair of the set, which recovers the hair-fine filaments that point sampling loses entirely. 0 is off." },
   { name: "glowWidth", kind: "number", default: 1, min: 0.05, label: "Glow width", help: "How far the boundary glow reaches, measured in screen pixels of estimated distance to the set. About 1 keeps it to a crisp rim; larger gives a soft halo." },
@@ -1292,6 +1296,10 @@ export const MANDELBROT_FILL_PARAMS = [
   { name: "boundaryAA", kind: "boolean", default: false, label: "Edge coverage blend", help: "Blends toward the interior colour where the distance estimate says the set covers part of the pixel — the physically-motivated antialias of the set's edge. OFF by default because the estimate is a LOWER bound (within a factor of four), so it overstates coverage and turns dense filament fields dark; measured, it made the seahorse preset's cream lace black. The Boundary glow is the treatment that actually looks right. On is available for the physical reading." },
   { name: "interiorColor", kind: "color", default: "#000000", label: "Interior colour", help: "Colour of points inside the set. Its ALPHA makes the interior see-through, so content behind the widget shows through the black heart of the set." },
 ];
+
+/** Stored angle → radians, reading each row's DECLARED storage unit from the
+ *  schema above rather than restating it here (core/properties.schemaAngleRadians). */
+const toRadians = schemaAngleRadians(MANDELBROT_FILL_PARAMS);
 
 /**
  * Query (allocates one Float32Array; near-pure — a pure function of its inputs). THE
@@ -1367,7 +1375,7 @@ export function mandelbrotUniformParams(p, ref, pal) {
     stripeDensity: p.stripeDensity,
     triangleAmount: p.triangleAmount,
     shadeAmount: p.shadeAmount,
-    lightAngle: p.lightAngle * DEG2RAD,
+    lightAngle: toRadians("lightAngle", p.lightAngle),
     lightHeight: p.lightHeight,
     glowAmount: p.glowAmount,
     glowWidth: p.glowWidth,

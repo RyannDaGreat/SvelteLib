@@ -79,6 +79,28 @@
 
 import { definePluginKind } from "./plugin_assets.js";
 import { registerMaterial, isBuiltinMaterialId, materialIds, onFirstMaterialCompile } from "../render_gpu/skia/materials.js";
+/**
+ * TWO KEYS SPELL THE UNIT, AND THEY MEAN OPPOSITE THINGS. Read this before
+ * touching an angle anywhere in the app.
+ *
+ *   · `unit: "degrees"`    (HERE, plugin materials) — the value is STORED IN
+ *     DEGREES and this module converts it to radians for the shader.
+ *   · `display: "degrees"` (inspector rows, the built-in shader schemas) — the
+ *     value is STORED IN RADIANS and the rotary dial merely SHOWS degrees
+ *     (web/displayUnits.js divides by 180/π on commit).
+ *
+ * So the same word names opposite storage. That is unfortunate but it is NOT
+ * ambiguity — a row carries one key or the other, never both, and
+ * `core/properties.angleStorageUnit` is the single reader that resolves either
+ * spelling to the actual unit. This module keeps `unit:` because a plugin
+ * material's params are a DATA schema with no dial behind them, so "what unit is
+ * this number" is the only question its author is answering.
+ *
+ * The conversion factor itself comes from core/properties (`DEG2RAD`), which is
+ * THE definition; it was independently redefined in seven shader packers before
+ * R7-44a, and two of those packers had drifted from their own row's declaration.
+ */
+import { DEG2RAD } from "./properties.js";
 
 /** A material id must look like a material id: the same lower_snake_case rule a
  *  widget `type` obeys, so the two namespaces read alike and neither admits a name
@@ -90,11 +112,6 @@ const MATERIAL_ID_RE = /^[a-z][a-z0-9_]*$/;
  *  CONTRACT), restated as a set so a typo is refused instead of rendering a blank
  *  Inspector row. */
 export const MATERIAL_PARAM_KINDS = Object.freeze(new Set(["number", "angle", "color", "boolean", "select", "text"]));
-
-/** Degrees → radians, for a param declaring `unit: "degrees"`. The built-in
- *  materials' own convention (glassUniformParams, comicUniformParams): a schema
- *  authors screen angles in DEGREES and the shader consumes RADIANS. */
-const DEG2RAD = Math.PI / 180;
 
 /**
  * THE CLOCK KNOB. A material whose look advances with presentation time reads the

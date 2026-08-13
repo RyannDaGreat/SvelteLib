@@ -50,6 +50,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { schemaAngleRadians } from "../../core/properties.js";
 
 // ── metalType → F0 tint (frenzy 1/5/7) ────────────────────────────────────────
 // The reflectance colour that TINTS the fake-environment reflection and the
@@ -460,7 +461,9 @@ export const METAL_FILL_PARAMS = [
   { name: "hammerAmount", kind: "number", default: 0, min: 0, max: 1, help: "Hammered dimples — a planished, hand-beaten copper surface of overlapping strike marks." },
 ];
 
-const DEG2RAD = Math.PI / 180;
+/** Stored angle → radians, reading each row's DECLARED storage unit from the
+ *  schema above rather than restating it here (core/properties.schemaAngleRadians). */
+const toRadians = schemaAngleRadians(METAL_FILL_PARAMS);
 
 /**
  * Pure function. Maps the schema-shaped resolved params to the packer's params:
@@ -479,9 +482,9 @@ export function metalToUniformParams(p) {
     f0: METAL_F0[p.metalType] ?? METAL_F0_FALLBACK,
     roughness: p.roughness,
     brushAmount: p.brushAmount,
-    brushAngle: p.brushAngle * DEG2RAD,
+    brushAngle: toRadians("brushAngle", p.brushAngle),
     radialBrush: p.radialBrush ? 1 : 0,
-    lightAngle: p.lightAngle * DEG2RAD,
+    lightAngle: toRadians("lightAngle", p.lightAngle),
     wearAmount: p.wearAmount,
     patinaAmount: p.patinaAmount,
     patinaColor: p.patinaColor,
