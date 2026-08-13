@@ -30,6 +30,7 @@ import {
   varKind, withVarKind, withVarKindRenamed, repairedVarKinds, fontVarRowAspects,
 } from "../core/var_kinds.js";
 import { ROW_KINDS } from "../core/properties.js";
+import { isVarEquation } from "../core/expressions.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
 
 let passed = 0;
@@ -304,6 +305,25 @@ test("repairedVarKinds: absent is QUIET, damaged is LOUD, and no VALUE is touche
     assert.equal(r.dropped.length, 1);
     assert.equal(r.dropped[0].name, null);
   }
+});
+
+test("A COLOUR VARIABLE IS NOT AN EQUATION — the fiat that kinds broke", () => {
+  // MEASURED DEFECT: every string under state.vars was collected as a NUMERIC
+  // equation slot "by fiat", so a colour variable's own value reported
+  // `expression error at vars.X: evaluates to #ffffff` and was replaced by a
+  // fallback. This predicate is what stops that, and each half matters:
+  assert.equal(isVarEquation("speed * 2"), true, "the legacy bare-string equation must survive");
+  assert.equal(isVarEquation("= brandColor"), true, "the universal = escape hatch must survive");
+  assert.equal(isVarEquation("#ffffff"), false, "a colour LITERAL is not an equation");
+  assert.equal(isVarEquation("#FFF"), false, "the 3-digit spelling too");
+  assert.equal(isVarEquation("#ffffffaa"), false, "and the 8-digit alpha spelling");
+  // Non-strings were never slots and still are not.
+  for (const v of [0.5, 0, true, false, null, undefined, {}, []]) {
+    assert.equal(isVarEquation(v), false, `${JSON.stringify(v)} must not be an equation slot`);
+  }
+  // THE COLOUR ZERO A NEW VARIABLE IS BORN AT MUST PASS THIS, or creating one
+  // through the panel reports an expression error on its very first frame.
+  assert.equal(isVarEquation(VAR_KIND_ZEROS.color), false);
 });
 
 console.log(`\ncompound_props_test: ${passed} passed`);

@@ -8213,11 +8213,38 @@ audio.ae-preview-media {
    selector per level would cap the feature at however many levels someone
    happened to write, and the cap would be invisible until the day a three-level
    compound rendered flat. `--compound-depth` is set inline by the snippet from
-   its own recursion counter, so level N indents by N gutters for every N. */
+   its own recursion counter, so level N indents by N gutters for every N.
+
+   IT MUST RESTATE THE BASE RESERVATION, and that is the trap this rule fell into
+   once. `.compound-label` IS a `.row-label-chrome`, which reserves TWO gutters of
+   padding-left for its absolutely-positioned affordances — but this selector is
+   MORE SPECIFIC (0,3,0 against 0,2,0), so it REPLACES that padding rather than
+   adding to it. A bare `depth * gutter` therefore gave depth 0 a padding of ZERO
+   and put the compound's label LEFT of every plain row's, which is the exact
+   opposite of the user's "push the property name to the right a little".
+   MEASURED at the mistake: compound label x = 1147.19 against a plain row's
+   1176.19.
+
+   THE TWISTY'S OWN WIDTH IS SUBTRACTED, and that is what reconciles the user's
+   nudge with the panel's ONE-LABEL-X law. The triangle is IN FLOW (it has to be —
+   it is always visible, and a permanently visible glyph in the absolute gutter
+   would sit on top of the label), so it displaces the label by its width plus the
+   flex gap. Reserving three whole gutters on top of that put the compound's label
+   at 1177.19 against every other row's 1176.19 — one pixel, which
+   tests/inspector_row_uniformity_probe.js exists to catch and did
+   ("labels sit at 2 different x"). So the padding reserves the SAME total as a
+   plain row and the twisty spends part of it: the label lands on the shared x,
+   and the arrow occupies the gutter slot ahead of it exactly as copy-path and
+   help do on an ordinary row. The nudge the user asked for is real and visible —
+   it is the arrow sitting where nothing sits on a plain row — without the
+   compound opting out of the alignment every other row obeys. */
 .inspector .compound-row > .compound-label,
 .inspector .compound-children > .row > .label,
 .inspector .compound-children > .row > .row-label-chrome {
-  padding-left: calc(var(--compound-depth, 0) * var(--a-row-label-gutter));
+  padding-left: calc(
+    (3 + var(--compound-depth, 0)) * var(--a-row-label-gutter)
+    - var(--a-compound-twisty-w) - var(--a-compound-twisty-gap)
+  );
 }
 /* The value cell holds several controls at once — the collapsed form's
    `[X] [Y] [pad]`, plus the chain link on the Size compound. They share the ONE

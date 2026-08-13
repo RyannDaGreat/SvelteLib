@@ -2094,6 +2094,73 @@ export function withMarkerPreserved(src, rewrite) {
 }
 
 /**
+ * Pure function. Is this VARIABLE's stored value an equation, as opposed to a
+ * literal of a non-numeric kind?
+ *
+ * ── WHY THIS PREDICATE HAD TO EXIST (workstream COMPOUND_, backburner CX) ────
+ * A variable's string value used to be an equation BY FIAT: every string under
+ * `state.vars` was collected as a numeric equation slot, because a variable could
+ * only ever BE a number and the only reason to store a string was to write a
+ * formula. GLOBAL VARIABLE KINDS broke that fiat. A `color` variable stores
+ * "#ffffff" and a `text` variable stores prose — both plain strings, neither an
+ * equation — and the fiat sent them to the numeric evaluator, which reported
+ * `PowerRP expression error at vars.probe_col: evaluates to #ffffff` and replaced
+ * the author's colour with a fallback. MEASURED, on a colour variable created
+ * through the panel; it is why this function is not a tidy-up.
+ *
+ * THE ANSWER IS READ FROM THE VALUE, NOT FROM meta.varKinds, and that is
+ * deliberate rather than a shortcut. `evaluateState` takes a folded STATE and has
+ * no document meta in hand, so consulting the kind map would mean threading it
+ * through the one seam every pixel consumer calls — a large change to fix a
+ * question the value can already answer. It is also the SAFER of the two: the
+ * kind map is viewer-authored metadata that a damaged document can disagree with,
+ * while the value is what the equation engine would actually have to evaluate.
+ * A colour literal is not a valid expression under any kind.
+ *
+ * THE UNIVERSAL "=" ALWAYS WINS, so a colour variable CAN still be bound to a
+ * formula (`= brandColor`) exactly like any other slot — the escape hatch is
+ * untouched. What is excluded is only a bare literal that could never parse as
+ * an expression: a hex colour.
+ *
+ * ── THE `text` KIND IS A KNOWN, NAMED BOUNDARY, NOT A SILENT ONE ────────────
+ * A `text` variable holding prose ("Hello world") is STILL collected as an
+ * equation here and will still report an expression error. That is deliberate
+ * and it is the honest state of the feature rather than a fix pretended at:
+ *   • A bare string in a variable has meant "an equation" for the whole life of
+ *     this engine, and `speed * 2` is exactly such a string. There is no
+ *     predicate that admits `speed * 2` and rejects `Hello world` without
+ *     PARSING, and switching the fiat to a parse test would silently reclassify
+ *     every existing deck's variables — a large behaviour change smuggled in as a
+ *     bug fix, on the one path every pixel consumer calls.
+ *   • The hex case is different in kind, not merely in degree: `#ffffff` is what
+ *     the app ITSELF writes when the author picks a colour, so it is reachable
+ *     with no way to avoid it, and it can never be a valid expression under any
+ *     reading. Prose is at least something the author typed on purpose.
+ * SO: colour, boolean, number and font variables are correct today; a `text`
+ * variable works when its content parses (a bare word, which is the common case
+ * for an id or a font name) and reports loudly when it does not. Closing this
+ * properly means threading `meta.varKinds` into `evaluateState` so the slot's
+ * kind comes from the DECLARATION — the right fix, and a plumbing change through
+ * `web/cameraFrame.evaluationAt` (the one seam that threads `meta.script` for
+ * every pixel consumer) rather than a line here.
+ *
+ * @param {*} value A variable's stored value.
+ * @returns {boolean}
+ *
+ * @example isVarEquation("speed * 2") // true (the legacy bare-string equation)
+ * @example isVarEquation("= brandColor") // true (the universal "=" always wins)
+ * @example isVarEquation("#ffffff") // false (a colour LITERAL, not an equation)
+ * @example isVarEquation("#fff") // false (the 3-digit spelling too)
+ * @example isVarEquation(0.5) // false (a number is not a slot at all)
+ * @example isVarEquation(true) // false
+ */
+export function isVarEquation(value) {
+  if (typeof value !== "string") return false;
+  if (EQ_PREFIX_RE.test(value)) return true;
+  return !isHexColor(value);
+}
+
+/**
  * Pure function. Does this stored string value declare an equation? Either the
  * UNIVERSAL leading "=" (any-type: color/string/bool/enum/number), OR — for
  * back-compat — a bare string in a legacy NUMERIC slot (isNumericSlot).
@@ -3341,7 +3408,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   //    to ANY kind (color/string/boolean/select), validated post-eval.
   const slots = new Map(); // key ("items.a1.x") → slot
   for (const [name, value] of Object.entries(state.vars ?? {}))
-    if (typeof value === "string")
+    if (isVarEquation(value))
       slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value, kind: "number" });
   for (const [id, item] of Object.entries(state.items ?? {})) {
     // An item whose `type` hasn't folded in yet DOES NOT EXIST YET (the
