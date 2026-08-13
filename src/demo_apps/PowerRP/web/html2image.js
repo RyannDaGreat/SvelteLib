@@ -74,12 +74,22 @@
  * (plugins/html2image.js states its shape); a whitelist whose list is empty is
  * behaviourally identical to the refusal above while costing a mechanism to keep
  * correct, so it is not written yet.
- * NO AUTOMATIC RE-CAPTURE. Capture is an explicit command, and deliberately not a
- * side effect of saving the source in the Monaco modal. Editing HTML is iterative
- * and a capture writes an ASSET into the project library — coupling them would mint
- * a file per keystroke-flurry, and would also make an authoring action happen
- * without the user choosing it, which is the one thing the security argument rests
- * on. The plugin's Inspector row and Tools row are how it is asked for.
+ * NO SCHEDULING. This module renders ONE page when asked and returns a ref; it holds
+ * no timer, no queue and no opinion about when a render should happen.
+ * web/html2imageAutoRender.js owns that, and it is where the debounce and the
+ * per-widget serialization live.
+ *
+ * THIS PARAGRAPH USED TO SAY "NO AUTOMATIC RE-CAPTURE", and R7-43a overruled it:
+ * *"i don't want to have to press capture. it should be automatic in every way, when
+ * the html property changes so shohuld that."* Its stated reasons are worth keeping
+ * as the record of what the answer had to solve, because both were real and both are
+ * now handled ELSEWHERE rather than dismissed: "a file per keystroke-flurry" is what
+ * the auto-renderer's DEBOUNCE prevents, and "an authoring action without the user
+ * choosing it" was answered by the user himself — he chose it, for every widget, once.
+ * The security half of that sentence ("the one thing the security argument rests on")
+ * was simply WRONG, and it is the more instructive error: the containment is the
+ * opaque origin and the subresource refusal above, neither of which involves a click.
+ * A button is not a security mechanism.
  */
 
 // web/assetRef.js is DOM-free by its own docblock, so it is a safe static import.

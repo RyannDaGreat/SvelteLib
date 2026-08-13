@@ -1,6 +1,38 @@
 /**
- * HTML TO IMAGE widget — author HTML/CSS, press Capture, and what the deck renders
- * from then on is a FROZEN IMAGE. The html never executes at playback.
+ * HTML TO IMAGE widget — author HTML/CSS and the widget RENDERS ITSELF into a stored
+ * image, automatically, whenever that source changes. The html never executes at
+ * playback: what the deck draws is always the stored picture.
+ *
+ * ── THE DETERMINISM ANSWER, FIRST, BECAUSE THE OLD FLOW MADE A READER GUESS WRONG ─
+ * User, 2026-08-13, looking at the placeholder card: "wtf is this bullcrap? where's
+ * the rendering? what the fuq do u mean press capture? that sounds like ephemeral
+ * state?"
+ *
+ * THE EPHEMERAL ACCUSATION IS WRONG, IN A REASSURING DIRECTION, and the button flow
+ * is what made it look otherwise. The rendered image is a STORED ASSET — ordinary
+ * PROPERTY STATE (CLAUDE.md's four kinds). It is bytes in the project's asset
+ * library, identical on every machine that opens the deck. PLAYBACK, PRESENTATION,
+ * VIDEO EXPORT AND THE BARE-NODE CLI READ ONLY THAT IMAGE, never the html; not one of
+ * them runs a browser, a script or this file's rendering path at all. Reload, export
+ * and re-render on another machine all reproduce the same picture. What auto-render
+ * changes is only WHEN THE EDITOR refreshes an asset the author owns — an authoring
+ * action recorded in the document, exactly like re-rolling a particle seed.
+ *
+ * ── IT RENDERS ITSELF; THE COMMAND IS ONLY A NUDGE ──────────────────────────
+ * User, amending: "i don't want to have to press capture. it should be automatic in
+ * every way, when the html property changes so shohuld that."
+ *
+ * So THE TRIGGER IS THE PROPERTY. The widget stores the image AND a fingerprint of
+ * the source it is a picture of (`captureOf`), which makes "is this picture current?"
+ * a question about the DOCUMENT rather than about history — decidable on open, after
+ * an undo, or on a deck someone else authored. core/html2image_staleness.js owns that
+ * predicate; web/html2imageAutoRender.js owns the scheduling (debounced, serialized
+ * per widget). OPENING A DECK RE-RENDERS what does not match, which the superseded
+ * design refused to do; the containment argument for that is stated in the staleness
+ * module's header and rests on the sandbox, not on a button.
+ *
+ * THE PLACEHOLDER IS THEREFORE RARE, not the resting state it used to be: it shows in
+ * the seconds before the first render lands, and after one FAILED.
  *
  * ── THE ASK, AND WHY THE ANSWER IS A CAPTURE AND NOT A RENDERER ──────────────
  * User, on the idea of teaching PowerRP to lay out CSS: "CSS is complex. You're
@@ -26,11 +58,17 @@
  * the editor IS a browser, so the honest version of the idea is available for
  * free — provided the browser runs at AUTHOR time and never at PLAY time.
  *
- * ── THE LAW: CAPTURE AT AUTHOR TIME, FROZEN AT PLAY ─────────────────────────
- * The widget stores TWO things: `html` (the source) and `capture` (an ordinary
- * image asset ref). Capture is an AUTHORING ACTION — it runs in the editor, under
- * the user's own click, and writes the asset. Playback, presentation, video export
- * and the bare-node CLI read ONLY `capture`; not one of them ever loads the html.
+ * ── THE LAW: RENDER AT AUTHOR TIME, FROZEN AT PLAY ──────────────────────────
+ * The widget stores THREE things: `html` (the source), `capture` (an ordinary image
+ * asset ref) and `captureOf` (which source that image is a picture of). Rendering is
+ * an AUTHORING-TIME action — it runs in the editor and writes the asset. Playback,
+ * presentation, video export and the bare-node CLI read ONLY `capture`; not one of
+ * them ever loads the html.
+ *
+ * (THE STORED KEYS STILL SAY "capture" AND THAT IS DELIBERATE. R7-43b retired the
+ * word from every surface a user READS — the command is "Re-render HTML", the rows
+ * are "Render width"/"Render height" — but a stored key is an internal term of art,
+ * and renaming one would cost a document migration to change something invisible.)
  *
  * That is what keeps the determinism law (CLAUDE.md, "the four kinds of state")
  * intact. A live iframe in a render tree would be EPHEMERAL state — the kind this
@@ -42,10 +80,20 @@
  * fine for exactly the reason re-rolling a particle seed is fine — it is an edit
  * the author made, recorded in the document, not a divergence at render time.
  *
- * SECURITY FALLS OUT OF THE SAME LAW rather than needing its own mechanism:
- * author-supplied `<script>` runs only during a capture the user asked for, in a
- * sandboxed frame that is destroyed immediately afterwards (web/html2image.js
- * owns those rules). Opening someone else's deck executes nothing.
+ * SECURITY IS THE SANDBOX, AND IT NEVER WAS THE BUTTON. This paragraph used to end
+ * "Opening someone else's deck executes nothing", which R7-43a made FALSE — arrival
+ * now renders whatever does not match its fingerprint, so a stranger's html DOES run
+ * on open. What contains it is what always contained it, and the button added nothing
+ * to the list: an OPAQUE-ORIGIN frame (`sandbox="allow-scripts"` and nothing else, so
+ * author script cannot reach this page's DOM, storage, cookies or project), a
+ * FOREIGN-SUBRESOURCE REFUSAL that runs before the frame is created (so it cannot
+ * phone home or pull code in), and a frame destroyed in a `finally` that is never part
+ * of a render tree. web/html2image.js owns those rules in full.
+ *
+ * (The revert-the-doctrine rule, applied to this file: R7-43a overruled the
+ * arrival-refusal design, so the sentence teaching it had to go in the SAME commit
+ * that changed the code. Leaving it would have installed a confident lie in the
+ * paragraph contributors are pointed at for the security argument.)
  *
  * ── WHY THIS IS NOT THE MERMAID/LATEX SHAPE ─────────────────────────────────
  * plugins/mermaid.js and plugins/latex.js also turn source into pixels, but they
@@ -98,6 +146,7 @@
  * `<script>`, inline `<style>`, inline `<svg>`, and data URIs.
  */
 
+import { CAPTURE_OF_KEY, NO_FINGERPRINT, sourceFingerprint } from "../core/html2image_staleness.js";
 import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -294,11 +343,25 @@ const PLACEHOLDER_PILL_PAD_Y = 0.45;
 /** The placeholder's headline — what the widget IS, in the name the user chose. */
 export const UNCAPTURED_TITLE = "HTML to Image";
 
-/** The placeholder's call to action. A CONSTANT because it is asserted verbatim by
- * tests/htmlcap_html2image_test.js — the whole point of the affordance is that it
- * names the button, so an edit reducing it to "not captured" must fail. */
+/**
+ * The placeholder's line, and BOTH of this round's rulings landed on it.
+ *
+ * IT NO LONGER NAMES A BUTTON. The old text was "Press Capture to render this HTML
+ * into an image", which R7-43a made FALSE (the widget renders itself; nobody presses
+ * anything) and R7-43b made unsayable ("wtf even is 'capture'?"). It now states what
+ * the widget IS and what is about to happen, which is what the user asked the card to
+ * do when he said the placeholder told him nothing he could act on.
+ *
+ * AND IT IS RARE NOW. Before, this card was what a widget looked like until you found
+ * the button; today it appears only in the seconds before the first render lands, or
+ * after a render FAILED — which is why it says "not rendered yet" rather than
+ * describing a state the author has to leave by hand. A failure puts its own sentence
+ * in the console and the service's `lastError`.
+ *
+ * A CONSTANT because it is asserted verbatim by tests/htmlcap_html2image_test.js.
+ */
 export const UNCAPTURED_MESSAGE =
-  "Press Capture to render this HTML into an image · double-click to edit the source";
+  "HTML not rendered yet · double-click to edit the source";
 
 /**
  * Pure function. A one-line PREVIEW of the source for the placeholder: the first
@@ -886,19 +949,19 @@ const PROFILE_CARD_HTML = `<div class="profilecard">
  * layouts first.
  */
 const PRESETS = [
-  { name: "Title Card", description: "A hero title slide over a layered dark gradient — an eyebrow line, a big multi-line headline and a short subtitle. Press Capture to render.", props: { html: TITLE_CARD_HTML } },
-  { name: "Stat Tile", description: "A single big metric with a unit and an up/down delta pill, on a soft card — the shape a dashboard KPI tile actually takes. Press Capture to render.", props: { html: STAT_TILE_HTML } },
-  { name: "Gradient Quote", description: "A pull-quote in serif italic over a violet-to-magenta gradient, with an oversized opening quotation mark and an attribution line. Press Capture to render.", props: { html: GRADIENT_QUOTE_HTML } },
-  { name: "Code Snippet Card", description: "A macOS-style code window — traffic-light dots, a filename tab, and a hand-colored JetBrains Mono snippet (keywords, function names, parameters each their own color). Press Capture to render.", props: { html: CODE_SNIPPET_HTML } },
-  { name: "Comparison Table", description: "A two-plan pricing/feature comparison table with the higher tier's column highlighted in a solid accent color. Press Capture to render.", props: { html: COMPARISON_TABLE_HTML } },
-  { name: "Badge Row", description: "A row of wrapping pill badges, each its own hue, for naming a stack of tools or tags at a glance. Press Capture to render.", props: { html: BADGE_ROW_HTML } },
-  { name: "Timeline", description: "A vertical step timeline — done, active and pending stages linked by a connecting rail, each with a title and a one-line note. Press Capture to render.", props: { html: TIMELINE_HTML } },
-  { name: "Kanban Column", description: "A single Trello-style board column: a header with a live count, stacked task cards each carrying a colored category tag and metadata line. Press Capture to render.", props: { html: KANBAN_COLUMN_HTML } },
-  { name: "Glassmorphic Panel", description: "A frosted-glass panel — translucent fill, a bright border and an inner highlight — floating over a two-tone glow backdrop. Press Capture to render.", props: { html: GLASS_PANEL_HTML } },
-  { name: "Receipt", description: "A monospace paper receipt with dashed tear lines between sections and a line-item total, styled like a point-of-sale printout. Press Capture to render.", props: { html: RECEIPT_HTML } },
-  { name: "Terminal Window", description: "A dark terminal window with traffic-light dots, a tab title and a colored command/output transcript ending on a blinking-style cursor glyph. Press Capture to render.", props: { html: TERMINAL_HTML } },
-  { name: "Chart-ish Bars", description: "A small quarterly bar chart built from pure CSS flex bars (no chart library, no canvas) with value labels and a highlighted final bar. Press Capture to render.", props: { html: CHART_BARS_HTML } },
-  { name: "Profile Card", description: "A centered contact/profile card — initials avatar, name, role and a row of three stat counters below a divider. Press Capture to render.", props: { html: PROFILE_CARD_HTML } },
+  { name: "Title Card", description: "A hero title slide over a layered dark gradient — an eyebrow line, a big multi-line headline and a short subtitle.", props: { html: TITLE_CARD_HTML } },
+  { name: "Stat Tile", description: "A single big metric with a unit and an up/down delta pill, on a soft card — the shape a dashboard KPI tile actually takes.", props: { html: STAT_TILE_HTML } },
+  { name: "Gradient Quote", description: "A pull-quote in serif italic over a violet-to-magenta gradient, with an oversized opening quotation mark and an attribution line.", props: { html: GRADIENT_QUOTE_HTML } },
+  { name: "Code Snippet Card", description: "A macOS-style code window — traffic-light dots, a filename tab, and a hand-colored JetBrains Mono snippet (keywords, function names, parameters each their own color).", props: { html: CODE_SNIPPET_HTML } },
+  { name: "Comparison Table", description: "A two-plan pricing/feature comparison table with the higher tier's column highlighted in a solid accent color.", props: { html: COMPARISON_TABLE_HTML } },
+  { name: "Badge Row", description: "A row of wrapping pill badges, each its own hue, for naming a stack of tools or tags at a glance.", props: { html: BADGE_ROW_HTML } },
+  { name: "Timeline", description: "A vertical step timeline — done, active and pending stages linked by a connecting rail, each with a title and a one-line note.", props: { html: TIMELINE_HTML } },
+  { name: "Kanban Column", description: "A single Trello-style board column: a header with a live count, stacked task cards each carrying a colored category tag and metadata line.", props: { html: KANBAN_COLUMN_HTML } },
+  { name: "Glassmorphic Panel", description: "A frosted-glass panel — translucent fill, a bright border and an inner highlight — floating over a two-tone glow backdrop.", props: { html: GLASS_PANEL_HTML } },
+  { name: "Receipt", description: "A monospace paper receipt with dashed tear lines between sections and a line-item total, styled like a point-of-sale printout.", props: { html: RECEIPT_HTML } },
+  { name: "Terminal Window", description: "A dark terminal window with traffic-light dots, a tab title and a colored command/output transcript ending on a blinking-style cursor glyph.", props: { html: TERMINAL_HTML } },
+  { name: "Chart-ish Bars", description: "A small quarterly bar chart built from pure CSS flex bars (no chart library, no canvas) with value labels and a highlighted final bar.", props: { html: CHART_BARS_HTML } },
+  { name: "Profile Card", description: "A centered contact/profile card — initials avatar, name, role and a row of three stat counters below a divider.", props: { html: PROFILE_CARD_HTML } },
 ];
 
 /**
@@ -920,17 +983,24 @@ const PRESETS = [
  */
 async function captureSelectedHtml(app) {
   const id = app.selection;
-  if (id == null) throw new Error("Capture HTML to Image: select an HTML to Image widget first");
+  if (id == null) throw new Error("Re-render HTML: select an HTML to Image widget first");
   const state = app.state().items[id];
   if (state?.type !== html2imagePlugin.type)
-    throw new Error(`Capture HTML to Image: the selection is a "${state?.type}" widget, not an HTML to Image — this command writes THIS widget's own captured asset.`);
+    throw new Error(`Re-render HTML: the selection is a "${state?.type}" widget, not an HTML to Image — this command re-renders THIS widget's own source.`);
   const { captureHtmlToAsset } = await import("../web/html2image.js");
-  const ref = await captureHtmlToAsset(app, {
-    html: state.html ?? "",
-    width: state.captureW ?? DEFAULT_CAPTURE_W,
-    height: state.captureH ?? DEFAULT_CAPTURE_H,
-  });
-  app.setPreview([[["items", id, "capture"], ref]]);
+  const width = state.captureW ?? DEFAULT_CAPTURE_W;
+  const height = state.captureH ?? DEFAULT_CAPTURE_H;
+  const ref = await captureHtmlToAsset(app, { html: state.html ?? "", width, height });
+  // BOTH LEAVES, IN ONE COMMIT — the image AND the fingerprint of the source it is a
+  // picture of. Writing only the ref (which is what this did before the auto-renderer
+  // existed) would leave the widget permanently STALE by
+  // core/html2image_staleness.js's predicate, so the watcher would immediately
+  // re-render what the author had just rendered by hand, forever. The manual nudge
+  // and the automatic path must agree about provenance or they fight.
+  app.setPreview([
+    [["items", id, "capture"], ref],
+    [["items", id, CAPTURE_OF_KEY], sourceFingerprint({ html: state.html ?? "", captureW: width, captureH: height })],
+  ]);
   app.commitPreview();
 }
 
@@ -960,14 +1030,24 @@ export const html2imagePlugin = {
   // THE code-editor descriptor both the "code_modal" activation and the `{}` row
   // button read: WHICH string is the source, in what Monaco language, and the
   // modal's title.
-  codeEditor: { property: "html", language: "html", title: "Edit HTML source (then press Capture)" },
+  // The title no longer instructs anyone to press anything: saving this editor IS
+  // what re-renders the widget (R7-43a), so "(then press Capture)" described a step
+  // that no longer exists and named a word the user rejected (R7-43b).
+  codeEditor: { property: "html", language: "html", title: "Edit HTML source" },
   defaults: {
     type: "html2image", x: 100, y: 100, w: 480, h: 270, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation).
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     html: DEFAULT_HTML,
-    // THE FROZEN OUTPUT. Empty until the author presses Capture — see UNCAPTURED.
+    // THE RENDERED OUTPUT. Empty on arrival and filled in moments later by the
+    // auto-renderer (web/html2imageAutoRender.js) — see UNCAPTURED.
     capture: UNCAPTURED,
+    // WHICH SOURCE that image is a picture of (core/html2image_staleness.js). Empty
+    // here BY DEFINITION: a fresh widget has no picture, so it has no provenance, and
+    // that is exactly the state the staleness predicate reads as "render me". It is
+    // declared rather than left absent so the leaf has a default like every other and
+    // repairedDocument has nothing to report.
+    [CAPTURE_OF_KEY]: NO_FINGERPRINT,
     captureW: DEFAULT_CAPTURE_W,
     captureH: DEFAULT_CAPTURE_H,
     // An image's own pixels are its interior, so like plugins/image.js there is no
@@ -983,20 +1063,27 @@ export const html2imagePlugin = {
     // full-screen editor behind the `{}` button this row's `code` aspect puts at
     // its value end (core/properties.js THE `code` ROW ASPECT). The language
     // agrees with `codeEditor` above, as that aspect's contract requires.
-    { key: "html", label: "HTML", kind: "text", category: "text", code: { language: "html" }, help: "The HTML source this widget captures. It runs ONLY when you press Capture, in a sandboxed frame, and never during playback or export — the deck renders the captured image. Inline <style>/<script>/<svg> and data: URIs work; a subresource from another origin (a CDN script, a remote font or image) is refused loudly rather than captured half-loaded." },
-    // The capture's PIXEL size — the resolution of the frozen asset, not the
-    // widget's world size (see DEFAULT_CAPTURE_W). Raising these and re-capturing
-    // is how you get more detail; resizing the widget alone just scales the image.
-    { key: "captureW", label: "Capture width", kind: "number", category: "formatting", help: "Pixel width the HTML is rendered and rasterized at. This is the captured image's resolution, NOT the widget's size on the canvas — resize the widget freely without re-capturing. Raise it (and press Capture again) when the frozen picture looks soft." },
-    { key: "captureH", label: "Capture height", kind: "number", category: "formatting", help: "Pixel height the HTML is rendered and rasterized at. Same rule as Capture width: it sets the frozen image's resolution, not the widget's canvas size." },
-    // THE CAPTURE ITSELF, surfaced read-only-ish as an ordinary asset row so the
-    // author can SEE which asset the widget is frozen to (and repoint it at a
-    // different one, which is a legitimate edit). It is written by the command
-    // below, not typed.
-    { key: "capture", label: "Captured image", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The frozen image this widget actually draws — written by Capture into the project's assets. This, not the HTML, is what playback, video export and the CLI renderer read. Empty until the first capture, until which the widget shows its dark 'HTML to Image' card previewing the source instead." },
-    // The action row that runs the capture, so the command is reachable without
-    // the palette (the tool-surfacing rule: a gate is only half an affordance).
-    { key: "__captureHtml", label: "Capture", kind: "action", command: "capture-html", category: "formatting", help: "Render the HTML source right now, in this browser, and freeze the result into an image asset the deck will use from here on. This is the ONLY moment the source executes." },
+    { key: "html", label: "HTML", kind: "text", category: "text", code: { language: "html" }, help: "The HTML source this widget draws. Edit it and the widget re-renders itself automatically — the source runs in a sandboxed frame at authoring time only, never during playback or export, which is what makes the deck reproduce identically everywhere. Inline <style>/<script>/<svg> and data: URIs work; a subresource from another origin (a CDN script, a remote font or image) is refused loudly rather than rendered half-loaded." },
+    // The RENDER's pixel size — the resolution of the stored image, not the widget's
+    // world size (see DEFAULT_CAPTURE_W). Raising these re-renders automatically;
+    // resizing the widget alone just scales the existing picture.
+    //
+    // THE KEYS STAY `captureW`/`captureH` AND THE LABELS DO NOT (user, R7-43b: "wtf
+    // even is 'capture'?"). The ruling is about the words a user READS; a stored key
+    // is an internal term of art nobody reads, and churning one would cost a document
+    // migration to rename something invisible. So the label is the fix and the key is
+    // deliberately left alone.
+    { key: "captureW", label: "Render width", kind: "number", category: "formatting", help: "Pixel width the HTML is rendered at. This is the stored image's resolution, NOT the widget's size on the canvas — resize the widget freely and the picture just scales. Raise this when the picture looks soft; it re-renders on its own." },
+    { key: "captureH", label: "Render height", kind: "number", category: "formatting", help: "Pixel height the HTML is rendered at. Same rule as Render width: it sets the stored image's resolution, not the widget's canvas size." },
+    // THE RENDERED IMAGE ITSELF, surfaced as an ordinary asset row so the author can
+    // SEE which asset the widget is drawing (and repoint it at a different one, which
+    // is a legitimate edit). It is written by the auto-renderer, not typed.
+    { key: "capture", label: "Rendered image", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The image this widget actually draws, written into the project's assets when the HTML is rendered. This, not the HTML, is what playback, video export and the CLI renderer read — which is why a deck renders identically on a machine that never runs the source." },
+    // The action row for the MANUAL re-render. It is no longer how a picture normally
+    // arrives (the widget renders itself); it stays as the nudge for re-running a
+    // render that failed, or one whose source is unchanged but whose result you want
+    // taken again in this browser.
+    { key: "__captureHtml", label: "Re-render", kind: "action", command: "capture-html", category: "formatting", help: "Render this HTML again right now. The widget already re-renders itself whenever the HTML or the render size changes, so this is only needed to retry after a failure — or to take the picture again in this browser." },
     // The stroked-BORDER bundle (no fill — the captured pixels are the interior).
     ...bundle("strokedBorder"),
     ...bundle("cropInsets"),
@@ -1062,16 +1149,27 @@ export const html2imagePlugin = {
       run: (app) => app.armCrosshairPlacement(html2imagePlugin),
     },
     {
+      // THE ID STAYS `capture-html` — it is an identifier, not copy: it is written
+      // into toolGroups above, into tests, and possibly into someone's notes. R7-43b
+      // is about the words a user READS.
       id: "capture-html",
-      title: "Capture HTML to Image",
+      // "Re-render", not "Capture" (user, R7-43b: "wtf even is 'capture'?"), and
+      // "re-", not a bare "Render", because the widget renders ITSELF now (R7-43a):
+      // this command is the manual nudge for a render that already should have
+      // happened, so a title promising the primary way to get a picture would be a
+      // lie about what the button is for.
+      title: "Re-render HTML",
       icon: "mdi:camera-iris",
-      aliases: ["capture html", "render html", "freeze html", "rasterize"],
+      // THE OLD WORD SURVIVES AS SEARCH, WHICH IS THE POINT OF ALIASES. An alias is
+      // never displayed (core/commands.js), so the palette shows only the new name
+      // while anyone whose muscle memory or notes say "capture" still finds it.
+      aliases: ["capture", "capture html", "html capture", "render html", "freeze html", "rasterize", "re-render"],
       // GATED on the widget type, not merely on "a selection": this command writes
-      // THIS plugin's own `capture` property and is meaningless anywhere else. An
+      // THIS plugin's own image property and is meaningless anywhere else. An
       // ungated selection command answers an empty selection with an exception
       // instead of a greyed row — the defect tests/palette_probe.js sweeps for.
       when: (app) => app.selectedNode()?.type === "html2image",
-      requires: "a selected HTML to Image widget — this freezes THAT widget's own source into its image asset",
+      requires: "a selected HTML to Image widget — this re-renders THAT widget's own source into its image",
       run: captureSelectedHtml,
     },
   ],

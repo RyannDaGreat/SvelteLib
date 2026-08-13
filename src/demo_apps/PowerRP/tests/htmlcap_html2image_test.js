@@ -143,10 +143,18 @@ check("sourcePreview collapses, elides and survives an empty or blank-led source
   assert.ok(sourcePreview("<section><header><h1>a very long line indeed</h1>", 20).length <= 20);
 });
 
-check("the affordance NAMES THE ACTION — the whole reason it is not just a coloured box", () => {
-  // Asserted verbatim: an edit that reduces this to "not captured" would leave a
-  // user staring at a rectangle with no idea what to press.
-  assert.match(UNCAPTURED_MESSAGE, /Capture/);
+check("the affordance says WHAT IT IS and offers the edit — without naming a button that no longer exists", () => {
+  // THIS CHECK USED TO ASSERT THE OPPOSITE, and both halves of the reversal are the
+  // user's. It required /Capture/ in this string, on the reasoning that a placeholder
+  // must name the button to press. R7-43a deleted the pressing (the widget renders
+  // itself, so this card is now only the pre-first-render and post-failure state), and
+  // R7-43b deleted the word ("wtf even is 'capture'?"). A test pinning the retired
+  // doctrine had to change in the same commit as the code it guards — otherwise the
+  // suite would go on enforcing a design that was overruled.
+  assert.doesNotMatch(UNCAPTURED_MESSAGE, /captur/i);
+  // It still must not decay into a bare "not captured": it states the widget's
+  // condition AND the one thing the author can do with it.
+  assert.match(UNCAPTURED_MESSAGE, /not rendered/i);
   assert.match(UNCAPTURED_MESSAGE, /double-click/i);
   // And it says what the widget IS, in the name the user chose.
   assert.equal(UNCAPTURED_TITLE, "HTML to Image");
