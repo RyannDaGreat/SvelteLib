@@ -8,6 +8,7 @@
   — the single source of truth for "what inputs exist right now".
 -->
 <script>
+  import { untrack } from "svelte";
   import "iconify-icon"; // registers the <iconify-icon> web component (used in the Open Project grid's placeholder tiles)
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
@@ -2805,10 +2806,36 @@
   // edited — so a stale list would offer a type nobody has any more, or omit one
   // just added. Keyed on paletteOpen and slideIndex, the two things that decide
   // what the next opening should show.
+  // THE REBUILD IS UNTRACKED, AND THAT IS WHAT KEEPS PALETTE HOVER FROM LOOPING.
+  // refreshTypeSelectCommands reads app.typesOnSlide() -> nodes(), and nodes()
+  // reads its dependency keys UNCONDITIONALLY BY DESIGN (app.svelte.js:1421 —
+  // "these reads are what register this call's reactive dependencies (doc,
+  // previewDelta, slideIndex, assetsVersion)"). Tracked, that subscribes THIS
+  // effect to previewDelta and the whole document eval — while its body SPLICES
+  // the very children arrays the palette's `results` derived walks. A palette
+  // row whose `preview` writes previewDelta or the selection (bind-to-camera,
+  // the by-type rows this function itself builds) therefore closes a circle on
+  // HOVER: preview writes -> this effect re-runs -> splice hands the palette new
+  // child objects -> `rows`/`current` change identity -> the preview effect runs
+  // again. Same shape as the CF boot crash (an effect subscribing to what it
+  // writes), one layer out.
+  //
+  // HONESTY ABOUT THE EVIDENCE (do not let this harden into a claim it is not).
+  // This was written while chasing the user's 2026-08-12 report of
+  // effect_update_depth_exceeded on palette hover, and THAT CRASH WAS NEVER
+  // REPRODUCED — not in dev, not in a prod build, and not at origin/powerrp
+  // (d8f59104), the deployed commit. tests/palette_hover_probe.js was MEASURED
+  // not to go red with this untrack removed. So this is a latent write-inside-a-
+  // tracked-read hazard fixed on inspection, NOT a proven fix for that report;
+  // the report stays open. The untrack costs nothing and removes a real cycle,
+  // which is why it stands — but if you are hunting that crash, this is not it.
+  //
+  // The two keys the rebuild SHOULD react to are read tracked, above the untrack:
+  // paletteOpen and slideIndex are what decide what the next opening shows.
   $effect(() => {
     if (!app.paletteOpen) return;
     app.slideIndex; // tracked: a different slide has a different population
-    refreshTypeSelectCommands(app);
+    untrack(() => refreshTypeSelectCommands(app));
   });
 
   $effect(() => {
