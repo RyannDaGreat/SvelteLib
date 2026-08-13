@@ -3104,10 +3104,23 @@ function stringSeed(s) {
  * random the evaluator exposes so equations may use randomness without breaking
  * RenderTree = pure(document, alpha).
  *
+ * EXPORTED so core/plugin_assets.js's jail hands plugin assets THIS function
+ * rather than its own. That copy's docblock claimed to mirror this one and did
+ * not: it seeded `(seed|0) + 0x6d2b79f5` and then added the same constant again
+ * on the first call, putting its stream TWO steps ahead of the equation
+ * evaluator's for the same seed. So `random(7)` meant one thing in an equation
+ * and a different thing in a plugin asset — a divergence no test could see,
+ * because both halves were self-consistent and each was only ever compared
+ * against itself.
+ *
+ * @param {number} seed - a uint32 seed
+ * @returns {function(): number} successive uniforms in [0, 1)
+ *
  * @example // const r = mulberry32(1); const a = r(); 0 <= a && a < 1 // true
  * @example // mulberry32(7)() === mulberry32(7)() // true (reproducible)
+ * @example // mulberry32(1)() === mulberry32(2)() // false (a different seed diverges)
  */
-function mulberry32(seed) {
+export function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
     a = (a + 0x6d2b79f5) | 0;

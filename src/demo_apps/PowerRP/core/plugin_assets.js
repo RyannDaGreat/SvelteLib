@@ -121,7 +121,7 @@ import { reportOnce } from "./report.js";
 // emit-time non-finite guard and the paint-time boundary) so a broken widget
 // looks the same however it broke — see that module's docblock for the doctrine.
 import { errorAffordanceIR, errorBoxExtent, throwMessage } from "./paint_containment.js";
-import { BLOCKED_GLOBALS, SAFE_MATH } from "./expressions.js";
+import { BLOCKED_GLOBALS, SAFE_MATH, mulberry32 } from "./expressions.js";
 import { standardBBoxAnchors } from "./derive.js";
 import * as properties from "./properties.js";
 import * as shapes from "./shapes.js";
@@ -392,10 +392,29 @@ const SAFE_BUILTINS = Object.freeze({
 const NATIVE_REGEXP = RegExp;
 
 /**
- * Pure function. A deterministic seeded PRNG (mulberry32) — the ONLY randomness a
- * plugin asset can reach, mirroring core/expressions.js's seeded `random`. Given
- * a seed the sequence is fixed, so a widget that scatters dots renders the same
- * pixels on every machine and every frame of a sharded export.
+ * Pure function. A deterministic seeded PRNG — the ONLY randomness a plugin asset
+ * can reach. Given a seed the sequence is fixed, so a widget that scatters dots
+ * renders the same pixels on every machine and every frame of a sharded export.
+ *
+ * IT IS core/expressions.js's `mulberry32`, NOT A MIRROR OF IT. This function used
+ * to carry its own copy of the body whose docblock said it mirrored the evaluator's
+ * seeded `random`; it did not. It seeded `(Number(seed)|0) + 0x6d2b79f5` and then
+ * added that same constant again on the first call, so for any given seed its
+ * stream ran TWO steps ahead of the one an equation gets. `random(7)` therefore
+ * meant two different things depending on which side of the jail you asked from —
+ * the exact failure a "mirrors X" comment is supposed to rule out, and one nothing
+ * could catch while each copy was only ever compared against itself.
+ *
+ * SAFE TO CHANGE, MEASURED. Swapping the stream changes rendered output for any
+ * asset that consumes it, so this was checked before landing rather than assumed:
+ * `seededRandom` is reachable only through the jail's `random` binding below, and
+ * NO committed plugin asset calls it (the repo's only `random` hits in asset files
+ * are GLSL hash functions inside a shader string, which never touch this JS, and
+ * the plugin template's comments). With no consumer there is no picture to migrate.
+ *
+ * `Number(seed) | 0` is kept at this boundary and is NOT redundant: a plugin asset
+ * is untrusted authored input, so a seed arriving as a string or a float is coerced
+ * here rather than reaching the PRNG's `>>> 0` as a surprise.
  *
  * @param {number} seed - any integer
  * @returns {function(): number} successive values in [0, 1)
@@ -405,13 +424,7 @@ const NATIVE_REGEXP = RegExp;
  * @example seededRandom(3)() >= 0 && seededRandom(3)() < 1 // true (values land in [0, 1))
  */
 export function seededRandom(seed) {
-  let a = (Number(seed) | 0) + 0x6d2b79f5;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  return mulberry32(Number(seed) | 0);
 }
 
 /**
