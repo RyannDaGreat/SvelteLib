@@ -13,26 +13,41 @@
  * seen from two sides.
  *
  * ── WHAT IT PINS ────────────────────────────────────────────────────────────
- * THE BY-TYPE REBUILD MUST NOT BE TRACKED (web/App.svelte, the paletteOpen
- * effect). refreshTypeSelectCommands reads nodes(), and nodes() registers `doc`,
- * `previewDelta`, `slideIndex` and `assetsVersion` UNCONDITIONALLY BY DESIGN
- * (app.svelte.js:1421 says so in as many words). Tracked, that effect subscribes
- * to previewDelta while its body SPLICES the very children arrays the palette's
- * `results` derived walks — so hovering a row whose `preview` writes
- * previewDelta or the selection (bind-to-camera; the by-type rows the function
- * itself builds) re-dirties the effect that rebuilds the rows under the cursor.
- * Scenarios 1-2 sweep exactly those rows; scenario 3 adds a row that THROWS from
- * preview(), the tripwire for a throw landing inside such a loop.
+ * HOVERING ANY PALETTE ROW — INCLUDING EVERY ROW WHOSE `preview` WRITES STATE
+ * THE PALETTE ITSELF READS — MUST RAISE NO PAGE ERROR. Scenarios 1-2 sweep the
+ * default rows and then the previewable ones (bind-to-camera writes
+ * previewDelta; the by-type PICKER's options write the selection), with a
+ * retrace, because a loop needs a re-entry to start. Scenario 3 adds a row that
+ * THROWS from preview(), the tripwire for a throw landing inside such a loop.
+ *
+ * ── WHAT THIS PROBE ORIGINALLY GUARDED, AND WHAT REPLACED IT (R7-42) ────────
+ * It was written around ONE specific hazard: web/App.svelte's paletteOpen effect
+ * called refreshTypeSelectCommands, which read nodes(), and nodes() registers
+ * `doc`, `previewDelta`, `slideIndex` and `assetsVersion` UNCONDITIONALLY BY
+ * DESIGN (app.svelte.js:1421 says so in as many words). Tracked, that effect
+ * subscribed to previewDelta while its body SPLICED the very children arrays the
+ * palette's `results` derived walks — so hovering a row whose preview wrote
+ * previewDelta or the selection re-dirtied the effect that rebuilt the rows under
+ * the cursor. f4b11012 fixed it with `untrack`.
+ *
+ * THAT EFFECT NO LONGER EXISTS. The user's ruling collapsed the N minted by-type
+ * commands into two static ones whose type argument is gathered by the palette's
+ * PICKER STAGE, so there is no per-document command roster left to rebuild and
+ * nothing to untrack — the cycle is now unexpressible rather than suppressed
+ * (tests/select_by_type_command_test.js is the structural pin on that). This
+ * probe is therefore no longer a fence around one `untrack` call; it is what it
+ * always also was, a STANDING GUARD over the hover path, now driven over the
+ * two-stage flow. Scenario 2 enters the picker rather than drilling a submenu.
  *
  * ── AN HONEST NOTE ON WHAT THIS PROBE DOES AND DOES NOT PROVE ───────────────
  * The user's exact crash was NOT reproduced at any commit available here — not
  * in dev, not in a prod build, and not at origin/powerrp (d8f59104), the
  * deployed commit, whose bundle hash does not match the reported one either. So
- * this probe is a STANDING GUARD over the hover path and a REGRESSION FENCE
- * around the untrack fix, not a red-to-green witness for that report. It was
- * measured NOT to bite on the untrack alone (see the round's report); it exists
- * because the palette runs arbitrary command code on hover and nothing else
- * asserted that path was error-free.
+ * this probe is a STANDING GUARD over the hover path, not a red-to-green witness
+ * for that report. It was measured NOT to bite on the untrack alone (see that
+ * round's report); it exists because the palette runs arbitrary command code on
+ * hover and nothing else asserted that path was error-free. That remains exactly
+ * as true of the picker stage, which runs `onPreview` on the same hover.
  *
  * Errors are ASSERTED, never left as an unread log line — the discipline
  * tests/prod_boot_probe.js exists to enforce. Boot-time noise from other agents'
@@ -124,9 +139,12 @@ try {
     errors.slice(before1).map((e) => e.split("\n")[0]).join(" | "));
 
   // ── Scenario 2: the rows whose preview WRITES state the gates read ─────────
-  // bind-to-camera / unbind write previewDelta; the by-type children write the
-  // selection. Both are the loop's closing link, so they are hovered explicitly
-  // (and re-hovered, since a loop needs a transition to start).
+  // bind-to-camera / unbind write previewDelta; the by-type PICKER's options
+  // write the selection. Both are the loop's closing link, so they are hovered
+  // explicitly (and re-hovered, since a loop needs a transition to start).
+  // The selection is what `partitionByAvailability` asks every row's `when`
+  // about, so a preview that writes it is re-partitioning the list under the
+  // cursor — the same shape as the old rebuild, reached through the picker now.
   console.log("\nScenario 2: previewable rows (previewDelta + selection writers)");
   await page.evaluate(() => {
     const a = window.__powerrp_app;
@@ -139,8 +157,7 @@ try {
     for (const row of rows) await hover(row);
     // retrace upward: re-entering a row is what re-runs the preview effect
     for (const row of [...rows].reverse()) await hover(row, 1);
-    // drill into the first container (Select by Type) and sweep its children,
-    // which are the rows refreshTypeSelectCommands splices in place
+    // drill into the first container found at this query and sweep its children
     const drilled = await page.evaluate(() => {
       const el = [...document.querySelectorAll(".palette-item")].find((e) => e.querySelector(".sub-arrow"));
       if (!el) return null;
@@ -155,6 +172,44 @@ try {
       for (const row of [...kids].reverse()) await hover(row, 1);
       console.log(`  · drilled ${drilled} (${kids.length} rows)`);
     }
+  }
+
+  // ── Scenario 2b: THE PICKER STAGE, hovered the same way (R7-42) ────────────
+  // Its options' onPreview writes the SELECTION, which every row's `when` is
+  // asked about — the selection-writing half of the old by-type children, now
+  // one stage in. Reached the way a user reaches it (run the command, then
+  // hover the options), not by calling the spec, because what is under test is
+  // the palette's own effect graph.
+  for (const cmd of ["select-by-type", "deselect-by-type"]) {
+    // CLOSE FIRST, ALWAYS. Scenario 2 leaves the palette DRILLED INTO a submenu,
+    // and openPalette() only sets paletteOpen — already true, so the reset effect
+    // (which clears the query and the stack) never refires and search() stays
+    // scoped to that submenu's children. The by-type rows then legitimately do
+    // not exist at that level, and the probe skipped both silently. Measured: the
+    // same query lists them at the top level.
+    await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
+    await new Promise((r) => setTimeout(r, 150));
+    await openPalette("by widget type");
+    const entered = await page.evaluate((id) => {
+      const el = [...document.querySelectorAll(".palette-item")].find((e) => e.dataset.commandId === id);
+      if (!el) return false;
+      el.click();
+      return true;
+    }, cmd);
+    // A SKIP IS A FAILURE HERE, not a note. An earlier draft logged "not offered
+    // — skipped" and passed; the row was in fact absent because the palette was
+    // still drilled into another submenu, so the entire picker sweep silently did
+    // nothing while the probe reported green.
+    check(`picker-command-offered:${cmd}`, entered, "the command row was not in the palette — the sweep below tested nothing");
+    if (!entered) continue;
+    await new Promise((r) => setTimeout(r, 300));
+    const opts = await visibleRows();
+    check(`picker-has-options:${cmd}`, opts.length > 0, "the picker stage rendered no option rows");
+    for (const row of opts) await hover(row);
+    for (const row of [...opts].reverse()) await hover(row, 1);
+    console.log(`  · picker ${cmd} (${opts.length} options)`);
+    await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
+    await new Promise((r) => setTimeout(r, 150));
   }
   await new Promise((r) => setTimeout(r, SETTLE_MS));
   check("previewable-hover-raises-no-error", errors.length === before2,

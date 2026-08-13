@@ -833,6 +833,17 @@ export class PowerRPApp {
   clickThroughDepth = $state(0);
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
+  // THE PALETTE'S SECOND STAGE (R7-42). A command whose action needs ONE
+  // per-document argument sets this to a picker spec instead of minting a
+  // command per candidate value; CommandPalette renders it over its own row
+  // surface (searchable, arrow-keyed, Enter-picked) and clears it on pick or
+  // Escape. null = the palette is showing commands.
+  //
+  // THE SHAPE: {title, placeholder, options: [{value, label, detail?, icon?}],
+  //             onPick(app, value), onPreview?(app, value) -> revert}
+  // The options are gathered AT INVOKE TIME from the live document, which is
+  // what makes the roster static: nothing per-document ever enters the registry.
+  palettePicker = $state(null);
   dragging = $state(false); // canvas sets this; drives HintBar context
   // Which drag gesture is live: null, or one of DRAG_KINDS (web/canvas/
   // dragKinds.js) — drives the HintBar's per-gesture modifier hints (manifest
@@ -1929,8 +1940,8 @@ export class PowerRPApp {
   }
 
   /**
-   * Query. The widget types PRESENT on this slide, with how many of each — what a
-   * select-by-type submenu lists. Derived from the live nodes, so a type nobody has
+   * Query. The widget types PRESENT on this slide, with how many of each — what
+   * the by-type picker lists. Derived from the live nodes, so a type nobody has
    * placed is not offered and a new widget needs no edit here.
    *
    * @returns {Array<{type: string, title: string, count: number}>} sorted by title
@@ -1944,6 +1955,41 @@ export class PowerRPApp {
       counts.set(n.type, e);
     }
     return [...counts.values()].sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
+  }
+
+  /**
+   * Command. Opens the palette's SECOND STAGE on this slide's widget types
+   * (R7-42) — the type argument of select/deselect-by-type, gathered by a picker
+   * instead of by one minted command per type.
+   *
+   * The options are read from `typesOnSlide()` HERE, at invoke time, which is
+   * precisely what keeps the command roster static: nothing per-document is ever
+   * registered, so there is no rebuild effect and no splice into arrays the
+   * palette is walking (the f4b11012 hazard).
+   *
+   * `onPreview` stages the selection the highlighted option would make and
+   * returns its undo — the previewable-command protocol the minted rows used,
+   * carried over unchanged.
+   *
+   * @param {boolean} add - true selects the picked type, false deselects it
+   */
+  openTypePicker(add) {
+    this.palettePicker = {
+      title: add ? "Select by Widget Type" : "Deselect by Widget Type",
+      placeholder: add ? "Which kind to select…" : "Which kind to deselect…",
+      options: this.typesOnSlide().map((t) => ({
+        value: t.type,
+        label: t.title,
+        detail: `${t.count}`,
+        icon: "mdi:shape-outline",
+      })),
+      onPreview: (app, type) => {
+        const before = [...app.selectedIds()];
+        app.selectByType(type, add);
+        return () => app.selectMany(before);
+      },
+      onPick: (app, type) => app.selectByType(type, add),
+    };
   }
 
   /** Command. Clears the selection (palette "Deselect All" — manifest Round

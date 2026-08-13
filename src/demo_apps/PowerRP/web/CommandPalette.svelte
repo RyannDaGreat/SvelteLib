@@ -6,6 +6,14 @@
   SURFACING of commands: shortcuts, toolbar buttons, and future context menus
   run the same entries.
 
+  IT ALSO HAS A SECOND STAGE (R7-42): a command whose action needs ONE
+  per-document argument sets app.palettePicker and the palette turns into a
+  searchable list of that argument's candidate values. The values are NOT
+  commands — they never enter the registry — which is the whole point: the
+  minted per-widget-type rows this replaced were searchable top-level hits, so
+  typing "add" surfaced "PowerPoint Shape (1) — Select by Widget Type". See the
+  picker-stage block in the script for the ruling and the design.
+
   UNAVAILABLE COMMANDS ARE GREYED, NOT DROPPED. A `when` gate that says no is the
   AVAILABILITY axis (core/registry.js's TOOL GROUPS block names the two axes;
   core/commands.js's header carries the ruling), and the Toolbar and the Tools
@@ -36,7 +44,7 @@
 <script>
   import "iconify-icon";
   import KeyCombo from "../../../lib/KeyCombo.svelte";
-  import { rpFuzzyMatchIndices } from "../core/fuzzy.js";
+  import { rpFuzzyMatchIndices, rpFuzzyRank } from "../core/fuzzy.js";
   import { commandUnavailable, commandUnavailableReason, partitionByAvailability, unavailableMessage } from "../core/commands.js";
 
   let { app } = $props();
@@ -73,12 +81,63 @@
   let inputEl = $state(null);
   let resultsEl = $state(null); // the scrollable results list
 
+  // ── THE PICKER STAGE (R7-42) ───────────────────────────────────────────────
+  // A command whose action needs ONE per-document argument sets app.palettePicker
+  // (see app.svelte.js openTypePicker) instead of minting a command per candidate
+  // value. This palette then shows that picker OVER ITS OWN ROW SURFACE — the
+  // same rows, the same fuzzy highlighting, the same arrow/Enter keys, the same
+  // breadcrumb-and-Backspace way back — rather than opening a second window.
+  //
+  // WHY A STAGE AND NOT A SUBMENU: a submenu's options are CHILD COMMAND ENTRIES,
+  // and since R7-18 a top-level query pools one level of children beside their
+  // parents, so every option was a searchable top-level row. That is exactly what
+  // the user reported ("PowerPoint Shape (1) — Select by Widget Type" surfacing
+  // under the search "add"): the palette holds ACTIONS, and a per-document
+  // parameter is not one. Picker options are NOT commands — they never enter the
+  // registry, so they can never be a top-level hit, and the roster is static.
+  //
+  // WHY IT REUSES THIS COMPONENT rather than a lib/ dropdown: the flow it has to
+  // preserve is the PALETTE's — open, type, arrow, Enter, all without the mouse
+  // and without focus leaving the one input. Handing the second step to another
+  // surface would mean a second focus model and a second set of keys.
+  // Ranked by the SAME fuzzy module the command rows use (rpFuzzyRank is its
+  // filter-and-sort helper; an empty query keeps the incoming order, which for
+  // typesOnSlide() is alphabetical by title).
+  let pickerOptions = $derived(rpFuzzyRank(app.palettePicker?.options ?? [], query, (o) => o.label));
+
+  /** Command. Leaves the picker stage without picking, restoring the command
+   *  list. Reverting the live preview is the shared teardown below. */
+  function closePicker() {
+    revertPreview();
+    app.palettePicker = null;
+    query = "";
+    resetHighlight();
+    inputEl?.focus();
+  }
+
+  /** Command. Commits the highlighted option: the pending preview is DROPPED
+   *  without being called (its staged change stays, exactly as activate() does
+   *  for a previewable command), `onPick` makes it durable, and the palette
+   *  closes. */
+  function pick(option) {
+    previewRevert = null;
+    previewedId = null;
+    const spec = app.palettePicker;
+    app.palettePicker = null;
+    app.paletteOpen = false;
+    spec.onPick(app, option.value);
+  }
+
   let parent = $derived(stack.length ? stack[stack.length - 1] : null);
   // `used` inside the registry is a plain (non-reactive) Map, so markUsed() from
   // runCommand can't dirty this derived. Read app.paletteOpen (flips on every
   // open) so the empty-query MRU order is recomputed fresh each time the palette
   // is shown — even when query/stack are unchanged from the prior open.
-  let results = $derived(app.paletteOpen ? app.commands.search(query, parent) : []);
+  // While the picker stage is up the command search does not run at all: the two
+  // stages are exclusive, and a palette showing a picker must not be evaluating
+  // every command's `when` underneath it.
+  let picking = $derived(!!app.palettePicker);
+  let results = $derived(app.paletteOpen && !picking ? app.commands.search(query, parent) : []);
 
   // AVAILABLE FIRST, then unavailable — user ruling. The partition runs HERE and
   // not in search() because availability is a property of the surfacing, not of
@@ -98,9 +157,16 @@
   // The HIGHLIGHTED entry drives both the bottom section and the live preview —
   // one notion of "the current row", so they can never point at different ones.
   // Indexed into the RENDERED order, which is the only order the user can see.
-  let current = $derived(rows[highlighted] ?? null);
-  let currentReason = $derived(current ? commandUnavailableReason(current, app) : null);
-  let currentHelp = $derived(current?.help ?? null);
+  // In the picker stage the rendered rows are the picker's options, so the SAME
+  // index drives them and the arrow keys, the scroll-follow and the preview
+  // effect all compose with no second mechanism.
+  let current = $derived(picking ? (pickerOptions[highlighted] ?? null) : (rows[highlighted] ?? null));
+  let rowCount = $derived(picking ? pickerOptions.length : rows.length);
+  // A picker option is never "unavailable" (it is offered because it exists on
+  // this slide), and it carries no `help`, so both bottom-section inputs are null
+  // there rather than asking a command question of a non-command.
+  let currentReason = $derived(!picking && current ? commandUnavailableReason(current, app) : null);
+  let currentHelp = $derived(picking ? null : (current?.help ?? null));
 
   /** Command. Resets the highlight to the first row AND snaps the list back
    * to the top — the two must move together: open, typing, submenu drill,
@@ -174,8 +240,11 @@
     if (!pointerInsideList()) return;
     const el = document.elementFromPoint(pointerX, pointerY)?.closest(".palette-item");
     if (!el) return;
+    // data-command-id carries the row's identity in EITHER stage: a command's id,
+    // or a picker option's value. The rendered rows are the only list either
+    // lookup consults, so they cannot disagree about which row is under the point.
     const id = el.dataset.commandId;
-    const i = rows.findIndex((c) => c.id === id);
+    const i = picking ? pickerOptions.findIndex((o) => o.value === id) : rows.findIndex((c) => c.id === id);
     if (i >= 0 && i !== highlighted) highlighted = i;
   }
 
@@ -185,6 +254,19 @@
       stack = [];
       resetHighlight();
       inputEl.focus();
+    }
+  });
+
+  // A CLOSED PALETTE HOLDS NO PICKER. Escape at the picker stage goes BACK to the
+  // commands (see back()), but the backdrop click and every other close path set
+  // paletteOpen directly — and a picker left behind would be the stage the palette
+  // opened onto next time, for a command the author has since forgotten running.
+  // The live preview is reverted with it, which is the same teardown the command
+  // stage gets when `results` empties on close.
+  $effect(() => {
+    if (!app.paletteOpen && app.palettePicker) {
+      revertPreview();
+      app.palettePicker = null;
     }
   });
 
@@ -202,22 +284,39 @@
   // (app.previewTheme — a non-persisted viewer-preference swap; the committing
   // `run` = app.setTheme persists). Any future command opts in the same way.
   //
+  // THE PICKER STAGE USES THE SAME PROTOCOL, one level down: its spec may declare
+  // `onPreview(app, value) -> revert`, and an option's `value` plays the part the
+  // command's `id` plays — one highlight, one preview, one revert, whichever
+  // stage is up. That is why the by-type rows kept their hover preview across
+  // this change with no second mechanism.
+  //
   // previewRevert/previewedId are PLAIN (non-$state) bridge variables: the
   // effect reads/writes them imperatively but must NOT react to them — only
   // `current` (i.e. `highlighted` and `rows`) may drive it.
   let previewRevert = null; // closure that undoes the active preview, or null
-  let previewedId = null; // id of the entry currently previewed, or null
+  let previewedId = null; // id (or picker option value) currently previewed, or null
+
+  /** Command. Rolls back the live preview, if any, and forgets it. */
+  function revertPreview() {
+    if (previewRevert) previewRevert();
+    previewRevert = null;
+    previewedId = null;
+  }
 
   $effect(() => {
-    const cmd = current;
-    const id = cmd?.id ?? null;
+    const row = current;
+    const spec = app.palettePicker;
+    const id = (spec ? row?.value : row?.id) ?? null;
     if (id === previewedId) return; // same entry still highlighted — nothing to do
     if (previewRevert) previewRevert(); // roll back the previous preview
     // An UNAVAILABLE command previews nothing: its `when` says the write it would
     // stage cannot be derived (bind-to-camera with nothing selected computes an
     // empty pair list), so previewing it would show an empty change and call a
-    // revert for it. The Tools pane's previewRow makes the same exclusion.
-    previewRevert = cmd?.preview && !commandUnavailable(cmd, app) ? cmd.preview(app) : null;
+    // revert for it. The Tools pane's previewRow makes the same exclusion. A
+    // picker option has no gate — it is offered because it is there.
+    previewRevert = spec
+      ? (row && spec.onPreview ? spec.onPreview(app, row.value) : null)
+      : (row?.preview && !commandUnavailable(row, app) ? row.preview(app) : null);
     previewedId = id;
   });
 
@@ -245,13 +344,31 @@
       if (previewRevert && previewedId !== cmd.id) previewRevert();
       previewRevert = null;
       previewedId = null;
-      app.paletteOpen = false;
+      // RUN FIRST, THEN CLOSE — and only if the command did not raise a SECOND
+      // STAGE. A command whose action needs one per-document argument answers by
+      // setting app.palettePicker (R7-42), and the palette must stay open on it:
+      // closing first and reopening would restart this component's own open
+      // effect, which clears the query and the stack. The palette does not need
+      // to know WHICH commands do this — it asks afterwards, so a picker raised
+      // by any future command works with no edit here.
       app.runCommand(cmd.id); // routes through MRU tracking
+      if (app.palettePicker) {
+        stack = [];
+        query = "";
+        resetHighlight();
+        inputEl.focus();
+      } else {
+        app.paletteOpen = false;
+      }
     }
   }
 
   function back() {
-    if (stack.length) {
+    // FROM THE PICKER, BACK IS THE COMMAND LIST — one Escape (or Backspace on an
+    // empty query) undoes the step that opened it, exactly as it undoes a submenu
+    // drill. A second one then closes the palette.
+    if (picking) closePicker();
+    else if (stack.length) {
       stack = stack.slice(0, -1);
       query = "";
       resetHighlight();
@@ -262,15 +379,20 @@
 
   function onkeydown(e) {
     if (e.key === "Escape") back();
-    else if (e.key === "Backspace" && query === "" && stack.length) back();
+    else if (e.key === "Backspace" && query === "" && (stack.length || picking)) back();
     else if (e.key === "ArrowDown") {
-      highlighted = Math.min(highlighted + 1, rows.length - 1);
+      highlighted = Math.min(highlighted + 1, rowCount - 1);
       scrollHighlightedIntoView();
     } else if (e.key === "ArrowUp") {
       highlighted = Math.max(highlighted - 1, 0);
       scrollHighlightedIntoView();
-    } else if (e.key === "Enter" && current) activate(current);
-    else return;
+    } else if (e.key === "Enter" && current) {
+      // ONE KEY, WHICHEVER STAGE IS UP — the whole two-step is keyboard-drivable
+      // without learning a second set of keys: open, type, Enter onto the
+      // command, type again, Enter onto the type.
+      if (picking) pick(current);
+      else activate(current);
+    } else return;
     e.preventDefault();
     e.stopPropagation();
   }
@@ -281,7 +403,12 @@
   <div class="palette-backdrop" onpointerdown={() => (app.paletteOpen = false)}>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="palette" onpointerdown={(e) => e.stopPropagation()}>
-      {#if stack.length}
+      <!-- THE PICKER STAGE BORROWS THE BREADCRUMB, not a new affordance: it is
+           the same "you are one level in, Backspace goes back" statement a
+           submenu drill makes, and the two are mutually exclusive. -->
+      {#if picking}
+        <div class="palette-crumbs">{app.palettePicker.title}</div>
+      {:else if stack.length}
         <div class="palette-crumbs">
           <!-- Separator is an mdi chevron (iconify-only rule — the "›" glyph
                is in the manifest's banned set), matching the row sub-arrow. -->
@@ -293,7 +420,7 @@
         bind:value={query}
         onkeydown={onkeydown}
         oninput={resetHighlight}
-        placeholder={parent ? `${parent.title}…` : "Type a command…"}
+        placeholder={picking ? app.palettePicker.placeholder : parent ? `${parent.title}…` : "Type a command…"}
         spellcheck="false"
       />
       <div
@@ -304,6 +431,43 @@
         ontouchmove={noteUserScroll}
         onscroll={followPointerAfterScroll}
       >
+        {#if picking}
+          <!-- THE PICKER ROWS. Deliberately the SAME `.palette-item` button, the
+               same icon slot, the same fuzzy <mark>ing and the same pointermove
+               highlight rule as a command row — the stage changed, not the
+               surface, so nothing here is a second way to read a list. What is
+               absent is what a picker option genuinely lacks: no availability
+               gate (it is offered because it exists on this slide), no submenu
+               arrow, no shortcut, no owning submenu. The COUNT rides in the
+               `detail` slot on the right, where a command row shows its
+               shortcut — the information the minted rows carried in a "(3)"
+               suffix, now beside the name instead of glued into it. -->
+          {#each pickerOptions as opt, i (opt.value)}
+            <button
+              class="palette-item"
+              data-command-id={opt.value}
+              class:highlighted={i === highlighted}
+              onpointermove={(e) => {
+                notePointer(e);
+                highlighted = i;
+              }}
+              onclick={() => pick(opt)}
+            >
+              <span class="icon-slot">
+                {#if opt.icon}
+                  <iconify-icon icon={opt.icon} width="16" height="16"></iconify-icon>
+                {/if}
+              </span>
+              <span class="title"
+                >{#each titleSegments(opt.label, query) as seg}{#if seg.hit}<mark class="fuzzy-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span
+              >
+              {#if opt.detail}<span class="palette-in">{opt.detail}</span>{/if}
+            </button>
+          {/each}
+          {#if !pickerOptions.length}
+            <div class="palette-none">No matching widget types</div>
+          {/if}
+        {:else}
         {#each rows as cmd, i (cmd.id)}
           <!-- Hover-highlight keys on pointerMOVE, not pointerenter: keyboard
                navigation scrolls the list, which slides rows UNDER a stationary
@@ -367,6 +531,7 @@
         {/each}
         {#if !rows.length}
           <div class="palette-none">No matching commands</div>
+        {/if}
         {/if}
       </div>
       <!-- THE HELP SECTION. Rendered only when the highlighted entry actually has

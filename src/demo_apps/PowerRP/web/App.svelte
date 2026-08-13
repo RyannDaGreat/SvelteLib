@@ -8,7 +8,6 @@
   — the single source of truth for "what inputs exist right now".
 -->
 <script>
-  import { untrack } from "svelte";
   import "iconify-icon"; // registers the <iconify-icon> web component (used in the Open Project grid's placeholder tiles)
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
@@ -1144,42 +1143,59 @@
     });
   }
 
-  /** THE TWO BY-TYPE SUBMENUS. Registered ONCE with an empty child list and
-   *  refilled per palette open — the command registry has no `remove` (commands
-   *  are process-lifetime, which is what fixed the duplicate-id crash on a second
-   *  project open), so anything per-document must be a submenu CHILD. */
-  // NO ALIAS MAY CONTAIN "select all" — IT SHADOWS THE COMMAND OF THAT NAME.
-  // These read "select all of kind" / "deselect all of kind", and the palette
-  // matches on substrings, so typing the exact words "select all" ranked THIS
-  // submenu above `select-all` itself and the plainest command in the app stopped
-  // being the first hit for its own name. Caught by palette_probe, which types
-  // "select all" and asserts the top row is Select All — it was right and the
-  // alias was wrong. "kind" carries the meaning here without borrowing another
-  // command's name.
-  const SELECT_BY_TYPE_SUBMENU = { id: "select-by-type", title: "Select by Widget Type", icon: "mdi:shape-outline", aliases: ["select by kind", "every widget of a kind"], children: [] };
-  const DESELECT_BY_TYPE_SUBMENU = { id: "deselect-by-type", title: "Deselect by Widget Type", icon: "mdi:shape-outline", aliases: ["deselect by kind", "remove a kind from the selection"], children: [] };
-
   /**
-   * Command. Rebuilds both by-type submenus from THIS SLIDE's widgets.
+   * THE TWO BY-TYPE COMMANDS (R7-42). ONE command each, whose TYPE ARGUMENT is
+   * gathered in the palette's SECOND STAGE — not N commands minted per widget
+   * type on the slide.
    *
-   * SPLICED IN PLACE, never reassigned — the registry holds these exact arrays.
-   * Each child PREVIEWS on hover (the user's "as you scroll up and down it would
-   * preview what it would look like"): `preview` stages the selection the entry
-   * would make and returns the undo, which is the same hook the camera-bind
-   * command uses, so no new affordance was invented for this.
+   * USER RULING (2026-08-13, on a screenshot of the palette showing "PowerPoint
+   * Shape (1) — Select by Widget Type" rows under the search "add"): "I don't
+   * know why this command exists. Like, how is this a command? I thought select
+   * by widget type is a command and that would be a sub command."
+   *
+   * WHY THE MINTED ROWS SURFACED UNDER "add" AT ALL: since R7-18 a TOP-LEVEL
+   * query pools one level of submenu children beside their parents
+   * (core/commands.js search), so every per-type child was a searchable
+   * top-level row. "PowerPoint Shape (1)" fuzzy-matches "add". The palette holds
+   * ACTIONS; a per-document parameter is not one, so no amount of ranking work
+   * fixes a row that should not have been a command.
+   *
+   * WHAT THIS DELETES: refreshTypeSelectCommands, the empty-children submenus it
+   * spliced, and the $effect that called it on every palette open. That effect
+   * is the write-inside-a-tracked-read hazard f4b11012 had to `untrack` (it read
+   * typesOnSlide() -> nodes(), which registers previewDelta unconditionally,
+   * while splicing the very arrays the palette's `results` derived walks). With
+   * the roster static again for this family, the hazard CLASS is gone rather
+   * than suppressed — there is nothing left to untrack.
+   *
+   * NO ALIAS MAY CONTAIN "select all" — IT SHADOWS THE COMMAND OF THAT NAME.
+   * These read "select all of kind" / "deselect all of kind", and the palette
+   * matches on substrings, so typing the exact words "select all" ranked THESE
+   * above `select-all` itself and the plainest command in the app stopped being
+   * the first hit for its own name. Caught by palette_probe, which types
+   * "select all" and asserts the top row is Select All — it was right and the
+   * alias was wrong. "kind" carries the meaning here without borrowing another
+   * command's name.
+   *
+   * THE PICKER PREVIEWS ON HIGHLIGHT (the user's earlier "as you scroll up and
+   * down it would preview what it would look like"): `onPreview` stages the
+   * selection the option would make and returns the undo — the same protocol the
+   * minted children used, moved intact to the picker stage.
    */
-  function refreshTypeSelectCommands(a) {
-    const types = a.typesOnSlide();
-    const build = (add) => types.map((t) => ({
-      id: `${add ? "select" : "deselect"}-type-${t.type}`,
-      title: `${t.title} (${t.count})`,
-      icon: "mdi:shape-outline",
-      preview: (app) => { const before = [...app.selectedIds()]; app.selectByType(t.type, add); return () => app.selectMany(before); },
-      run: (app) => app.selectByType(t.type, add),
-    }));
-    SELECT_BY_TYPE_SUBMENU.children.splice(0, SELECT_BY_TYPE_SUBMENU.children.length, ...build(true));
-    DESELECT_BY_TYPE_SUBMENU.children.splice(0, DESELECT_BY_TYPE_SUBMENU.children.length, ...build(false));
-  }
+  const byTypeGate = (a) => a.typesOnSlide().length > 0;
+  const REQUIRES_TYPES_ON_SLIDE = "at least one selectable widget on this slide — the picker lists the types actually present, and on an empty slide there is nothing to pick";
+  const byTypeCommand = (add) => ({
+    id: add ? "select-by-type" : "deselect-by-type",
+    title: add ? "Select by Widget Type…" : "Deselect by Widget Type…",
+    icon: "mdi:shape-outline",
+    aliases: add ? ["select by kind", "every widget of a kind"] : ["deselect by kind", "remove a kind from the selection"],
+    when: byTypeGate,
+    requires: REQUIRES_TYPES_ON_SLIDE,
+    help: add
+      ? "Adds every widget of one kind on this slide to the selection. Picking the kind is the second step: the palette lists the types actually present, with counts, and filters as you type."
+      : "Subtracts every widget of one kind from the selection. Picking the kind is the second step: the palette lists the types actually present, with counts, and filters as you type.",
+    run: (a) => a.openTypePicker(add),
+  });
   const coreCommands = [
     // ALIASES CARRY THE BARE WORD "delete", which the title cannot: the title has
     // to say WHICH delete this is (deactivate here, vs purge-item's remove
@@ -1867,16 +1883,12 @@
       help: "Selects the members of the group you are in that are NOT selected, leaving everything outside that group untouched. The partner of Select Inside Group: go in, then flip which members you have. A selection spanning two groups inverts within each of them.",
       run: (a) => a.invertSelectionInGroup(),
     },
-    // BY TYPE: a submenu, because web/App.svelte bans PARAMETERISED palette
-    // commands — the type has to be a CHILD ENTRY rather than an argument. The
-    // children are rebuilt from the live slide each time the palette opens (see
-    // refreshTypeSelectCommands), so a type nobody has placed is never offered and
-    // a new widget needs no edit here. The array is SPLICED, never reassigned: the
-    // registry holds this exact reference, and reassigning it would leave the
-    // palette reading the original forever — the plugin-widget submenu's own
-    // hard-won rule (tests/builtin_asset_library_test.js pins it there).
-    SELECT_BY_TYPE_SUBMENU,
-    DESELECT_BY_TYPE_SUBMENU,
+    // BY TYPE: ONE command each, gathering the type in the palette's SECOND
+    // STAGE (R7-42 — see byTypeCommand above for the ruling and for what the
+    // per-type minting cost). Static entries: nothing per-document ever enters
+    // the registry, so the roster is fixed at construction for this family.
+    byTypeCommand(true),
+    byTypeCommand(false),
     { id: "toggle-palette", title: "Toggle Command Palette", icon: "mdi:chevron-down-box-outline", run: (a) => (a.paletteOpen = !a.paletteOpen) },
     // Evaluated state: the camera's own properties may be equations.
     { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRectAt(a.doc, a.slideIndex, 1, a.registry)) },
@@ -2801,42 +2813,18 @@
   // instant it opens (and drops it when it closes) while activeElement.closest still
   // gives innermost-wins for the autofocus popovers (a search box's own scope beats
   // the enclosing menu's). Runes-only lifecycle: one observer for the component's life.
-  // THE BY-TYPE SUBMENUS ARE REBUILT WHEN THE PALETTE OPENS (#301). They list the
-  // widget types actually PRESENT on this slide, which changes as the deck is
-  // edited — so a stale list would offer a type nobody has any more, or omit one
-  // just added. Keyed on paletteOpen and slideIndex, the two things that decide
-  // what the next opening should show.
-  // THE REBUILD IS UNTRACKED, AND THAT IS WHAT KEEPS PALETTE HOVER FROM LOOPING.
-  // refreshTypeSelectCommands reads app.typesOnSlide() -> nodes(), and nodes()
-  // reads its dependency keys UNCONDITIONALLY BY DESIGN (app.svelte.js:1421 —
-  // "these reads are what register this call's reactive dependencies (doc,
-  // previewDelta, slideIndex, assetsVersion)"). Tracked, that subscribes THIS
-  // effect to previewDelta and the whole document eval — while its body SPLICES
-  // the very children arrays the palette's `results` derived walks. A palette
-  // row whose `preview` writes previewDelta or the selection (bind-to-camera,
-  // the by-type rows this function itself builds) therefore closes a circle on
-  // HOVER: preview writes -> this effect re-runs -> splice hands the palette new
-  // child objects -> `rows`/`current` change identity -> the preview effect runs
-  // again. Same shape as the CF boot crash (an effect subscribing to what it
-  // writes), one layer out.
-  //
-  // HONESTY ABOUT THE EVIDENCE (do not let this harden into a claim it is not).
-  // This was written while chasing the user's 2026-08-12 report of
-  // effect_update_depth_exceeded on palette hover, and THAT CRASH WAS NEVER
-  // REPRODUCED — not in dev, not in a prod build, and not at origin/powerrp
-  // (d8f59104), the deployed commit. tests/palette_hover_probe.js was MEASURED
-  // not to go red with this untrack removed. So this is a latent write-inside-a-
-  // tracked-read hazard fixed on inspection, NOT a proven fix for that report;
-  // the report stays open. The untrack costs nothing and removes a real cycle,
-  // which is why it stands — but if you are hunting that crash, this is not it.
-  //
-  // The two keys the rebuild SHOULD react to are read tracked, above the untrack:
-  // paletteOpen and slideIndex are what decide what the next opening shows.
-  $effect(() => {
-    if (!app.paletteOpen) return;
-    app.slideIndex; // tracked: a different slide has a different population
-    untrack(() => refreshTypeSelectCommands(app));
-  });
+  // THE BY-TYPE REBUILD EFFECT IS GONE, AND WITH IT ITS HAZARD CLASS (R7-42).
+  // It used to run refreshTypeSelectCommands on every palette open, splicing one
+  // command per widget type on the slide into two submenus' `children`. f4b11012
+  // had to wrap that call in `untrack` because the rebuild reads typesOnSlide()
+  // -> nodes(), which registers `previewDelta` UNCONDITIONALLY BY DESIGN
+  // (app.svelte.js:1421) — so a tracked rebuild subscribed to the very state a
+  // hovered row's `preview` writes, while its body handed the palette's `results`
+  // derived brand-new child objects. The user's ruling deleted the minting
+  // outright (see byTypeCommand above), so the roster is static for this family
+  // and there is no effect left to untrack: the cycle is now UNEXPRESSIBLE here
+  // rather than suppressed. tests/palette_hover_probe.js still stands guard over
+  // the hover path, now over the two-stage flow.
 
   $effect(() => {
     const obs = new MutationObserver(() => { focus = focusContext(document.activeElement); });
