@@ -53,6 +53,10 @@ import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { rect, text } from "../render_gpu/ir.js";
 import { highlightCode, languageOptions, KINDS } from "../core/codeHighlight.js";
+import {
+  CODE_PALETTES, CODE_THEME_IDS, CODE_THEME_LABELS, DEFAULT_CODE_THEME,
+  codeTheme, codeThemeProps, kindColor,
+} from "../core/code_themes.js";
 
 /**
  * JetBrains Mono advance ratio: every glyph advances 0.6·em. MEASURED from the
@@ -77,38 +81,17 @@ export const CODE_LINE_HEIGHT = 1.2;
  */
 export const TAB_WIDTH = 4;
 
-/**
- * Built-in code color palettes (hex per token kind). emit() is DOM-free so it
- * cannot read app.css --a-code-* CSS vars; these palettes MIRROR those tokens so
- * the GPU/PDF render matches what the CSS palette would show. `dark` is the
- * default (a dark editor palette, readable over the default dark box fill on any
- * app theme); `light` suits a light box fill. `bg`/`gutter` are the box fill and
- * the line-number color. Colors are a muted, professional set (no neon) — the
- * app's non-garish convention. PENDING USER RATIFICATION (a visual choice).
- */
-export const CODE_PALETTES = {
-  dark: {
-    bg: "#1e222a", gutter: "#5c6370",
-    plain: "#c8ccd4", keyword: "#c678dd", string: "#98c379", comment: "#7f848e",
-    number: "#d19a66", function: "#61afef", property: "#e5c07b", punct: "#abb2bf",
-  },
-  light: {
-    bg: "#fbfbfa", gutter: "#a0a1a7",
-    plain: "#383a42", keyword: "#a626a4", string: "#50a14f", comment: "#a0a1a7",
-    number: "#986801", function: "#4078f2", property: "#c18401", punct: "#383a42",
-  },
-};
-
-/** Pure function. The color hex for a token kind in a palette, falling back to
- * `plain` for any unknown kind (defensive — the highlighter only emits KINDS,
- * but a future kind must degrade to readable text, not vanish).
- *
- * @example kindColor("keyword", CODE_PALETTES.dark) // "#c678dd"
- * @example kindColor("mystery", CODE_PALETTES.dark) // "#c8ccd4" (falls back to plain)
- */
-export function kindColor(kind, palette) {
-  return palette[kind] ?? palette.plain;
-}
+// THE PALETTE TABLE LIVES IN core/code_themes.js (R7-41). It began as two
+// literals here; it is now sixteen — the two ORIGINAL palettes, frozen byte for
+// byte, plus fourteen vendored from the real published VS Code themes with a
+// provenance + licence record each. That table and its rules are core business,
+// not plugin business, so this file keeps ONE seam: codeTheme(id) → palette.
+// Re-exported because tests and any future consumer import them from here.
+// (Imported AND re-exported, not `export … from`: this file uses CODE_PALETTES
+// and codeTheme itself, and a bare re-export creates no local binding — the
+// silent-missing-name hazard the app's CLAUDE.md records, which a green build
+// would not catch.)
+export { CODE_PALETTES, kindColor, codeTheme, codeThemeProps, CODE_THEME_LABELS, CODE_THEME_IDS };
 
 /**
  * Pure function. Expands leading + interior tabs in a line to spaces on the mono
@@ -295,7 +278,7 @@ export const codeblockPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     fill: CODE_PALETTES.dark.bg, stroke: "#3a3f4b", strokeWidth: 1,
     code: "function greet(name) {\n  return `Hello, ${name}!`;\n}",
-    language: "javascript", fontSize: 14, lineNumbers: true, padding: 12, theme: "dark",
+    language: "javascript", fontSize: 14, lineNumbers: true, padding: 12, theme: DEFAULT_CODE_THEME,
     ...defaults("cornerRadius", "opacity"), // filled below with code-specific overrides
     cornerRadius: 6,
   },
@@ -333,7 +316,14 @@ export const codeblockPlugin = {
     { key: "language", label: "Language", kind: "select", options: languageOptions().map((o) => o.value), optionLabels: Object.fromEntries(languageOptions().map((o) => [o.value, o.label])), category: "text", help: "Which language's syntax colors to apply. Pick Plain text for no highlighting; an unknown language also renders plain." },
     { key: "fontSize", label: "Font size", kind: "number", min: 0, category: "text", help: "Monospace font size for the code, in canvas units. Line height and column width scale with it." },
     { key: "lineNumbers", label: "Line numbers", kind: "boolean", category: "text", help: "Show a dimmed line-number gutter down the left edge." },
-    { key: "theme", label: "Code theme", kind: "select", options: Object.keys(CODE_PALETTES), category: "formatting", help: "The syntax color palette. Dark suits a dark box fill (the default); Light suits a light fill." },
+    // THE THEME ROSTER IS DERIVED, never transcribed: options come from the
+    // table's own key order and labels from its own label map, so adding a theme
+    // in core/code_themes.js reaches this dropdown with no edit here.
+    // NOTE the row colours TOKENS ONLY. The box's background is `fill` (below),
+    // and a stored fill always wins over the palette's bg, so switching to a
+    // light theme on a dark-filled block leaves the box dark — the help text says
+    // so, and core/code_themes.codeThemeProps() is the patch that sets both.
+    { key: "theme", label: "Code theme", kind: "select", options: CODE_THEME_IDS, optionLabels: CODE_THEME_LABELS, category: "formatting", help: "The syntax color palette for the code text: the app's two classic palettes plus fourteen from popular VS Code themes (Dracula, Monokai, Nord, Solarized, GitHub, Gruvbox, Tokyo Night, Catppuccin and more). This colors the TEXT only — set Fill below to the theme's own background if you switch between a dark and a light theme." },
     { key: "padding", label: "Padding", kind: "number", min: 0, category: "formatting", help: "Inner space between the box edge and the code, in canvas units." },
     ...bundle("strokedBox"),
     ...props("opacity"),
@@ -353,7 +343,10 @@ export const codeblockPlugin = {
     const w = s.w ?? 0, h = s.h ?? 0;
     const cornerRadius = s.cornerRadius ?? 0;
     const opacity = s.opacity ?? 1;
-    const palette = CODE_PALETTES[s.theme] ?? CODE_PALETTES.dark;
+    // THE ONE THEME SEAM. codeTheme() falls back to the default palette for an
+    // unknown id, so a deck naming a theme this build lacks renders readable code
+    // rather than throwing (its own rule — see core/code_themes.js).
+    const palette = codeTheme(s.theme);
     // The box background (fill + optional border + rounding).
     const box = rect({
       x: 0, y: 0, w, h, cornerRadius,
