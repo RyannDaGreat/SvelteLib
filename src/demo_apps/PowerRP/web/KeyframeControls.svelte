@@ -85,6 +85,7 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { keyframeTriState } from "../core/multiselect.js";
+  import { TRI_ICONS } from "../core/section_keyframes.js";
 
   let {
     /** @type {object} The PowerRPApp controller. */
@@ -101,8 +102,8 @@
   let keyPaths = $derived(paths ?? [path]);
   let triState = $derived(keyframeTriState(keyPaths.map((p) => app.hasKeyPath(p))));
 
-  // The diamond's three readings (iconify only — never a Unicode glyph).
-  const TRI_ICONS = { all: "mdi:rhombus", some: "mdi:rhombus-split", none: "mdi:rhombus-outline" };
+  // The diamond's three readings (iconify only — never a Unicode glyph) come from
+  // core/section_keyframes.js, shared with the section header's own triad.
   const TRI_TIPS = {
     all: "Remove keyframe on this slide",
     some: "Only SOME selected items are keyed here — insert on all of them",

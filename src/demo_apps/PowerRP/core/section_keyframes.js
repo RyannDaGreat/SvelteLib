@@ -204,6 +204,26 @@ export function sectionToggleTip(triState, title) {
 }
 
 /**
+ * The diamond's three readings, as ICONIFY NAMES — never a Unicode glyph (the
+ * app-wide icon rule). One declaration for both keyframe bubbles:
+ * web/KeyframeControls.svelte (a property row's diamond) and
+ * web/SectionKeyframeControls.svelte (a section header's). It lives HERE, beside
+ * `sectionToggleTip`, because the tri-state vocabulary this indexes — "all" /
+ * "some" / "none" — is declared in this module and every other function reading
+ * that vocabulary is already here; two copies of the map is how one bubble ends up
+ * drawing a different mark for the same state than the other.
+ *
+ * `mdi:rhombus-split` is the half-fill mark: at the 70% scale the section bubble
+ * renders it, a subtler device stops reading as "partly", and the family's visual
+ * restraint is about not being gaudy rather than about being illegible.
+ *
+ * @example TRI_ICONS.all // "mdi:rhombus" (every path keyed on this slide)
+ * @example TRI_ICONS.some // "mdi:rhombus-split" (a mixed set — the half fill)
+ * @example TRI_ICONS.none // "mdi:rhombus-outline" (nothing keyed here)
+ */
+export const TRI_ICONS = { all: "mdi:rhombus", some: "mdi:rhombus-split", none: "mdi:rhombus-outline" };
+
+/**
  * Pure function. The slide a section-wide ‹ / › jump lands on: the nearest slide
  * in `direction` holding a keyframe for ANY of the section's paths, or null when
  * there is none.

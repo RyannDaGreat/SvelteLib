@@ -52,7 +52,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import { sectionToggleTip } from "../core/section_keyframes.js";
+  import { sectionToggleTip, TRI_ICONS } from "../core/section_keyframes.js";
 
   let {
     /** @type {object} The PowerRPApp controller. */
@@ -88,10 +88,8 @@
     app.jumpSectionKeyframes(paths, direction);
   }
 
-  // The three readings. `mdi:rhombus-split` is the row bubble's own half-fill
-  // mark: at 70% scale a subtler device would stop reading as "partly", and
-  // Audulus-restraint is about not being gaudy, not about being illegible.
-  const TRI_ICONS = { all: "mdi:rhombus", some: "mdi:rhombus-split", none: "mdi:rhombus-outline" };
+  // The three readings come from core/section_keyframes.js (TRI_ICONS), shared with
+  // the property row's own diamond — its docblock carries the half-fill reasoning.
 </script>
 
 <span class="kf-controls kf-section">

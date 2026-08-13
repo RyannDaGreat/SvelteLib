@@ -29,6 +29,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { mix3 } from "./sky_shader.js";
 
 const SKY_SUN_UNIFORM_FLOATS = 7 + 3 + 4; // geometry 7 (no cornerRadius — see above) + uColor 3 + (intensity,size,glow,glowRadius) 4 = 14
 
@@ -114,8 +115,6 @@ const PROXY_SUN_DISC_EDGE_ALPHA = 0.85; // alpha at the disc edge before the aur
 
 /** Pure. Clamp x into [lo,hi]. @example clampN(1.4, 0, 1) // 1 */
 function clampN(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }
-/** Pure. Component-wise lerp of two rgb triples. @example mix3([0,0,0],[1,1,1],0.5) // [0.5,0.5,0.5] */
-function mix3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
 
 /**
  * Pure function. The skySun PROXY stand-in spec: a radial glow at the box centre —

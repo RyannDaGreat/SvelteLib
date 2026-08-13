@@ -21,6 +21,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { mix3 } from "./sky_shader.js";
 
 const SKY_MOON_UNIFORM_FLOATS = 7 + 3 + 5; // geometry 7 (no cornerRadius — see above) + uColor 3 + (phase,limbAngle,earthshine,maria,size) 5 = 15
 
@@ -122,8 +123,6 @@ export function packSkyMoon(u) {
 // maria are dropped (invisible at thumbnail size). No SkSL; paint_skia.js draws it.
 const PROXY_MOON_SOLID_FRAC = 0.85;  // fraction of the disc radius that stays fully opaque before the soft edge
 
-/** Pure. Component-wise lerp of two rgb triples. @example moonMix3([0,0,0],[1,1,1],0.5) // [0.5,0.5,0.5] */
-function moonMix3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
 
 /**
  * Pure function. The skyMoon PROXY stand-in spec: a soft-edged disc of the moon's
@@ -144,7 +143,7 @@ export function skyMoonProxyFill(params, region) {
   const minHalf = Math.max(Math.min(region.halfW, region.halfH), 1);
   const radius = Math.max((params.size ?? 0.74) * minHalf, 1);
   // A hint of limb darkening: the rim of the solid disc is slightly dimmer.
-  const rim = moonMix3(albedo, [0, 0, 0], 0.25);
+  const rim = mix3(albedo, [0, 0, 0], 0.25);
   return {
     kind: "radial",
     cx: region.cx, cy: region.cy, radius,
