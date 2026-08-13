@@ -36,7 +36,7 @@
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
-  import { appRankItems } from "./searchRank.js";
+  import { appRankItems, appRankGrouped } from "./searchRank.js";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import NumericField from "./NumericField.svelte";
@@ -1223,6 +1223,38 @@
   // picker that drops it when a deck is emptied down to one object would be the
   // same disappearing act at a smaller scale.
   const ALWAYS_SEARCHABLE = 0;
+
+  // The threshold for an ORDINARY select row — one whose options the plugin
+  // DECLARES (blendMode, curve, the pptx shape roster), as opposed to the
+  // document-sized sets above. The box shows when the option count EXCEEDS this.
+  //
+  // WHY A THRESHOLD AT ALL, when the ruling says "make it the default". Because
+  // the ruling's complaint is a 187-option list with no way to search it, and
+  // "always" would answer that by putting a text field over `curve`'s four
+  // entries — where the search box is TALLER THAN THE LIST IT FILTERS, steals
+  // the arrow keys' starting position, and asks the author to read a control
+  // that can only ever narrow four rows to three. The ruling is that nobody
+  // should have to REMEMBER to make a big list searchable; it is not that a
+  // 2-option enum needs a search field. The seam below satisfies it either way,
+  // so the constant is free to be right about small lists.
+  //
+  // 12, AND THE NUMBER IS MEASURED, not felt. Over all 772 declared-option
+  // select rows in the plugin roster (189 distinct keys): 397 rows sit at 1-4
+  // options, 351 sit at 13+, and the ENTIRE 5-12 span holds 24. So the app's
+  // real distribution is bimodal with a near-empty valley between the two modes,
+  // and any cut inside that valley separates the same two populations — the
+  // choice of 12 over 8 changes behaviour for 5 rows, all of them audio enums.
+  // Landing the cut at the FAR EDGE of the valley is what makes it robust: it is
+  // the point where moving it by one row changes nothing, so the constant does
+  // not need revisiting every time a plugin adds an option.
+  //
+  // 12 IS ALSO THE POINT WHERE SCANNING STOPS WORKING, which is the reason to
+  // prefer the valley's top to its bottom. Up to about a dozen rows the whole
+  // menu is one eyeful and the fastest path to an option is to LOOK at it;
+  // past that the list outruns a glance and typing beats scanning. The library
+  // default (8) is a reasonable generic guess at the same boundary; this app can
+  // do better than a guess because it can count its own rows.
+  const SELECT_SEARCH_THRESHOLD = 12;
 
   // The row currently in equation ENTRY from the ƒ button (no equation stored
   // yet), the row whose input holds focus (its draft is live), and that row's
@@ -2878,9 +2910,9 @@
          "morph from widget" over every property at arbitrary depth.
            "items"  — every eligible widget in the doc (a bento/telescope target).
            "retype" — every type THIS widget can become (core/retype.retypeChoices).
-         Enum/grouped selects (blendMode's liked family sections, curve, …) stay
-         the plain Dropdown: they are short and `optionGroups` caption inserts
-         don't survive a flat fuzzy filter. Every branch shares every other prop. -->
+         EVERY OTHER SELECT ROW IS SEARCHABLE TOO — the `{:else}` branch below is
+         a SearchableDropdown, so there is now no branch here that is not one.
+         Every branch shares every other prop. -->
     {#if row.optionsFrom === "items"}
       <SearchableDropdown
         rankFn={appRankItems}
@@ -2929,12 +2961,26 @@
            writes it until the author picks a mode. Filling it with a defaults
            entry instead would touch every document on load, which is exactly
            what that promise forbids. -->
-      <Dropdown
-        onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
+      <!-- THE DEFAULT SELECT CONTROL IS SEARCHABLE (user ruling, R7-40: "We should
+           make the default drop down that we use in this app. Probably should be
+           searchable. Shape for example, for the PowerPoint shape has so many
+           options, but Claude didn't even know or think to make it a searchable
+           drop down. So perhaps that should be the default so that Claude is in
+           the future, don't have to remember that").
+           THE RULING IS ABOUT THE SEAM, NOT THE SHAPE ROW. Making pptx_preset's
+           187 options searchable one row at a time is the fix that has to be
+           remembered again for every next big list; making the ROW RENDERER
+           searchable is the fix that cannot be forgotten, because a plugin author
+           declares `kind: "select"` and inherits it without knowing this exists.
+           So this is the one seam and there is no per-row opt-in to get wrong. -->
+      <SearchableDropdown
+        rankFn={row.optionGroups ? appRankGrouped : appRankItems}
+        minItemsForSearch={SELECT_SEARCH_THRESHOLD}
+        onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v, row.companion) : undefined}
         oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
         items={selectRowItems(row)}
         value={valueAt(state, row.key) ?? row.absentValue}
-        onchange={(v) => oncommit(row.key, "select", v)}
+        onchange={(v) => oncommit(row.key, "select", v, row.companion)}
       />
     {/if}
   {:else if kind === "asset"}
