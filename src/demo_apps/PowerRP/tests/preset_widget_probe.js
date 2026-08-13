@@ -9,6 +9,15 @@
  * actually wired into the live plugin registry, CanvasView's drag machinery,
  * and the undo/preview pipeline.
  *
+ * SECTION 5 SWITCHES THE PRESET ON AN EXISTING, HANDLE-DRAGGED ITEM, which is
+ * the gesture the user's crash report names ("when I select any shape other
+ * than a default powerpoint shape, it crashes" — R7-31). It previously created
+ * FRESH items instead and argued the switch-throw it had hit was "not a
+ * defect"; that call was wrong and both the code and the argument are gone.
+ * A fresh item carries no stale cross-preset `adj` key, so testing one passed
+ * by avoiding the `preset` row's only purpose. See tests/preset_switch_test.js
+ * for the bare-node half of the same sweep.
+ *
  * Frontend-only Vite on an EPHEMERAL port (never 3637/3638), swiftshader GL —
  * same harness as tests/multiselect_inspector_probe.js and
  * tests/modifier_probe.js, followed exactly (worldToPage via
@@ -159,34 +168,77 @@ try {
   await page.evaluate(() => window.__powerrp_app.redo());
   await sleep(200);
 
-  // ── 5. A FRESH "pie" ITEM OFFERS ITS OWN TWO ANGLE HANDLES, AND A FRESH
-  //        "rect" ITEM (no ahLst) OFFERS ZERO ─────────────────────────────────
-  // Fresh items rather than switching `preset` on the existing one: writing
-  // `adj: {}` through setPreview/commitPreview is a NO-OP for clearing a
-  // PRIOR preset's stale adj keys — commitPreview's walk only visits LEAVES
-  // (`Object.entries(tree)`), so an EMPTY object at a branch keyframes
-  // nothing at all, leaving roundRect's `{adj: <dragged value>}` sitting
-  // underneath a `pie` item that expects `adj1`/`adj2` — exactly the
-  // `foldGuides: adjustment "adj" does not exist on this shape's avLst` throw
-  // this probe hit before switching to fresh items. That is a real property
-  // of commitPreview's own leaf-walk semantics (worth knowing for a future
-  // "preset switch" Inspector affordance), not a defect in this widget: a
-  // fresh item never has a stale cross-preset key to begin with.
-  const pieHandles = await page.evaluate(() => {
+  // ── 5. SWITCHING THE PRESET ON THE ITEM WE JUST DRAGGED (R7-31) ────────────
+  // THE REAL GESTURE, ON THE POISONED ITEM. This section used to create FRESH
+  // items and explain at length why the switch-throw it had hit was "not a
+  // defect" but a property of commitPreview's leaf-walk. THAT CALL WAS WRONG,
+  // and the rationalization is deleted with the code it defended: the user's
+  // report was "when I select any shape other than a default powerpoint shape,
+  // it crashes", i.e. exactly the gesture the probe had stopped performing. A
+  // fresh item never carries a stale cross-preset key, so the old section
+  // passed by avoiding the `preset` row's ONLY purpose.
+  //
+  // The item under test is the one section 4 just dragged, so its `adj` holds a
+  // COMMITTED roundRect key — the poisoned state `adjFromHandleDrag` produces —
+  // and every switch below starts from it. commitPreview's leaf-walk really
+  // does make `adj: {}` a no-op (that observation was correct), which is why the
+  // fix is a filter at READ time in the plugin's `effectiveAdjOf` rather than a
+  // reset at write time: nothing here clears the stale key, and nothing needs to.
+  const switchTo = async (preset) => page.evaluate((preset, id) => {
     const app = window.__powerrp_app;
-    app.addItem({ ...app.registry.get("pptxPreset").defaults, preset: "pie", adj: {} });
-    const node = app.nodes().find((n) => n.itemId === app.selection);
-    return app.registry.get("pptxPreset").modifierPoints(node.state).length;
-  });
-  assert(pieHandles === 2, `a fresh "pie" item offers its own TWO angle handles (got ${pieHandles})`);
+    app.selection = id;
+    app.setPreview([[["items", id, "preset"], preset]]);
+    app.commitPreview();
+    const node = app.nodes().find((n) => n.itemId === id);
+    const plugin = app.registry.get("pptxPreset");
+    return {
+      handles: plugin.modifierPoints(node.state).length,
+      ops: plugin.emit(node.state, null, node.world).length,
+      adjKeys: Object.keys(JSON.parse(JSON.stringify(app.doc.slides[app.slideIndex].delta.items?.[id]?.adj ?? {}))),
+    };
+  }, preset, setup.id);
 
-  const rectHandles = await page.evaluate(() => {
+  // `pie` declares adj1/adj2 and TWO angle handles; roundRect's committed `adj`
+  // key is not one of them, which is precisely what used to throw.
+  const pie = await switchTo("pie");
+  assert(pie.handles === 2, `after switching to "pie": its own TWO angle handles (got ${pie.handles})`);
+  assert(pie.ops > 0, `after switching to "pie": the widget still emits (got ${pie.ops} ops)`);
+  assert(pie.adjKeys.includes("adj"), `the stale roundRect "adj" key is still STORED (${JSON.stringify(pie.adjKeys)}) — the fix is a read-time filter, not a reset`);
+
+  // `rect` declares no ahLst at all — zero handles, and still no throw.
+  const rect = await switchTo("rect");
+  assert(rect.handles === 0, `after switching to "rect" (no ahLst): ZERO handles (got ${rect.handles})`);
+  assert(rect.ops > 0, `after switching to "rect": the widget still emits (got ${rect.ops} ops)`);
+
+  // ── 5b. EVERY ONE OF THE 187 PRESETS SURVIVES THE SWITCH, IN THE LIVE APP ──
+  // The bare-node sweep (tests/preset_switch_test.js) proves the pure functions
+  // and the derive boundary in isolation; this proves the same 187 switches
+  // through the REAL app — a real select, a real commit, a real re-derive of
+  // `app.nodes()` — with the `pageerror` and console-error listeners installed
+  // at the top of this file still armed. An uncaught throw from the selection
+  // path (the R7-31 crash) fails this probe via those listeners even if the
+  // per-preset try below were to catch the direct call.
+  const sweep = await page.evaluate((id) => {
     const app = window.__powerrp_app;
-    app.addItem({ ...app.registry.get("pptxPreset").defaults, preset: "rect", adj: {} });
-    const node = app.nodes().find((n) => n.itemId === app.selection);
-    return app.registry.get("pptxPreset").modifierPoints(node.state).length;
-  });
-  assert(rectHandles === 0, `a fresh "rect" item (no ahLst) offers ZERO on-canvas handles (got ${rectHandles})`);
+    const plugin = app.registry.get("pptxPreset");
+    const names = plugin.inspector.find((r) => r.key === "preset").options;
+    const failures = [];
+    for (const preset of names) {
+      try {
+        app.selection = id;
+        app.setPreview([[["items", id, "preset"], preset]]);
+        app.commitPreview();
+        const node = app.nodes().find((n) => n.itemId === id);
+        plugin.emit(node.state, null, node.world);
+        plugin.morphPaths(node.state);
+        plugin.modifierPoints(node.state);
+      } catch (e) { failures.push(`${preset}: ${e.message}`); }
+    }
+    return { count: names.length, failures };
+  }, setup.id);
+  assert(sweep.count === 187, `the preset row offers all 187 AutoShapes (got ${sweep.count})`);
+  assert(sweep.failures.length === 0,
+    `all ${sweep.count} presets survive a switch on a handle-dragged item (${sweep.failures.length} threw: ${JSON.stringify(sweep.failures.slice(0, 5))})`);
 
   assert(liveErrors.length === 0, `zero console errors during all interactions (${JSON.stringify(liveErrors)})`);
 

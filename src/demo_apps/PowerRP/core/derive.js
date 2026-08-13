@@ -41,6 +41,7 @@
 
 import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
+import { describeOwner, isConfigurationError, throwMessage } from "./paint_containment.js";
 import { boxCenter, unionRect, unmirroredLocal, unsignedState } from "./geometry.js";
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 import { allPaintModifierPoints, paintCapableKeys } from "./paint_handles.js";
@@ -1566,6 +1567,57 @@ export function constraintPull(mp, state, desired) {
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}).map((m) => m.id) // ["fill-grad-center"]
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: "#f00"}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}) // [] (a solid fill earns no beads)
  */
+/**
+ * Near-pure function (reportOnce logs to console and remembers the key). THE
+ * HANDLE-TIME CONTAINMENT BOUNDARY — this plugin's own `modifierPoints(state)`,
+ * or an EMPTY LIST plus a loud report if it throws.
+ *
+ * This is the twin of render_gpu/ports.js's emit-time boundary, and it exists
+ * because the two paths had different blast radii for the SAME bad state
+ * (R7-31). A plugin throw inside `emit()` has been contained since that seam
+ * was written — the item draws an error box and the rest of the scene paints.
+ * The handle path had NO such boundary: `nodeModifierPoints` is called BARE
+ * from web/CanvasView.svelte and web/app.svelte.js, so a throwing
+ * `modifierPoints` became an app-level pageerror. Measured on the pptxPreset
+ * widget, that was the difference between an error box and the editor going
+ * down on SELECTING an item — 81 of 187 PowerPoint presets, because those are
+ * the ones that also declare adjust handles.
+ *
+ * HANDLES ARE AN AFFORDANCE, SO DEGRADING TO NONE IS HONEST. An empty list
+ * means the item shows no yellow diamonds — it is still selectable, movable,
+ * resizable and deletable, so the user retains every route to fix or remove
+ * it. That is strictly better than the alternative on offer, which is no
+ * editor at all. The throw is NOT swallowed: the item and the message are
+ * named on the console, once per node+message (this runs every frame), and the
+ * real stack is logged so a determinism bug stays diagnosable.
+ *
+ * A BACKEND-CONFIGURATION failure escapes untouched — the same line
+ * emitNode and paintNodeRun both draw: that class of error is the caller's
+ * wiring, broken for the whole surface, and must not be reported per-item.
+ *
+ * @param {object} node - a derive render node (carries .plugin/.state)
+ * @returns {object[]} the plugin's modifier points, or [] if it threw
+ *
+ * @example pluginModifierPoints({plugin: {}, state: {}}) // [] (no modifierPoints declared)
+ * @example pluginModifierPoints({plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}, state: {}}) // [{id: "a", x: 1, y: 2}]
+ * @example // a throwing plugin costs its own handles, not the app
+ * @example pluginModifierPoints({itemId: "i1", type: "pptxPreset", plugin: {modifierPoints: () => { throw new Error("bad adj"); }}, state: {}}) // []
+ */
+function pluginModifierPoints(node) {
+  try {
+    return node.plugin.modifierPoints?.(node.state) ?? [];
+  } catch (e) {
+    if (isConfigurationError(e)) throw e;
+    const msg = throwMessage(e);
+    const who = describeOwner({ itemId: node.itemId, type: node.type, state: node.state });
+    if (reportOnce(
+      `derive:modifierPoints:${node.itemId}:${msg}`,
+      `PowerRP: item ${who} failed to compute its EDIT HANDLES — ${msg}. It is shown without handles; the item is still selectable and editable. Fix or delete that item to restore them.`,
+    )) console.error(e); // the real stack, once — a determinism bug must stay diagnosable
+    return [];
+  }
+}
+
 export function nodeModifierPoints(node) {
   // THE GRADIENT BEADS ARE DERIVED, NOT OPTED INTO (core/paint_handles.js). They
   // are a function of the PAINT, not the shape, so they are appended here for
@@ -1579,7 +1631,7 @@ export function nodeModifierPoints(node) {
   // beads land on its ink with no per-plugin sign handling, which is exactly the
   // thing a single derive seam buys over seven spreads.
   const rows = [
-    ...(node.plugin.modifierPoints?.(node.state) ?? []),
+    ...pluginModifierPoints(node),
     ...allPaintModifierPoints(node.state, paintCapableKeys(node.plugin)),
   ];
   return rows.map((m) => {

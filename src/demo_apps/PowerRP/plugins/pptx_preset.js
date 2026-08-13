@@ -129,11 +129,38 @@ function defaultAdjOf(preset, defs) {
  * `emit`/`modifierPoints` read an identical table rather than each
  * re-deriving it.
  *
+ * ── THE FILTER IS THE FIX FOR THE PRESET-SWITCH CRASH (R7-31) ───────────────
+ * AN OVERRIDE THE CURRENT PRESET DOES NOT DECLARE IS DROPPED, and that single
+ * line is what makes the `preset` row usable at all. The row is an ordinary
+ * select writing ONE leaf, so `state.adj` KEEPS THE PREVIOUS PRESET'S GUIDE
+ * NAMES across a switch — and `foldGuides` (core/pptx/preset_geometry.js)
+ * LOUDLY refuses an adj name absent from the new preset's `avLst`. Measured on
+ * the unfixed tree: every insert ships roundRect's `{adj: 16667}`, which only
+ * 39 of 187 presets declare, so 148/187 threw on switch; worse, a handle drag
+ * writes the FULL effective adj (see `adjFromHandleDrag`'s contract quoted at
+ * `modifierPoints` below), so ONE drag on star5 poisoned the item into
+ * 185/187 failing — INCLUDING the default roundRect — with no UI route back.
+ * Filtering here heals render, handles and ALREADY-POISONED documents at once,
+ * with no migration pass and no stored-state rewrite.
+ *
+ * FOLDGUIDES STAYS LOUD, deliberately. This filter removes the one case that
+ * is NOT a wiring bug — a leftover key from a preset the user switched away
+ * from, which PowerPoint itself simply forgets — while an adj name that
+ * reaches `foldGuides` through any OTHER route still throws, because that
+ * genuinely means a caller built a table the shape never declared.
+ *
  * @example effectiveAdjOf({preset: "roundRect", adj: {}}, DEFS) // {adj: 16667}
  * @example effectiveAdjOf({preset: "roundRect", adj: {adj: 30000}}, DEFS) // {adj: 30000}
+ * @example // a stale key from a PREVIOUS preset is dropped, not passed to foldGuides
+ * @example effectiveAdjOf({preset: "roundRect", adj: {adj: 30000, hf: 105146}}, DEFS) // {adj: 30000}
+ * @example // a preset with NO adjustments ignores every override
+ * @example effectiveAdjOf({preset: "rect", adj: {adj: 16667}}, DEFS) // {}
  */
 function effectiveAdjOf(state, defs) {
-  return { ...defaultAdjOf(state.preset, defs), ...(state.adj ?? {}) };
+  const declared = defaultAdjOf(state.preset, defs);
+  for (const [name, value] of Object.entries(state.adj ?? {}))
+    if (name in declared) declared[name] = value;
+  return declared;
 }
 
 /**
