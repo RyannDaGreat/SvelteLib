@@ -50,7 +50,7 @@ import {
   SUPPRESSED_AXES, DRAG_MODIFIER_HINTS, ESC_CANCELABLE_DRAG_KINDS,
 } from "../core/shortcut_entries.js";
 import { MOUSE_ICONS } from "../../../lib/keyicons.js";
-import { DRAG_KINDS, DRAG_KIND_MODIFIERS, MODAL_TRANSFORM_KINDS, MODAL_KINDS } from "../web/canvas/dragKinds.js";
+import { DRAG_KINDS, DRAG_KIND_MODIFIERS, MODAL_TRANSFORM_KINDS, MODAL_KINDS, MODAL_TOGGLES } from "../web/canvas/dragKinds.js";
 import { activations, canvasModes } from "../web/widget_handlers.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -71,7 +71,15 @@ const acts = activations();
 const kb = createKeybindings(KEYBINDING_DEFAULTS);
 const bound = kb.toShortcutEntries(KEYBINDING_LABELS, WHEN_RESOLVERS)
   .map((e) => (e.command === "paste" ? { ...e, nativeEvent: true } : e));
-const hand = handShortcutEntries({ app, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, modalTransformKinds: MODAL_TRANSFORM_KINDS, activations: acts });
+// MODAL_TOGGLES is passed because the app passes it. It was OMITTED here for the
+// life of the I/W entries, and because the parameter defaulted to `{}` this file
+// then held a population MISSING them — so test (2) below, whose entire job is
+// proving no entry has a dead `when`, ran green while the app's boot tripwire
+// reported "I — Individual origins" as UNSATISFIABLE on every load. The parameter
+// is required now (handShortcutEntries throws), which is what makes the comment
+// above this block — "the set here IS the set the app registers" — true rather
+// than merely intended.
+const hand = handShortcutEntries({ app, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, modalTransformKinds: MODAL_TRANSFORM_KINDS, modalToggles: MODAL_TOGGLES, activations: acts });
 const registry = createShortcuts();
 for (const e of [...bound, ...hand]) registry.add(e); // add() validates tokens (1)
 const entries = registry.all();
@@ -211,6 +219,48 @@ test("every registered entry is satisfiable in some reachable context", () => {
     [],
     "an entry whose `when` no reachable context satisfies never dispatches and never shows in the HintBar, while looking alive in the source. Compose it from editBase / armed() / inCanvasMode() instead of ANDing editMode with a state editMode excludes.",
   );
+});
+
+// A SATISFIABILITY GATE IS ONLY AS GOOD AS ITS POPULATION, and the test above ran
+// green for the life of an entry it did not hold — `modalToggles` was omitted from
+// this file's handShortcutEntries call and the parameter defaulted to `{}`, so the
+// I and W entries were absent here while the app's boot tripwire reported I as
+// UNSATISFIABLE on every load. These two tests pin BOTH halves of the repair: the
+// omission now throws, and the entries are provably present. Asserting only "no
+// dead entries" cannot see this class of defect — an absent entry is trivially not
+// dead.
+test("omitting modalToggles is a LOUD error, not a quietly smaller registry", () => {
+  assert.throws(
+    () => handShortcutEntries({ app, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, modalTransformKinds: MODAL_TRANSFORM_KINDS, activations: acts }),
+    /requires `modalToggles`/,
+    "a caller that forgets MODAL_TOGGLES must fail, or it silently builds a registry missing the I/W entries — which is exactly how this file's satisfiability gate went blind",
+  );
+});
+
+test("every declared modal toggle is REGISTERED, and live in a real modal", () => {
+  for (const [id, t] of Object.entries(MODAL_TOGGLES)) {
+    const entry = entries.find((e) => e.keys.length === 1 && e.keys[0] === t.key && e.label === t.label);
+    assert.ok(entry, `MODAL_TOGGLES.${id} declares key "${t.key}" (${t.label}) but no registry entry carries it — "a shortcut that isn't registered does not exist"`);
+    // Each toggle must be live in a context matching its OWN declaration: a kind it
+    // applies to, and (for a soloSuppressed one) a multi-selection. This is what
+    // proves the prober models the state rather than merely that some context
+    // somewhere satisfies the entry.
+    const kind = t.kinds[0];
+    const live = contexts.filter((c) => c.modalActive && c.modalKind === kind && (!t.soloSuppressed || c.multiSelection) && c.mode === "edit" && entry.when(c));
+    assert.ok(live.length > 0, `no probed context makes ${t.label} live during a "${kind}" modal — the reachability grid does not model the state this toggle needs (that was the multiSelection axis)`);
+    // …and it must STAND DOWN where its declaration withholds it, or the chip
+    // offers a key that does nothing (the rotate-X/Y law, one family over).
+    for (const kindOff of MODAL_KINDS.filter((k) => !t.kinds.includes(k)))
+      assert.ok(
+        !contexts.some((c) => c.modalActive && c.modalKind === kindOff && entry.when(c)),
+        `${t.label} is live during a "${kindOff}" modal, which MODAL_TOGGLES says it does not apply to`,
+      );
+    if (t.soloSuppressed)
+      assert.ok(
+        !contexts.some((c) => c.modalActive && !c.multiSelection && entry.when(c)),
+        `${t.label} is soloSuppressed but shows on a single selection, where it would be a no-op`,
+      );
+  }
 });
 
 // ── (3) the drag-kind vocabulary is DERIVED, not hand-maintained ─────────────
