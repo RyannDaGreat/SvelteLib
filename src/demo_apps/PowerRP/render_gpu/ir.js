@@ -2168,12 +2168,52 @@ export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidt
  * Pure function. Stroked polyline (round caps and joins — GPU renders each
  * segment as a capsule, so joins are inherently round).
  *
+ * ITS INK GOES THROUGH parsePaint, LIKE EVERY OTHER GEOMETRY BUILDER'S. This was
+ * the ONE builder still calling parseColor, and the cost was not a missing
+ * feature but a WRONG PICTURE drawn silently. parseColor's contract is to reduce
+ * a paint OBJECT it cannot express to a representative solid — the right answer
+ * for a single-colour consumer (a crop-box border, a shadow tint), but this op is
+ * a widget's real ink, so a gradient stroke collapsed to its FIRST STOP and a
+ * material stroke to "#888888", with no warning at any layer.
+ *
+ * THE SHARPEST PROOF WAS HALF AN ARROW. plugins/arrow.js draws its shaft with
+ * polyline and its heads with polygon/path from the SAME `s.stroke` leaf, so one
+ * gradient rendered two ways in one widget — flat shaft, gradient head. Nine
+ * plugins were affected (line, arrow, elbow_arrow, curved_arrow, fancy_arrow's
+ * rim, tangent_lines, donut's two rims, clock_analog).
+ *
+ * THE SLOT IS STILL NAMED `color`, NOT `stroke`, AND THAT IS DELIBERATE. Renaming
+ * it would be a breaking change to every consumer and to the field-coverage table
+ * for no gain, and `color` is ALREADY a resolved paint slot: render_gpu/ports.js
+ * resolveMaterialFillPaints resolves `cmd.color` for the text op's ink, so a
+ * material or a mid-transition crossfade on a polyline is resolved with no change
+ * there. `null` is accepted and means DRAW NOTHING (parsePaint's OFF), matching
+ * the fill-only ops' existing `if (!cmd.fill)` guards.
+ *
+ * BYTE-IDENTICAL FOR A SOLID: parsePaint delegates a string/array straight to
+ * parseColor, so every existing deck's ops, cache keys and exported bytes are
+ * unchanged — measured across 11 scenes and 11 plugin cases in both exporters.
+ *
  * @example polyline({points: [[0, 0], [10, 0]], width: 2, color: "#000"}).points.length // 2
+ * @example polyline({points: [[0, 0], [10, 0]], width: 2, color: "#f00"}).color // [1, 0, 0, 1] (a solid is byte-identical to the parseColor era)
+ * @example polyline({points: [[0, 0], [10, 0]], width: 2, color: {type: "linearGradient", linear: {stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], angle: 0}}}).color.type // "linearGradient" (no longer flattened to its first stop)
  */
 export function polyline({ points, width, color, opacity = 1 }) {
   if (!Array.isArray(points) || points.length < 2) throw new Error(`polyline: need >= 2 points, got ${JSON.stringify(points)}`);
   requireFinite("polyline", { width, opacity });
-  return { op: "polyline", points: points.map(([x, y]) => [x, y]), width, color: parseColor(color), opacity };
+  const paint = parsePaint(color);
+  // A MATERIAL INK IS REFUSED HERE, LOUDLY, AND THAT IS THE HONEST BOUND. The
+  // stroke-material framework (paint_skia drawMaterialStroke) reads an op's
+  // `stroke`/`strokeWidth` and walks `addOpGeometry`, which knows rect/ellipse/
+  // polygon/path — a polyline carries its ink on `color`/`width` and is in
+  // neither list, so a material would reach applyPaint and paint garbage. Widening
+  // that framework to a second slot naming is real work, not a one-line fix, so
+  // the gap is STATED rather than silently mispainted: this is precisely the
+  // silent-collapse failure this builder's parsePaint move exists to end, and
+  // trading a flat "#888888" for a wrong shader would only move it.
+  if (isMaterialPaint(paint))
+    throw new Error(`polyline: a MATERIAL ink is not supported on this op (material "${paint.material?.id}"). Its stroke-material framework reads an op's stroke/strokeWidth and shape geometry, and a polyline carries color/width; draw the geometry as a stroked \`path\` op instead, which the framework already handles.`);
+  return { op: "polyline", points: points.map(([x, y]) => [x, y]), width, color: paint, opacity };
 }
 
 /**

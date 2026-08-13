@@ -1768,11 +1768,21 @@ function emitVector(cmd, world, out, ctx) {
       break;
     }
     case "polyline": {
+      // OFF ink (parsePaint → null) draws nothing, like the polygon case below.
+      if (!cmd.color) break;
+      // A GRADIENT INK TAKES THE EXISTING GRADIENT-STROKE DEGRADATION, not a new
+      // one. PDF has no stroked-gradient primitive, so every gradient STROKE in
+      // this backend already degrades to its first stop with a loud one-time report
+      // (gradientStrokeSolid, shared with the rect/ellipse/path branches) — a
+      // polyline's ink is a stroke, so it joins that rule rather than minting a
+      // second answer. The op is now REPORTED where before it silently flattened at
+      // the ir.js builder with nothing said at any layer.
+      const ink = isGradientPaint(cmd.color) ? gradientStrokeSolid(cmd.color) : cmd.color;
       // The op's OWN contract, not a widget knob — the same two names the painter
       // and svg_backend read, so the three cannot spell it differently. No `cmd` to
       // paintSetup: a stamped strokeJoin must not reach an op that fixes its own
       // corners (paintSetup's identity `j` is then immediately overridden here).
-      ops.push(...paintSetup(null, cmd.color, cmd.width, cmd.opacity, ctx));
+      ops.push(...paintSetup(null, ink, cmd.width, cmd.opacity, ctx));
       ops.push(`${pdfCapCode(POLYLINE_CAP)} J ${pdfJoinCode(POLYLINE_JOIN)} j`);
       ops.push(pointsPath(cmd.points), "S");
       break;

@@ -735,16 +735,27 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       break;
     }
     case "polyline": {
+      // OFF ink (parsePaint → null) means there is nothing to draw, the same guard
+      // the fill-only ops carry: applyPaint would index a null as an rgba array.
+      if (!cmd.color) break;
       const path = buildPath(CanvasKit, cmd.points, false);
-      const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity, null, aa);
+      // A GRADIENT NEEDS THE OP'S LOCAL BOUNDS (the objectBoundingBox a ramp maps
+      // over) and the CTM (a DITHERED ramp samples its threshold in device space).
+      // Both were `null` while this op's ink was parseColor'd, because a solid
+      // needs neither — the same two arguments every other builder's stroke passes.
+      const bounds = pointsBounds(cmd.points);
+      const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity, bounds, aa, null, 1, canvas.getTotalMatrix());
       // THE POLYLINE OP'S OWN CONTRACT, not a widget knob — read from ir.js so the
       // SVG and PDF exporters cannot spell it differently (they read the same two
       // names). No `cmd` is passed to strokePaint above for the same reason: this
       // op's corners are fixed by the op, so a stamped strokeJoin must not reach it.
       p.setStrokeCap(capEnum(CanvasKit, POLYLINE_CAP));
       p.setStrokeJoin(skJoin(CanvasKit, POLYLINE_JOIN));
-      canvas.drawPath(path, p);
-      path.delete(); p.delete();
+      // withPaint, not a bare delete: a gradient ink stashes its shader on the
+      // paint for disposal, and the hand-rolled cleanup this replaced would have
+      // leaked one per frame the moment a polyline could carry a gradient.
+      withPaint(CanvasKit, p, (paint) => canvas.drawPath(path, paint));
+      path.delete();
       break;
     }
     case "polygon": {

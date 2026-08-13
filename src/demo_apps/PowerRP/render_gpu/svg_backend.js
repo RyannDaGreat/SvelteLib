@@ -602,8 +602,15 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       // spell it three ways. The values ARE the SVG attribute words, so this stays
       // a pass-through. No joinAttrs() here: a stamped strokeJoin must not reach an
       // op whose corners the op itself fixes.
+      //
+      // OFF ink (parsePaint → null) draws nothing, like the polygon case below.
+      if (!cmd.color) return "";
+      // THE INK GOES THROUGH paintRef, the same seam polygon/rect/path already use,
+      // so a GRADIENT stroke mints a real <linearGradient>/<radialGradient> def
+      // instead of collapsing to its first stop. paintRef delegates a solid rgba to
+      // the very rgbaToCss call this replaced, so a solid stroke is byte-identical.
       return g(`<polyline points="${pointsAttr(cmd.points)}" fill="none" ` +
-        `stroke="${rgbaToCss(cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="${POLYLINE_CAP}" stroke-linejoin="${POLYLINE_JOIN}"` +
+        `stroke="${paintRef(ctx, cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="${POLYLINE_CAP}" stroke-linejoin="${POLYLINE_JOIN}"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "polygon":
       // A polygon is FILL-ONLY (it has no stroke slot at all), so an OFF fill —
