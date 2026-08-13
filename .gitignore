@@ -64,3 +64,5 @@ src/demo_apps/PowerRP/.claude_audio_checks/*.wav
 # once from the upstream deploy (synth/surge_remote.js states why they are not
 # vendored). Regenerated on demand; never committed.
 src/demo_apps/PowerRP/tests/fixtures/surge/
+src/demo_apps/PowerRP/web/viewer_bundle/
+src/demo_apps/PowerRP/.claude_vlm_checks
