@@ -94,8 +94,18 @@ test("1e. the anchors: `pt` is the CENTRE and keeps its id, plus the four axis t
 
 // ── §2. THE PURE MIGRATION ───────────────────────────────────────────────────
 
-test("2a. the retired-type table says exactly one thing, and says it once", () => {
-  assert.deepEqual(RETIRED_ITEM_TYPES, { anchor_point: "empty" });
+test("2a. the retired-type table says anchor_point → empty, and nothing else about it", () => {
+  // SCOPED TO THIS RETIREMENT, deliberately. This used to assert the whole table
+  // deep-equalled `{anchor_point: "empty"}` — which was true on the day it was
+  // written and became a FALSE FAILURE the moment a second widget was retired
+  // (html_capture → html2image, 2026-08-13). A table shared by every retirement
+  // cannot be pinned exhaustively by the test of ONE of them: the next entry would
+  // redden this file for a change that has nothing to do with empties. So it pins
+  // its own row, and that `anchor_point` is not ALSO a destination (a retirement
+  // that pointed at a retired type would migrate into another migration).
+  assert.equal(RETIRED_ITEM_TYPES.anchor_point, "empty");
+  assert.ok(!Object.values(RETIRED_ITEM_TYPES).includes("anchor_point"),
+    "nothing may migrate TO the retired anchor_point");
 });
 
 test("2b. every slide that WRITES the type is found and rewritten", () => {

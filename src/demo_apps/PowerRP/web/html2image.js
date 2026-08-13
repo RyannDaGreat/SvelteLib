@@ -1,7 +1,7 @@
 /**
- * web/htmlCapture.js — THE AUTHORING-TIME CAPTURE SERVICE for plugins/html_capture.js.
+ * web/html2image.js — THE AUTHORING-TIME CAPTURE SERVICE for plugins/html2image.js.
  *
- * Read plugins/html_capture.js's header first; it owns the WHY. This file owns the
+ * Read plugins/html2image.js's header first; it owns the WHY. This file owns the
  * HOW, and the one sentence that governs every line of it:
  *
  *   THE FRAME EXISTS ONLY DURING A CAPTURE THE USER ASKED FOR, AND IS DESTROYED
@@ -71,7 +71,7 @@
  *
  * ── WHAT THIS MODULE DOES NOT DO ────────────────────────────────────────────
  * NO WHITELIST MACHINERY. Bundled-library support is a designed follow-up
- * (plugins/html_capture.js states its shape); a whitelist whose list is empty is
+ * (plugins/html2image.js states its shape); a whitelist whose list is empty is
  * behaviourally identical to the refusal above while costing a mechanism to keep
  * correct, so it is not written yet.
  * NO AUTOMATIC RE-CAPTURE. Capture is an explicit command, and deliberately not a
@@ -87,7 +87,7 @@
 // module scope — so it is imported LAZILY on the async capture path below. That
 // keeps THIS module importable in bare node, which is what lets its pure half
 // (foreignSubresources, rasterSize, captureDocument, foreignObjectSvg) carry real
-// executable doctests and be pinned by tests/htmlcap_test.js. The same discipline
+// executable doctests and be pinned by tests/htmlcap_html2image_test.js. The same discipline
 // render_gpu/gpu/mermaid_raster.js uses to keep its Vite-only renderer behind a
 // lazy import; the alternative was a HOST_BOUND entry excusing the whole file from
 // the doctest gate, which would have taken the pure grammar down with it.
@@ -97,7 +97,7 @@ import { assetRef, relativeAssetRef } from "./assetRef.js";
  * A CONSTANT because the security argument in this module's header is entirely
  * about what is ABSENT from this string, and a future edit that adds
  * `allow-same-origin` would silently un-opaque the origin and hand author scripts
- * the editor's storage. tests/htmlcap_test.js asserts this exact value. */
+ * the editor's storage. tests/htmlcap_html2image_test.js asserts this exact value. */
 export const CAPTURE_SANDBOX = "allow-scripts";
 
 /** How long the sandboxed frame gets to run its scripts and report back before the
@@ -119,7 +119,7 @@ export const MAX_CAPTURE_PX = 4096;
  * store appends " 2", " 3", … so successive captures accumulate as siblings rather
  * than overwriting — which is what makes a capture UNDOABLE: undo restores the
  * previous `capture` ref, and the asset it names is still there. */
-export const CAPTURE_ASSET_STEM = "html-capture";
+export const CAPTURE_ASSET_STEM = "html2image";
 
 /**
  * Pure function. Every URL in `html` that would load from ANOTHER ORIGIN.
@@ -343,7 +343,7 @@ export function foreignObjectSvg(html, width, height) {
  * library, and returns the ref to write onto the widget's `capture` property.
  *
  * IT RETURNS A REF AND WRITES NOTHING TO THE DOCUMENT. The caller
- * (plugins/html_capture.js captureSelectedHtml) makes the one undo unit, because
+ * (plugins/html2image.js captureSelectedHtml) makes the one undo unit, because
  * the document write is the app's business and this module's is the browser work —
  * the same split plugins/demo/video_time_scrub.js's probe uses.
  *

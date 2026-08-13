@@ -2315,11 +2315,57 @@ export function legacyBindings(doc) {
  * `<slug>.pt.y` through the item's name — keeps resolving: the ITEM ID is
  * untouched (it is the delta key, not a value) and the ANCHOR ID is unchanged.
  *
+ * `html_capture` → `html2image` (user, 2026-08-13: "Why is it called HTML capture?
+ * I don't know." / "HTML to image should be an actual thing."). A PURE RENAME —
+ * the widget shipped hours earlier with no real decks, and every property, anchor
+ * and command behaviour is identical on the other side. The type string is the one
+ * thing a stored document holds, so it is the one thing that needs migrating.
+ *
  * A TABLE rather than a special case because a retired type is a shape this
  * codebase will meet again, and the finder/rewriter/report below all read this
  * one map so they cannot drift about which types are retired.
+ *
+ * EACH ENTRY CARRIES ITS OWN SENTENCE, and that is what the second entry forced.
+ * The report line used to be ONE hardcoded string about anchor points becoming
+ * blender-style empties — correct while there was exactly one retirement, and a
+ * confident lie the moment there were two: an html2image migration would have
+ * announced itself as a widget gaining "rotation and scale on top of the position
+ * it had". A per-entry `why` keeps the explanation next to the fact it explains.
  */
-export const RETIRED_ITEM_TYPES = Object.freeze({ anchor_point: "empty" });
+export const RETIRED_ITEM_TYPES = Object.freeze({
+  anchor_point: "empty",
+  html_capture: "html2image",
+});
+
+/**
+ * Why each retirement happened, in the words the load-time report shows the user.
+ * Keyed by the RETIRED type, so a new entry in RETIRED_ITEM_TYPES with no sentence
+ * here is caught by `retirementReason` rather than silently reporting nothing.
+ */
+const RETIREMENT_REASONS = Object.freeze({
+  anchor_point: "the anchor point is now an EMPTY (a full blender-style transform: rotation and scale on top of the position it had). Its anchor id is unchanged, so every equation bound to it still resolves",
+  html_capture: "the HTML capture widget is now called HTML to Image — the same widget under the name it should have had. Every property, anchor and equation is unchanged",
+});
+
+/**
+ * Pure function. The sentence explaining one retirement, for the load-time report.
+ * LOUD when a retirement has no recorded reason: a migration that cannot say why it
+ * happened is one the user has no way to evaluate, which is the same silent-change
+ * failure the whole repair pipeline reports against.
+ *
+ * @param {string} from - the retired type
+ * @returns {string} the explanation
+ *
+ * @example retirementReason("anchor_point").startsWith("the anchor point is now an EMPTY")
+ * true
+ * @example retirementReason("html_capture").includes("HTML to Image")
+ * true
+ */
+export function retirementReason(from) {
+  const why = RETIREMENT_REASONS[from];
+  if (!why) throw new Error(`retirementReason: "${from}" is retired in RETIRED_ITEM_TYPES but has no sentence in RETIREMENT_REASONS — a migration that cannot say WHY it happened gives the user nothing to evaluate. Add one beside the entry.`);
+  return why;
+}
 
 /**
  * Pure function. Every write of a RETIRED item type a document still carries:
@@ -2477,7 +2523,7 @@ export function repairedDocument(doc, registry) {
   // dropped. Renaming first means the orphan step meets a type it knows.
   const { doc: typedDoc, migrated: typeMigrated } = withItemTypesMigrated(doc);
   for (const m of typeMigrated)
-    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: retired type "${m.from}" → "${m.to}" — the anchor point is now an EMPTY (a full blender-style transform: rotation and scale on top of the position it had). Its "${m.id}_pt" anchor id is unchanged, so every equation bound to it still resolves`);
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: retired type "${m.from}" → "${m.to}" — ${retirementReason(m.from)}`);
 
   const { doc: droppedDoc, dropped } = withOrphanedItemsDropped(typedDoc, known);
   for (const { id, reason } of dropped)

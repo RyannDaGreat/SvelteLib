@@ -51,7 +51,7 @@ import { pdfPacketPlugin } from "./pdf_packet.js"; // a corner-stapled packet wi
 import { particlesPlugin } from "./particles.js";
 import { latexPlugin } from "./latex.js";
 import { mermaidPlugin } from "./mermaid.js";
-import { htmlCapturePlugin } from "./html_capture.js"; // author HTML/CSS, press Capture, render a FROZEN image asset — the html never executes at playback (Amendment 3's "capture at author time, frozen at play")
+import { html2imagePlugin } from "./html2image.js"; // author HTML/CSS, press Capture, render a FROZEN image asset — the html never executes at playback (Amendment 3's "capture at author time, frozen at play"). Retired type `html_capture` migrates here (core/document.js RETIRED_ITEM_TYPES)
 import { qrcodePlugin } from "./qrcode.js";
 import { plaintextPlugin } from "./plaintext.js";
 import { bentoPlugin } from "./bento.js";
@@ -149,7 +149,7 @@ import { scene3dPlugins } from "./demo/scene3d.js"; // THE 3D VIEWPORT FAMILY: s
  */
 export const demoPlugins = [demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins];
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, emptyPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, htmlCapturePlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, pptxPresetPlugin, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, nodeComparePlugin, nodeTimePlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, emptyPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, html2imagePlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, pptxPresetPlugin, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, nodeComparePlugin, nodeTimePlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.
