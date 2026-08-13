@@ -35,6 +35,7 @@
  */
 
 import { EPHEMERAL } from "../core/ephemeral.js";
+import { CONNECTOR_DASH_ROWS } from "../core/endpoints.js";
 import { polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { standardBBoxAnchors } from "../core/derive.js";
@@ -493,6 +494,42 @@ const TANGENT_LINES_PRESETS = [
   },
 ];
 
+/**
+ * Pure function. The five Inspector rows for ONE of the two shapes — the slot
+ * letter is the only thing that varies between them.
+ *
+ * WRITTEN ONCE FOR BOTH SLOTS. The A and B blocks were the same five declarations
+ * typed twice, and they had drifted in the way two hand-kept copies always do:
+ * A's `x` explained that these are equation slots ("bind to a widget's anchor with
+ * an = equation") and B's did not, so THE WIDGET'S WHOLE POINT — that every number
+ * here binds to another widget (the "UNIFICATION" the defaults block names) — was
+ * documented on one shape and hidden on the other. A reader who opened Shape B
+ * first saw five inert-looking numbers.
+ *
+ * So the `=` hint is on BOTH slots now, and it is on the row where it is actionable
+ * rather than only the first: binding halfW/halfH to a widget's size is the same
+ * gesture as binding x/y to its anchor.
+ *
+ * @param {"a"|"b"} slot - which shape (also the stored key prefix)
+ * @returns {object[]} the slot's five inspector rows
+ *
+ * @example shapeRows("a").map((r) => r.key) // ["a.x", "a.y", "a.halfW", "a.halfH", "a.rotation"]
+ * @example shapeRows("b")[0].label // "B center X"
+ * @example shapeRows("b")[0].category // "shape_b"
+ */
+function shapeRows(slot) {
+  const S = slot.toUpperCase();
+  const category = `shape_${slot}`;
+  const bind = "bind to a widget's anchor with an = equation";
+  return [
+    { key: `${slot}.x`, label: `${S} center X`, kind: "number", category, help: `World X of shape ${S}'s center (${bind}).` },
+    { key: `${slot}.y`, label: `${S} center Y`, kind: "number", category, help: `World Y of shape ${S}'s center (${bind}).` },
+    { key: `${slot}.halfW`, label: `${S} half-width`, kind: "number", min: 0, category, help: `Shape ${S}'s half-width (ellipse x-radius / box half-width) — bind it to a widget's size with an = equation.` },
+    { key: `${slot}.halfH`, label: `${S} half-height`, kind: "number", min: 0, category, help: `Shape ${S}'s half-height (ellipse y-radius / box half-height) — bind it to a widget's size with an = equation.` },
+    { key: `${slot}.rotation`, label: `${S} rotation`, kind: "angle", display: "degrees", category, help: `Shape ${S}'s rotation — the dial shows degrees, storage is radians like every widget's rotation, so \`= <widget>.rotation\` binds straight across.` },
+  ];
+}
+
 export const tangentLinesPlugin = {
   type: "tangent_lines",
   ephemeral: EPHEMERAL.NONE,
@@ -514,21 +551,19 @@ export const tangentLinesPlugin = {
   },
   inspector: [
     { key: "shapeKind", label: "Shape kind", kind: "select", options: ["circle", "box"], optionLabels: { circle: "Circle", box: "Box" }, category: "tangent", help: "The boundary both shapes use: Circle (an ellipse from halfW/halfH) or Box (a rotated rectangle). The two outer tangent lines are computed from the real boundary." },
-    { key: "a.x", label: "A center X", kind: "number", category: "shape_a", help: "World X of shape A's center (bind to a widget's anchor with an = equation)." },
-    { key: "a.y", label: "A center Y", kind: "number", category: "shape_a", help: "World Y of shape A's center." },
-    { key: "a.halfW", label: "A half-width", kind: "number", min: 0, category: "shape_a", help: "Shape A's half-width (ellipse x-radius / box half-width)." },
-    { key: "a.halfH", label: "A half-height", kind: "number", min: 0, category: "shape_a", help: "Shape A's half-height (ellipse y-radius / box half-height)." },
-    { key: "a.rotation", label: "A rotation", kind: "angle", display: "degrees", category: "shape_a", help: "Shape A's rotation — the dial shows degrees, storage is radians like every widget's rotation, so `= <widget>.rotation` binds straight across." },
-    { key: "b.x", label: "B center X", kind: "number", category: "shape_b", help: "World X of shape B's center." },
-    { key: "b.y", label: "B center Y", kind: "number", category: "shape_b", help: "World Y of shape B's center." },
-    { key: "b.halfW", label: "B half-width", kind: "number", min: 0, category: "shape_b", help: "Shape B's half-width." },
-    { key: "b.halfH", label: "B half-height", kind: "number", min: 0, category: "shape_b", help: "Shape B's half-height." },
-    { key: "b.rotation", label: "B rotation", kind: "angle", display: "degrees", category: "shape_b", help: "Shape B's rotation — the dial shows degrees, storage is radians like every widget's rotation, so `= <widget>.rotation` binds straight across." },
+    ...shapeRows("a"),
+    ...shapeRows("b"),
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
-    { key: "dashed", label: "Dashed", kind: "boolean", category: "tangent", help: "Draw the tangent lines dashed instead of solid." },
-    { key: "dashLength", label: "Dash length", kind: "number", min: 0, category: "tangent", help: "Length of each drawn dash, in canvas units. Only applies when Dashed is on." },
-    { key: "dashGap", label: "Dash gap", kind: "number", min: 0, category: "tangent", help: "Length of the empty gap between dashes. Only applies when Dashed is on." },
+    // THE SHARED DASH ROWS, filed under this widget's own category. These three
+    // were hand-written here — a fifth copy of core/endpoints.js's declaration,
+    // and it had ALREADY DRIFTED: the dashGap help had lost "in canvas units", so
+    // the same control documented its own units on four connectors and not on this
+    // one. The `category` is the ONLY thing that differs (tangent_lines files them
+    // beside its own knobs rather than under "line"), which is exactly what a map
+    // over the shared constant expresses — and it is now the one thing a reader has
+    // to check, instead of three help strings.
+    ...CONNECTOR_DASH_ROWS.map((row) => ({ ...row, category: "tangent" })),
     ...bundle("effects"),
   ],
   presets: TANGENT_LINES_PRESETS,
