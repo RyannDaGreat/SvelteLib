@@ -139,7 +139,15 @@ export function currentStepIndex(steps, index) {
  * handler never has to know which hook it is in:
  *   world      the SNAPPED world point under the cursor (the host snaps through
  *              the same solveSnap creation placement already uses, so a vertex
- *              lands on another widget's anchor like every other placement does)
+ *              COINCIDES with another widget's anchor like every other placement
+ *              does — GEOMETRICALLY. It is a corrected NUMBER, not a binding: the
+ *              vertex does not follow the anchor if the anchor later moves. This
+ *              line used to say "lands on another widget's anchor", which read as
+ *              the binding and was not one. Multi-step modes have no bound
+ *              placement today; the SEGMENT placement does (CanvasView
+ *              placementAnchorBind writes the `@<id>_<anchor>` equation pair when
+ *              anchors are visible), and a mode that wants the same must ask for
+ *              it through that seam rather than assume this payload carries it)
  *   mods       {uniform, symmetric} — the Shift/Cmd record creationRect and
  *              creationEndpoint are already written against, re-read from the
  *              event EVERY move (never frozen at grab time)

@@ -44,7 +44,7 @@
   // two transformed corners — not even the true AABB under rotation.
   import AudioBadge from "./AudioBadge.svelte";
   import { fireLiveTrigger, mirrorAudioFrame, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
-  import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
+  import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, stickyAnchorCandidate, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // THE HANDLE GLYPH BANK: core/ owns the VOCABULARY (which looks exist and what
   // each is for), this file owns the DRAWING. The split is why a plugin can name a
@@ -55,7 +55,7 @@
   // transform the Inspector's rotation dial uses (web/displayUnits.js), so the
   // modal and the field cannot disagree about what "45" means, and a future
   // change of storage unit moves both.
-  import { PROPS } from "../core/properties.js";
+  import { PROPS, ASPECT_LOCK_KEY } from "../core/properties.js";
   import { displayUnit } from "./displayUnits.js";
   import { worldViewRect, canSkipNode } from "../core/view.js";
   import { ESC_CANCELABLE_DRAG_KINDS } from "../core/shortcut_entries.js";
@@ -105,7 +105,7 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, translationRecord, resizeAnchors, resizedBox, resizeStoredState, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, refusedCoordinates, deltaWithoutRefused, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS } from "./canvas/dragKinds.js";
+  import { translationPairs, translationRecord, resizeAnchors, resizedBox, resizeStoredState, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, refusedCoordinates, deltaWithoutRefused, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS, memberPivot, wholisticMemberPairs, modalToggleApplies } from "./canvas/dragKinds.js";
   // R6-28 EQUATION LOCK. `equationPinning` is the per-ITEM projection that holds
   // every equation-bound coordinate still; it enters at the SAME `constrain`
   // parameter the modal axis lock uses, so there is one answer to "where may this
@@ -695,7 +695,12 @@
   onDestroy(() => gpu?.dispose());
 
   $effect(() => {
-    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; app.latexEditing; app.codeEditing; viewport; wrapW; wrapH; gpu; imageEpoch; videoV8;
+    // `app.dragging` is a dependency for the INTERACTION LOD (see paint()): without
+    // it the gesture's END never triggers a repaint, so a dragged PDF would stay on
+    // its cached lower-resolution raster until something else happened to repaint.
+    // It costs exactly two extra repaints per gesture — the down edge and the up
+    // edge — and the up edge IS the frame that restores full quality.
+    app.doc; app.slideIndex; app.previewDelta; app.anchorsVisible; app.latexEditing; app.codeEditing; app.dragging; viewport; wrapW; wrapH; gpu; imageEpoch; videoV8;
     paint();
   });
 
@@ -911,7 +916,18 @@
     // window.__powerrp_app): when set, the re-raster is skipped so a probe can
     // capture the OLD whole-page-raster look for a before/after comparison. It
     // has ZERO effect in production (nothing sets it).
-    const pdfDisplay = window.__powerrp_noPdfReraster
+    // The region pre-pass is SKIPPED outright during a gesture: its whole job is to
+    // rasterize the visible window at the CURRENT zoom, which is precisely the work
+    // that makes a drag lag. Widgets then fall back to their whole-page raster,
+    // which the LOD in pdf_page_raster serves from cache. Normal quality resumes on
+    // the drag-end repaint, which `app.dragging` in the effect below guarantees.
+    //
+    // Skipping it also skips its per-frame trimPdfRasterCache(), and that is SAFE
+    // rather than overlooked: a gesture allocates no new rasters (that is the whole
+    // point of the LOD), so the cache cannot grow while one is live. Deferring the
+    // trim to the drag-end frame is strictly better than trimming continuously —
+    // it cannot evict a raster the very next drag frame wants to draw.
+    const pdfDisplay = window.__powerrp_noPdfReraster || app.dragging
       ? null
       : preRasterizePdfPages(nodes, view, canvasEl.width, canvasEl.height);
     const ir = [
@@ -937,6 +953,14 @@
       // view", and passing the pre-cull tree is how sceneIR knows which ends survived.
       ...sceneIR(nodes, {
         pdfDisplay,
+        // INTERACTION LOD (user: paper peacock "It's laggy to drag around").
+        // While a pointer gesture is live, PDF-family widgets draw from the raster
+        // cache they already have instead of kicking a pdf.js render for every
+        // scale bucket the drag sweeps through. Editor-only by construction: no
+        // export, thumbnail or presenter surface has a pointer gesture to report,
+        // and `interactive` defaults TRUE in ports.js, so every one of them keeps
+        // full quality without passing anything.
+        interactive: !app.dragging,
         mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height),
         scene3d: prepareScene3dViews(nodes, view, canvasEl.width, canvasEl.height),
         // liveAnalysis: THE LIVE METER/SPECTROGRAM COLUMNS (R7-5). The editor does
@@ -2204,6 +2228,12 @@
         // announcing one of them wrongly. Everything downstream — the preview shape,
         // the pointer routing, the commit, the chips — follows from this one value.
         drag = { kind: placementDragKind(create.id), plugin: armed.plugin, startWorld: { x: snappedStart.x, y: snappedStart.y }, startGuides: snappedStart.guides, lastWorld: w, downScreen: screenPoint(e), moved: false };
+        // THE START END'S ANCHOR BIND is decided ONCE, here, and then held for the
+        // whole gesture — the start point itself is fixed at grab (placementDrag
+        // re-snaps only the live point), so re-deciding its binding on every move
+        // would be answering a question whose inputs never change. A SEGMENT
+        // placement only; see placementDrag for why a box has no per-end bind.
+        drag.fromPick = drag.kind === "placesegment" ? placementAnchorBind(drag.startWorld, "startAnchorId") : null;
         // Seed the preview DEGENERATE at the start point, through the same grammar
         // every later move uses, so the first frame cannot draw a different overlay
         // from the second. Modifiers come from the DOWN event for the reason the
@@ -2686,6 +2716,63 @@
    * corners is the correct order: the anchor point genuinely is either
    * corner, snapped or not).
    */
+  /**
+   * Query + Command (reads the scene, sets the bind-feedback overlay). The anchor
+   * a CREATION placement's live point would bind to right now, decided by the SAME
+   * sticky rule and shown with the SAME affordance as an endpoint drag
+   * (stickyAnchorCandidate + applyAnchorBind), with the incumbent held on the drag
+   * record under `key` so the start and live ends hold their own.
+   *
+   * WHY CREATION BINDS AT ALL (user, backburner AJ: "when anchors are enabled,
+   * there's no way to choose anchor positions when DRAWING an arrow i always seem
+   * to have to draw it THEN move it to the anchors"). Creation placement already
+   * snapped GEOMETRICALLY through snapPoint, so a drawn arrow LANDED on an anchor
+   * and then stayed a plain number there — coincidence, not a binding, which is
+   * exactly the state the user had to fix by hand afterwards.
+   *
+   * THE GATE IS `app.anchorsVisible`, WITH NO MODIFIER, and that is deliberate:
+   * it matches endpointDrag, the gesture this one is the creation half of. It does
+   * NOT follow move/resize's `aHeld`, because those two snap geometrically as
+   * their normal behaviour and A is how an author opts into the stronger
+   * equation-writing outcome; drawing an endpoint has no such plain-snap meaning
+   * to opt out of — an endpoint dropped on a visible anchor is asking to be bound,
+   * which is the rule endpointDrag already ships.
+   *
+   * Returns null when nothing is picked (the caller keeps the plain numbers).
+   */
+  function placementAnchorBind(w, key) {
+    if (!app.anchorsVisible) { drag[key] = null; hoverAnchor = null; dynamicAnchor = null; return null; }
+    const tol = SNAP_PX / viewport.zoom;
+    // No self-exclusion (snapPoint's stated reason): a creation drag places a
+    // brand-new item, so every existing node is a legitimate target.
+    const pick = stickyAnchorCandidate(anchorBindCandidates(app.nodes(), w, tol), drag[key] ?? null, tol);
+    drag[key] = pick?.id ?? null;
+    applyAnchorBind(pick, w);
+    return pick;
+  }
+
+  /**
+   * Pure function. `endpoint` with each end's coordinates REPLACED by the anchor
+   * equation pair where that end picked one — the geometry the grammar computed
+   * is what the numbers were, and a bound end stores "@<id>_<anchor>.x" instead.
+   *
+   * Applied AFTER the grammar rather than inside it because the grammar is
+   * numeric by contract (it lerps, mirrors and axis-locks), and an equation string
+   * has no arithmetic. The bound end's stored equation therefore describes the
+   * anchor exactly, while an axis-lock or symmetric modifier still shaped the
+   * FREE end around the numbers it produced.
+   *
+   * @param {{from: object, to: object}} endpoint - the grammar's numeric endpoints
+   * @param {object|null} fromPick - the start end's bind pick, or null
+   * @param {object|null} toPick - the live end's bind pick, or null
+   */
+  function endpointWithBinds(endpoint, fromPick, toPick) {
+    const eq = (pick, end) => pick
+      ? { x: `@${pick.itemId}_${pick.anchorId}.x`, y: `@${pick.itemId}_${pick.anchorId}.y` }
+      : end;
+    return { from: eq(fromPick, endpoint.from), to: eq(toPick, endpoint.to) };
+  }
+
   function placementDrag(e, w) {
     drag.lastWorld = w;
     const live = snapPoint(w.x, w.y);
@@ -2693,6 +2780,12 @@
     // the WHOLE drag — its correction is fixed (drag.startGuides), only the
     // live point's guide is recomputed every move.
     guides = [...drag.startGuides, ...live.guides];
+    // ANCHOR BINDING for a SEGMENT placement only: a box placement has four
+    // corners and no per-end identity, so there is no single coordinate pair an
+    // equation could name — binding a box to an anchor is the move/resize
+    // gesture's anchor-snap release, not this one. Decided BEFORE the preview so
+    // the same move that shows the tooltip also stashes what the commit writes.
+    drag.livePick = drag.kind === "placesegment" ? placementAnchorBind({ x: live.x, y: live.y }, "liveAnchorId") : null;
     previewPlacement(live, { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey });
   }
 
@@ -2759,8 +2852,37 @@
    * ran) is unchanged: default size/length centered/rightward on the point —
    * modifiers and snap have no meaning for a single click with no drag vector.
    */
+  /**
+   * Pure function. Whether a segment placement's `from` end is still THE GRAB
+   * POINT — true unless the Cmd/symmetric modifier mirrored it through the start.
+   *
+   * ASKED OF THE GEOMETRY, not of a remembered modifier flag, because the
+   * modifiers are read live from every move event and never stashed; the grammar's
+   * own output is the one record of what they did. A mirrored `from` is a computed
+   * reflection of the pointer, so the anchor the START point was resting on says
+   * nothing about it and its bind must be dropped.
+   *
+   * @example placementFromIsGrab({x: 10, y: 20}, {x: 10, y: 20}) // true
+   * @example placementFromIsGrab({x: -80, y: 20}, {x: 10, y: 20}) // false (Cmd mirrored it)
+   */
+  function placementFromIsGrab(from, startWorld) {
+    return from.x === startWorld.x && from.y === startWorld.y;
+  }
+
   function placementUp() {
     const { plugin, startWorld } = drag;
+    // ANCHOR BINDING (backburner AJ): the ends that picked an anchor during the
+    // gesture are stored as EQUATIONS instead of the numbers the grammar computed
+    // — the same `@<id>_<anchor>.x` pair an endpoint DRAG writes, so an arrow drawn
+    // onto an anchor and one dragged onto it are the same document. A plain CLICK
+    // placement (never moved) has no live end and no previewed endpoint, so it is
+    // untouched; only its start end could bind, and binding one end of a segment
+    // whose other end was never aimed is not what the click gesture means.
+    if (drag.lastEndpoint && (drag.fromPick || drag.livePick))
+      drag.lastEndpoint = endpointWithBinds(
+        drag.lastEndpoint,
+        placementFromIsGrab(drag.lastEndpoint.from, startWorld) ? drag.fromPick : null,
+        drag.livePick);
     // WHAT THE FINISHED GESTURE CREATES is the WIDGET's business: `placement` is
     // its creation-phase declaration, resolved through web/widget_handlers.js
     // (phase "create"; absent → "bbox", the default since crosshair placement
@@ -2959,7 +3081,17 @@
   function resizeDrag(e, w) {
     const s = drag.startState;
     const local = T.apply(T.invert(drag.world), w.x, w.y); // pointer in the item's local space
-    const mods = { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey };
+    // THE ASPECT CHAIN LOCK (backburner AF) IS `uniform`, FORCED ON — it is not a
+    // second constraint beside Shift's, it is the SAME one made persistent. The
+    // gesture already computes a single scale factor K for both dimensions under
+    // `uniform` (dragKinds.resizedBox), which is exactly "keep the proportions",
+    // so a chained item resizes correctly with no new geometry: only where the
+    // flag comes from changes. Shift can still turn it on for an UNCHAINED item;
+    // on a chained one Shift is simply already true, which is why this is an OR
+    // rather than a branch. The same rule the Inspector's W/H fields obey through
+    // core/properties.aspectLockedPair, so a dragged handle and a typed number
+    // cannot disagree about what "locked" means.
+    const mods = { uniform: e.shiftKey || s?.[ASPECT_LOCK_KEY] === true, symmetric: e.metaKey || e.ctrlKey };
     if (mods.uniform !== drag.mods.uniform || mods.symmetric !== drag.mods.symmetric) {
       // Modifier rebase: the new constraint measures from the CURRENT box and
       // pointer, so engaging/releasing Shift or Cmd mid-drag never jumps.
@@ -3351,6 +3483,66 @@
     app.dragKind = "endpoint";
   }
 
+  /**
+   * Query (reads the live scene through `app`). EVERY anchor a point at world `w`
+   * could bind to right now, as `{id, d, itemId, anchorId, x, y, dynamic}` records
+   * ordered by nothing in particular — the CHOICE among them belongs to
+   * core/snap.js stickyAnchorCandidate, which needs the whole field to apply its
+   * steal margin. `id` is "<itemId>:<anchorId>", the identity a gesture compares
+   * across moves.
+   *
+   * PRESET AND "CLOSEST" ANCHORS ARE ONE FIELD HERE, and that is a change: the
+   * endpoint drag used to try presets first and fall back to `closest` only when
+   * NO preset was in range, which made the two kinds a hard either/or that could
+   * itself flip per pixel. Offering both as candidates lets one rule decide.
+   * A `closest` candidate is marked `dynamic` — it is a live function of the
+   * pointer, not a fixed point, so the overlay draws it with the # glyph.
+   *
+   * `nodes` is passed in rather than read here because its exclusion set differs
+   * by gesture: an endpoint drag excludes the dragged item's own group
+   * (snapCandidates), a creation placement excludes nothing (there is no item yet).
+   *
+   * @param {object[]} nodes - the render nodes eligible as bind targets
+   * @param {{x: number, y: number}} w - the world point
+   * @param {number} tol - bind tolerance in world units (used only to bound the
+   *   `closest` perimeter probe; preset candidates are returned with their true
+   *   distance and filtered by the caller's rule)
+   */
+  function anchorBindCandidates(nodes, w, tol) {
+    const out = [];
+    for (const n of nodes)
+      for (const a of nodeAnchors(n))
+        out.push({ id: `${n.itemId}:${a.id}`, d: Math.hypot(a.x - w.x, a.y - w.y), itemId: n.itemId, anchorId: a.id, x: a.x, y: a.y, dynamic: false });
+    // The "closest" computed anchor of whatever node is UNDER the pointer. It is
+    // only meaningful within the tolerance of the perimeter point it produces —
+    // outside that it is not a candidate at all, so it is not offered.
+    const hit = pickNode(nodes, w.x, w.y);
+    if (hit?.plugin.closestAnchor) {
+      const local = hit.plugin.closestAnchor(hit.state, w.x, w.y, hit.world);
+      const p = T.apply(hit.world, local.x, local.y);
+      const d = Math.hypot(p.x - w.x, p.y - w.y);
+      if (d <= tol) out.push({ id: `${hit.itemId}:closest`, d, itemId: hit.itemId, anchorId: "closest", x: p.x, y: p.y, dynamic: true });
+    }
+    return out;
+  }
+
+  /**
+   * Command (sets the bind-feedback overlay state). Publishes `pick` — a record
+   * from anchorBindCandidates, or null — into `hoverAnchor`/`dynamicAnchor` and
+   * returns the {x, y} a commit should WRITE: the equation pair when something is
+   * picked, the raw world point when nothing is.
+   *
+   * ONE function because the endpoint drag and the creation placement must show
+   * the SAME affordance and write the SAME equations; two copies is how the two
+   * gestures would come to disagree about what a drop does.
+   */
+  function applyAnchorBind(pick, w) {
+    hoverAnchor = pick ? { label: app.anchorName(pick.itemId, pick.anchorId), x: pick.x, y: pick.y } : null;
+    dynamicAnchor = pick?.dynamic ? { x: pick.x, y: pick.y } : null;
+    if (!pick) return { x: w.x, y: w.y };
+    return { x: `@${pick.itemId}_${pick.anchorId}.x`, y: `@${pick.itemId}_${pick.anchorId}.y` };
+  }
+
   function endpointDrag(w) {
     const tol = SNAP_PX / viewport.zoom;
     // Anchor binding is GATED on the anchors toggle, and only ever happens
@@ -3359,6 +3551,19 @@
     // "closest" rebinding was sticky and obnoxious).
     // THE UNIFICATION: binding WRITES EQUATIONS — dropping on an anchor sets
     // from/to x/y to "@<itemId>_<anchorId>.x"/".y" (anchors are variables).
+    //
+    // THE DECISION IS STICKY (user, backburner AI: "while dragging, it flickers -
+    // when the mouse moves 1px it keeps flipping between anchored and not
+    // anchored - particularly when equation lock is turned on"). This function
+    // re-decides from raw pointer state on EVERY move, and it used to do so
+    // against the single hard `tol`: a pointer resting at 8.0px from an anchor
+    // toggled bound/unbound with every jitter, and under the equation lock each
+    // toggle also ran the refusal path — so the cursor and the refusal sentence
+    // churned per pixel too. core/snap.js stickyAnchorCandidate holds the
+    // incumbent out to tol*1.5 and makes a rival earn the steal, the same
+    // hysteresis axisLock already uses for the same class of held decision.
+    // The incumbent lives on the DRAG RECORD, so it is per-gesture and cannot
+    // leak into the next one.
     let xy = { x: w.x, y: w.y };
     // Live bind feedback (manifest Anchor UX): every move re-decides the
     // candidate; the tooltip names EXACTLY what a drop right now would bind
@@ -3370,31 +3575,11 @@
       // (manifest 15.7): an arrow endpoint that belongs to a group won't bind to
       // its own group's anchors, and a grouped target's members are excluded.
       const nodes = snapCandidates(app.nodes());
-      let best = null;
-      for (const n of nodes)
-        for (const a of nodeAnchors(n)) {
-          const d = Math.hypot(a.x - w.x, a.y - w.y);
-          if (d <= tol && (!best || d < best.d)) best = { d, itemId: n.itemId, anchorId: a.id, x: a.x, y: a.y };
-        }
-      if (best) {
-        xy = { x: `@${best.itemId}_${best.anchorId}.x`, y: `@${best.itemId}_${best.anchorId}.y` };
-        hoverAnchor = { label: app.anchorName(best.itemId, best.anchorId), x: best.x, y: best.y };
-      } else {
-        // "closest" computed anchor binds only when the pointer is within the
-        // SAME threshold of the perimeter point it would produce.
-        const hit = pickNode(nodes, w.x, w.y);
-        if (hit?.plugin.closestAnchor) {
-          const local = hit.plugin.closestAnchor(hit.state, w.x, w.y, hit.world);
-          const p = T.apply(hit.world, local.x, local.y);
-          if (Math.hypot(p.x - w.x, p.y - w.y) <= tol) {
-            xy = { x: `@${hit.itemId}_closest.x`, y: `@${hit.itemId}_closest.y` };
-            // A DYNAMIC anchor (a live function of the drag, not a preset
-            // point): named like any anchor, marked with the # glyph.
-            hoverAnchor = { label: app.anchorName(hit.itemId, "closest"), x: p.x, y: p.y };
-            dynamicAnchor = { x: p.x, y: p.y };
-          }
-        }
-      }
+      const pick = stickyAnchorCandidate(anchorBindCandidates(nodes, w, tol), drag.boundAnchorId ?? null, tol);
+      drag.boundAnchorId = pick?.id ?? null;
+      xy = applyAnchorBind(pick, w);
+    } else {
+      drag.boundAnchorId = null; // the toggle went off mid-drag — nothing to hold
     }
     // THE SAME ONE SEAM every other drag writes through (geometryPairs). This
     // branch used to call setPreview with a hand-built path pair, and that is
@@ -4352,7 +4537,10 @@
     const members = translateMembers(nodes);
     if (!center || members.length === 0) { app.modalXform = null; return; } // nothing to transform
     const start = mouseWorld ?? center;
-    modal = { kind, startWorld: start, members, center, axis: null, buffer: "" };
+    // `toggles` holds the modal's I/W state (web/canvas/dragKinds.js MODAL_TOGGLES).
+    // It starts EMPTY on every gesture and dies with the record, exactly as `axis`
+    // does — a toggle is a fact about this transform, not a persistent editor mode.
+    modal = { kind, startWorld: start, members, center, axis: null, buffer: "", toggles: {} };
     modalCenter = kind === "grab" ? null : center;
     // Paint the initial (zero-delta) preview immediately so the selection is
     // visibly "grabbed"/"scaling" before the first mouse move.
@@ -4387,6 +4575,22 @@
     applyModal();
   }
 
+  /** Command. Flips one modal toggle (I = individual origins, W = wholistic
+   * scale) and re-derives the preview, so the change is visible before commit.
+   *
+   * THE APPLICABILITY GUARD IS THE `modalSetAxis` RULE, generalised: the chip for a
+   * toggle that does not apply is already withheld (core/shortcut_entries.js
+   * modalToggleChip), and this is the second half — a key that cannot be announced
+   * must also not act if it arrives by another route. Both halves ask
+   * `modalToggleApplies`, the ONE predicate, so the offer and the action cannot
+   * disagree about what W means during a rotate. */
+  function modalToggle(id) {
+    if (!modalToggleApplies(id, modal.kind, modal.members.length > 1)) return;
+    modal.toggles = { ...modal.toggles, [id]: !modal.toggles[id] };
+    syncModalXform();
+    applyModal();
+  }
+
   /** Command. Appends one character to the numeric buffer. Digits always append;
    * "." appends only if the buffer has no decimal yet; "-" appends only as the
    * first character (leading sign). For GRAB, digits require an axis constraint
@@ -4415,7 +4619,7 @@
    * announcement (mode · axis · buffer) re-derives. Reassigns the whole object
    * so the $derived tracking it invalidates. */
   function syncModalXform() {
-    app.modalXform = { kind: modal.kind, axis: modal.axis, buffer: modal.buffer };
+    app.modalXform = { kind: modal.kind, axis: modal.axis, buffer: modal.buffer, toggles: modal.toggles };
   }
 
   /**
@@ -4469,7 +4673,11 @@
           ? Math.atan2(w.y - c.y, w.x - c.x) - Math.atan2(modal.startWorld.y - c.y, modal.startWorld.x - c.x)
           : 0;
       }
-      app.setPreview(modal.members.flatMap((m) => rotationPairs(m, angle, c, memberConstraint(m))));
+      // INDIVIDUAL ORIGINS (the I toggle): each member turns about its OWN centre
+      // rather than the collective one. `memberPivot` is the whole of the feature —
+      // the per-member math is untouched, it is simply handed a different pivot.
+      app.setPreview(modal.members.flatMap((m) =>
+        rotationPairs(m, angle, memberPivot(m, c, !!modal.toggles.individual), memberConstraint(m))));
     } else {
       // SCALE: factor = typed buffer, else current/initial cursor distance from
       // the collective center (Blender precedent). Degenerate start distance
@@ -4482,7 +4690,17 @@
         const d1 = Math.hypot(w.x - c.x, w.y - c.y);
         factor = d0 > MODAL_PIVOT_EPS ? d1 / d0 : 1;
       }
-      app.setPreview(modal.members.flatMap((m) => scalePairs(m, factor, c, modal.axis, memberConstraint(m))));
+      // THE TWO TOGGLES BOTH LAND HERE, and they are independent: I moves the PIVOT
+      // (memberPivot), W adds the non-geometry writes (wholisticMemberPairs — stroke
+      // widths, font sizes, corner radii, per core/scaling.js). The wholistic pairs
+      // are APPENDED to the geometry pairs rather than replacing any, so x/y/w/h keep
+      // coming from the one geometry seam and the factor is never applied twice; they
+      // go into the SAME setPreview, so the commit is ONE undo unit for both halves.
+      const individual = !!modal.toggles.individual;
+      app.setPreview(modal.members.flatMap((m) => [
+        ...scalePairs(m, factor, memberPivot(m, c, individual), modal.axis, memberConstraint(m)),
+        ...(modal.toggles.wholistic ? wholisticMemberPairs(m, factor) : []),
+      ]));
     }
 
     // Axis guide: an infinite line through the collective center along the
@@ -4543,6 +4761,7 @@
     app.modalCommit = commitModal;
     app.modalCancel = cancelModal;
     app.modalSetAxis = (axis) => { if (modal) modalSetAxis(axis); };
+    app.modalToggle = (id) => { if (modal) modalToggle(id); };
     app.modalAppendBuffer = (ch) => { if (modal) modalAppendBuffer(ch); };
     app.modalBackspace = () => { if (modal) modalBackspace(); };
     // The finalize key of a live multi-step CREATION mode (a polygon's Enter),
@@ -4747,7 +4966,7 @@
 
   let overlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; wrapW; wrapH; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], inkGhostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null, inkDashes: [], bandAddInkDashes: [], bandRemoveInkDashes: [] };
+    if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], emptyCrosses: [], inkGhostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null, inkDashes: [], bandAddInkDashes: [], bandRemoveInkDashes: [] };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = overlayViewRect();
     const nodes = app.nodes();
@@ -5157,6 +5376,37 @@
       .filter((n) => isGhostNode(n) && n.plugin.capabilities.bbox && (n.type === "cropbox" || app.showGhosts))
       .map(outlineOf);
 
+    // THE EMPTY'S AXIS CROSS (backburner AM — user: "Empties … Full transform,
+    // blender-style"). Blender draws an empty as a plain-axes cross in the
+    // VIEWPORT and renders nothing, and this is that: two screen-space segments
+    // spanning the widget's DISPLAY SIZE, drawn ALWAYS (like a crop box's frame,
+    // and for the identical reason — an empty paints nothing, so without its own
+    // chrome it is invisible and unclickable, and the "Show Ghosts" toggle would
+    // make the widget itself come and go rather than a decoration on it).
+    //
+    // BUILT FROM THE PLUGIN'S OWN AXIS ANCHORS, not from a rect: the tips ARE
+    // `+x`/`-x`/`+y`/`-y` (plugins/empty.js), so the cross is a picture of the
+    // four points an equation can name, and it follows rotation and scale through
+    // the same worldTransform every anchor does with no second geometry path
+    // here. A projection through `nodeAnchors` also means a flipped (negative w/h)
+    // empty is handled at the one place the sign is resolved, per the
+    // NEGATIVE-EXTENTS protocol, rather than by this overlay reading raw state.
+    //
+    // Editor-only chrome — never in sceneIR, so it never presents or exports,
+    // which is the same fence the ghost outline above sits behind.
+    const emptyCrosses = visibleNodes
+      .filter((n) => n.type === "empty")
+      .flatMap((n) => {
+        const a = new Map(nodeAnchors(n).map((p) => [p.id, p]));
+        const seg = (fromId, toId) => {
+          const f = a.get(fromId), t = a.get(toId);
+          if (!f || !t) return []; // a widget that stopped publishing a tip draws no arm rather than a NaN one
+          const p = actions.worldToScreen(f.x, f.y), q = actions.worldToScreen(t.x, t.y);
+          return [{ x1: p.x, y1: p.y, x2: q.x, y2: q.y }];
+        };
+        return [...seg("-x", "+x"), ...seg("-y", "+y")];
+      });
+
     // INK-BOUNDS GHOST (user, 2026-08-02: "Physical boundaries when we enable
     // ghost mode, if they are different from property boundaries. Can display as
     // a ghost with a dashed line. And of course, they would be clickable").
@@ -5293,7 +5543,7 @@
       placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
     }
 
-    return { outlines: [...outlines, ...inkRectOutlines], hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline, inkDashes, bandAddInkDashes, bandRemoveInkDashes };
+    return { outlines: [...outlines, ...inkRectOutlines], hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, emptyCrosses, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline, inkDashes, bandAddInkDashes, bandRemoveInkDashes };
   });
 
   /**
@@ -5824,6 +6074,14 @@
              selected ghost still reads as selected on top of it. -->
         {#each overlay.ghostOutlines as o}
           <polygon class="ghost-outline" points={o} />
+        {/each}
+        <!-- THE EMPTY'S AXIS CROSS — blender's plain-axes empty, in the editor
+             only. Its own class rather than .anchor's, because the anchor X is a
+             fixed 10px glyph that marks a POINT while this spans the widget's
+             display size and IS the widget, but it shares the ghost family's
+             styling so the two read as the same kind of thing (see app.css). -->
+        {#each overlay.emptyCrosses as c}
+          <line class="empty-cross" x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} />
         {/each}
         <!-- INK-BOUNDS GHOST: the DASHED rect of where a widget's ink actually
              is, drawn only when that differs from its property box (for text:
