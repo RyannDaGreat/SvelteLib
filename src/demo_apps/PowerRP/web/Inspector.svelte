@@ -55,6 +55,7 @@
   import GalleryPopup from "./GalleryPopup.svelte";
   import MultiSelectModeToggle from "./MultiSelectModeToggle.svelte";
   import Vector2Pad from "./Vector2Pad.svelte";
+  import Vector2Field from "./Vector2Field.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
@@ -68,6 +69,7 @@
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_DEFAULT, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
+  import { VEC2_ROW_KIND } from "../core/vector_values.js";
   import { EXEC_CAT, NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleExecTargets, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
   import { OUTPUTS_CAT, outputPropertyRows } from "../core/output_properties.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
@@ -2935,6 +2937,24 @@
       paths={writePaths}
       label={row.label}
       value={valueAt(state, row.key)}
+      disabled={disabled}
+    />
+  {:else if kind === VEC2_ROW_KIND}
+    <!-- A `vec2` ROW (core/vector_values.js VEC2_ROW_KIND): ONE slot holding an
+         [x, y] tuple, edited as two boxes plus the drag pad — R7-36's collapsed
+         `[X] [Y] [pad]` grammar.
+
+         NOT THE COMPOUND ROW, and the difference is storage, not looks: a
+         COMPOUND groups the `x` and `y` rows a widget already declares and
+         writes two leaf paths, while this row's value IS the tuple and writes
+         one. Both reach Vector2Pad, which is why they look identical and why
+         neither re-implements the other's gesture. -->
+    <Vector2Field
+      {app}
+      path={["items", pickedItemId, ...row.key.split(".")]}
+      paths={writePaths}
+      label={row.label}
+      row={row}
       disabled={disabled}
     />
   {:else if kind === NODE_INPUT_ROW_KIND}

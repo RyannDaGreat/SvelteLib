@@ -388,11 +388,18 @@
   /* The reticle's line weight: heavier than a hairline so the crosshair reads at
      26px, light enough not to look like a filled tile at 64px. */
   --a-vec2pad-stroke: 6px;
+  /* THE `vec2` ROW'S TWO NUMBER BOXES (web/Vector2Field.svelte). Narrow, because
+     two of them plus the pad share ONE value cell — the same budget the compound
+     row's inline X and Y fields live within. */
+  --a-vec2-box-w: 52px;
+  --a-vec2-field-gap: 4px;
+
   /* ── THE GLOBAL VARIABLE KIND PICKER (backburner CX) ──────────────────────
-     Wide enough for the longest kind label ("Boolean") plus its caret, and no
-     wider: it shares the label cell with the variable's NAME, which is the part
-     an author actually reads the row for. */
-  --a-var-kind-w: 76px;
+     Wide enough for the longest kind label plus its caret, and no wider: it
+     shares the label cell with the variable's NAME, which is the part an author
+     actually reads the row for. ("2-vector" took this from "Boolean"'s width
+     when the vec2 kind landed — the label is measured, not assumed.) */
+  --a-var-kind-w: 84px;
   /* The label⟷value DIVIDER: an invisible grab strip centred on the column
      boundary, revealing a hairline on hover. Hit width is deliberately wider
      than the line, the same relationship --a-split-handle-hit has to
@@ -8280,7 +8287,8 @@ audio.ae-preview-media {
 /* THE 2D DRAG PAD (web/Vector2Pad.svelte) — the XY compound's joint control, the
    rotation dial's sibling. Square, because the two axes are symmetric and a
    rectangle would imply one of them is longer than the other. */
-.inspector .vec2pad {
+.inspector .vec2pad ,
+.varspanel .vec2pad {
   flex: none;
   width: var(--a-vec2pad-size);
   height: var(--a-vec2pad-size);
@@ -8291,7 +8299,8 @@ audio.ae-preview-media {
   cursor: grab;
   touch-action: none; /* the pointer drag owns the gesture, never the scroller */
 }
-.inspector .vec2pad:hover:not(.vec2pad-disabled) {
+.inspector .vec2pad:hover:not(.vec2pad-disabled) ,
+.varspanel .vec2pad:hover:not(.vec2pad-disabled) {
   border-color: var(--accent);
   color: var(--fg);
 }
@@ -8299,14 +8308,16 @@ audio.ae-preview-media {
    globally ("focus is conveyed by our own selection/highlight styles"), so a
    keyboard user reaching the pad must be told by the border, as every other
    focusable control here is. */
-.inspector .vec2pad:focus-visible {
+.inspector .vec2pad:focus-visible ,
+.varspanel .vec2pad:focus-visible {
   border-color: var(--a-selection);
   color: var(--fg);
 }
 /* DRAGGING keeps the accent while the pointer is captured, including when it
    leaves the square — the gesture is still live, and a control that dimmed
    mid-drag would read as having been let go. */
-.inspector .vec2pad.vec2pad-dragging {
+.inspector .vec2pad.vec2pad-dragging ,
+.varspanel .vec2pad.vec2pad-dragging {
   border-color: var(--accent);
   color: var(--accent);
   cursor: grabbing;
@@ -8314,17 +8325,21 @@ audio.ae-preview-media {
 /* An EQUATION-BOUND axis makes the pad inert rather than absent: the tooltip is
    the only place the reason is written, so the control has to stay to carry it
    (the save-dot rule — a disabled control explains itself). */
-.inspector .vec2pad.vec2pad-disabled {
+.inspector .vec2pad.vec2pad-disabled ,
+.varspanel .vec2pad.vec2pad-disabled {
   opacity: var(--a-disabled-opacity);
   cursor: default;
 }
-.inspector .vec2pad svg {
+.inspector .vec2pad svg ,
+.varspanel .vec2pad svg {
   display: block;
   width: 100%;
   height: 100%;
 }
 .inspector .vec2pad line,
-.inspector .vec2pad circle {
+.varspanel .vec2pad line,
+.inspector .vec2pad circle ,
+.varspanel .vec2pad circle {
   stroke: currentColor;
   stroke-width: var(--a-vec2pad-stroke);
   fill: none;
@@ -8332,9 +8347,56 @@ audio.ae-preview-media {
 /* EXPANDED, the pad is bigger — the user's collapsed `[dragpad]` beside the
    fields versus the dropped-down `[DragPad]` on its own line. Same control, more
    room to aim it. */
-.inspector .vec2pad.vec2pad-large {
+.inspector .vec2pad.vec2pad-large ,
+.varspanel .vec2pad.vec2pad-large {
   width: var(--a-vec2pad-large-size);
   height: var(--a-vec2pad-large-size);
+}
+
+/* THE `vec2` ROW CONTROL (web/Vector2Field.svelte) — two number boxes plus the
+   pad, over ONE slot holding the tuple. It wears the SAME `[X] [Y] [pad]` look
+   as the XY compound's collapsed row deliberately: the two differ in storage,
+   not in what an author is doing, so they must not look like different features.
+   Mounted in BOTH panels (a global variable is the case with no leaves to
+   group), hence both scopes here. */
+.inspector .vec2-field,
+.varspanel .vec2-field {
+  display: flex;
+  align-items: center;
+  gap: var(--a-vec2-field-gap);
+  min-width: 0;
+}
+.inspector .vec2-field .vec2-box,
+.varspanel .vec2-field .vec2-box {
+  width: var(--a-vec2-box-w);
+  min-width: 0;
+  height: var(--a-control-h);
+  border: var(--a-hairline) solid var(--border);
+  border-radius: var(--a-radius-control);
+  background: var(--control-bg);
+  color: var(--fg);
+  font: inherit;
+  padding: 0 var(--a-vec2-field-gap);
+}
+.inspector .vec2-field .vec2-box:focus-visible,
+.varspanel .vec2-field .vec2-box:focus-visible {
+  border-color: var(--a-selection);
+}
+/* AN EQUATION OWNS THE SLOT: the expression is shown INSTEAD of the boxes, in
+   the equation family's own type, because there is no stored pair to edit and
+   boxes over an expression invite the keystroke that destroys it. */
+.inspector .vec2-field .vec2-bound,
+.varspanel .vec2-field .vec2-bound {
+  font-family: var(--a-eq-font);
+  font-size: var(--a-eq-font-size);
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inspector .vec2-field.vec2-field-disabled,
+.varspanel .vec2-field.vec2-field-disabled {
+  opacity: var(--a-disabled-opacity);
 }
 
 /* THE ASPECT CHAIN LOCK (backburner AF), on the Size compound's row. The glyph

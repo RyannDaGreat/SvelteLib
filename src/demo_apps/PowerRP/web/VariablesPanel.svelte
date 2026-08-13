@@ -49,6 +49,7 @@
   import NumericField from "./NumericField.svelte";
   import ColorField from "./ColorField.svelte";
   import BooleanField from "./BooleanField.svelte";
+  import Vector2Field from "./Vector2Field.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import LabelDivider from "./LabelDivider.svelte";
   import { VAR_KINDS, VAR_KIND_LABELS, VAR_KIND_NOTES, fontVarRowAspects } from "../core/var_kinds.js";
@@ -140,7 +141,12 @@
              a variables-only copy. Every one of these writes ["vars", name]
              itself (preview on drag/hover, commit as one undo unit), exactly as
              the same component does on an item row. -->
-        {#if kind === "color"}
+        {#if kind === "vec2"}
+          <!-- The `[X] [Y] [pad]` grammar over ONE slot holding the tuple. It is
+               the Property Panel's own vec2 control, not a variables-only copy —
+               the same rule every other kind here follows. -->
+          <Vector2Field {app} path={["vars", name]} label={name} />
+        {:else if kind === "color"}
           <ColorField {app} path={["vars", name]} label={name} value={rawValue(name)} />
         {:else if kind === "boolean"}
           <BooleanField {app} path={["vars", name]} label={name} value={rawValue(name)} />
