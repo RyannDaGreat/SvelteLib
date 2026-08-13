@@ -106,8 +106,22 @@ try {
   // WebGPU/VideoV7 report-and-fall-back on a GPU-less box — a working fallback, not
   // a failure of this probe (the fontpicker_probe.js clause).
   const IGNORE_CONSOLE = /WebGPU|VideoV7/i;
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  page.on("console", (m) => { if (m.type() === "error" && !IGNORE_CONSOLE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
+  // A BOOT ERROR THIS PROBE DID NOT CAUSE IS REPORTED, NOT FATAL — and this split is
+  // the whole reason it is written down rather than folded into IGNORE_CONSOLE.
+  // PowerRP is developed by many agents in one tree, so at any moment the app may
+  // carry someone else's in-flight defect (measured, repeatedly: a shortcut with an
+  // unsatisfiable `when`, a `plugins/index.js` importing a file its own commit
+  // deleted). A probe that dies on ANY console error then reports a RED that says
+  // nothing about GIFs — the exact "a red that says nothing about what this probe
+  // tests" failure tests/asset_ux_probe.js's freePort comment records. So boot noise
+  // is PRINTED (never swallowed — a suppressed error is how a real regression hides)
+  // and the run continues; only errors naming THIS feature's own modules are fatal,
+  // because those are the ones this probe is the right place to catch.
+  const MINE = /gif|transcode|video|upload|asset/i;
+  const bootNoise = [];
+  const record = (text) => (MINE.test(text) ? errors : bootNoise).push(text);
+  page.on("pageerror", (e) => record(`pageerror: ${e.message}`));
+  page.on("console", (m) => { if (m.type() === "error" && !IGNORE_CONSOLE.test(m.text())) record(`console.error: ${m.text()}`); });
 
   await page.evaluateOnNewDocument((name) => {
     localStorage.setItem("powerrp.autosave", JSON.stringify({
@@ -116,7 +130,11 @@ try {
   }, PROJECT);
   await page.goto(`${pageBase}/`, { waitUntil: "networkidle0" });
   await new Promise((r) => setTimeout(r, 500));
-  if (errors.length) throw new Error("PAGE ERRORS AT BOOT:\n" + errors.join("\n"));
+  if (errors.length) throw new Error("PAGE ERRORS AT BOOT (naming this feature's own modules):\n" + errors.join("\n"));
+  if (bootNoise.length) {
+    console.log(`NOTE: ${bootNoise.length} unrelated boot error(s) from other work in this tree — reported, not fatal:`);
+    for (const n of bootNoise) console.log(`   ${n.slice(0, 160)}`);
+  }
 
   /** Command. Drop one GIF (given as base64) on the canvas as a native OS file
    *  drag — a real DragEvent carrying a real File, dispatched at the canvas, which
@@ -128,7 +146,12 @@ try {
       const file = new File([bytes], fname, { type: "image/gif" });
       const dt = new DataTransfer();
       dt.items.add(file);
-      const el = document.querySelector("canvas");
+      // THE DROP TARGET IS THE SVG `.overlay`, NOT THE `<canvas>`. CanvasView binds
+      // ondragover/ondrop on the overlay that sits ABOVE the Skia canvas (it is the
+      // element that owns every pointer gesture), so a DragEvent dispatched at the
+      // canvas hits a node with no handler and is silently ignored — which reads in
+      // the results as "the drop added no item", i.e. exactly like a broken feature.
+      const el = document.querySelector(".overlay") ?? document.querySelector("canvas");
       const r = el.getBoundingClientRect();
       const at = { clientX: Math.round(r.left + r.width / 2), clientY: Math.round(r.top + r.height / 2) };
       for (const type of ["dragover", "drop"]) {
