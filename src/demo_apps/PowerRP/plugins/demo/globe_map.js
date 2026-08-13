@@ -742,6 +742,31 @@ const PRESETS = [
     description: "OpenTopoMap's contour and relief rendering over the Alps, where topography is the whole point. A different provider entirely (CC-BY-SA; Show attribution draws its credit if you turn it on).",
     props: { centerLon: 7.66, centerLat: 45.98, zoom: 11, style: "terrain" },
   },
+  {
+    name: "Night Lights",
+    description: "The globe lit almost entirely by its own dark side: night darkness pushed to the ceiling and the terminator's sun angle rotated round to graze the far edge, so the lit crescent is thin and the rest of the sphere is the deepest black this widget draws. `lightAngle` is a plain DEGREES property here (atmosphere_shader's own schema — not the radians convention rainy_window's identically-named knob uses), so this is a literal -170.",
+    props: { centerLon: 45, centerLat: 10, zoom: 0.6, style: "satellite", nightAmount: 1, limbDarken: 0.5, lightAngle: -170, showAttribution: false },
+  },
+  {
+    name: "Atlantic Disc",
+    description: "A restrained full-disc Earth framing centred on the Atlantic so Africa, Europe and the Americas all read at once, evenly lit with a gentler atmosphere than The Blue Marble so the continents stay the star of the picture rather than the glow around them.",
+    props: { centerLon: -20, centerLat: 5, zoom: 0.55, style: "satellite", rimStrength: 0.6, nightAmount: 0.3, limbDarken: 0.2, lightAngle: -35, showAttribution: false },
+  },
+  {
+    name: "Sepia Atlas",
+    description: "An old-paper-map read on the flat street layer: OpenTopoMap's relief already carries an earthy palette, framed at a wide continental zoom so it reads as an atlas page rather than a navigation view.",
+    props: { centerLon: 15, centerLat: 50, zoom: 3.8, style: "terrain", showAttribution: false },
+  },
+  {
+    name: "Neon Wireframe",
+    description: "The globe pushed toward a sci-fi holographic readout: a tight, bright rim glow with a high falloff power so the light hugs the silhouette in a thin bright line, night side crushed dark so only the limb glow reads.",
+    props: { centerLon: -95, centerLat: 32, zoom: 0.7, style: "osm", rimStrength: 2.4, rimPower: 8, haloWidth: 0.35, nightAmount: 0.95, limbDarken: 0.6, lightAngle: -90, showAttribution: false },
+  },
+  {
+    name: "Ice Planet",
+    description: "Centred on the Antarctic so both the real satellite pole imagery and the shaded polar-cap approximation are visible in the same frame at once, atmosphere haloWidth widened for a thick, cold-looking rim.",
+    props: { centerLon: 0, centerLat: -75, zoom: 1.4, style: "satellite", rimStrength: 1.1, haloWidth: 0.22, nightAmount: 0.4, limbDarken: 0.3, lightAngle: -60, showAttribution: false },
+  },
 ];
 
 export const globeMapPlugin = {
