@@ -586,11 +586,80 @@ export function pathInkRect(state) {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
+/**
+ * THE PAINT-PATH PRESET LIBRARY (R7-39 presets law) — STROKE IDIOMS ONLY, never
+ * the drawing. `paintPoints` is the author's hand-drawn curve (see this file's
+ * header, "IT IS THE AUTHOR'S DRAWING"), so no row here may write it — a preset
+ * that redrew the path to demo a stroke look would be the cardinal content
+ * violation the law forbids. What CAN vary is everything the stroke framework
+ * exposes: paint (stroke colour, `fill` for a closed shape), weight, the two free
+ * ends' caps, the corner join, the universal draw-on window (strokeStart/End +
+ * phase), and screen-space width. Twelve classic drawing/pen media, the same
+ * "recognisable on sight" bar rect.js's card table sets — a viewer should read
+ * "chalk" or "highlighter" from the picture alone, no label needed.
+ *
+ * SPARSE AND STROKE-ONLY, the arrow.js precedent (plugins/arrow.js's 19-row
+ * table: head/dash geometry, never colour or opacity) — this family never
+ * touches the EFFECTS bundle core/registry.withUniversalEffects injects at
+ * registration, so there is no bloom/shadow identity row to carry. "Neon Tube"
+ * is built from screen-space saturated colour alone, on that same restraint —
+ * a bloom effect would need the full six-key OFF identity on every OTHER row
+ * for the hover-leak law, for one preset's glow.
+ *
+ * EVERY ROW WRITES THE SAME KEY SET (the identity law, restated for this
+ * family): stroke, strokeWidth, the two caps, join + miter, the trim window +
+ * phase, screen-space, fill and closed. A row that omitted, say, strokeCapStart
+ * would leave a HOVERED preset's taper cap on after the click — application is
+ * an OVERLAY (app.applyPreset), never a full replace.
+ *
+ * closed:false + fill:null on every row: this family draws OPEN strokes (a pen
+ * idiom is a line, not a silhouette) — the shape stays whatever the author drew,
+ * and Closed / Fill remain the user's own choice, untouched by a stroke preset.
+ *
+ * "Draw-In Reveal" is the one row that moves strokeEnd off 1 — mid-window on
+ * purpose, so applying it visibly shows a PARTIAL stroke; pairs with keyframing
+ * strokeEnd 0→1 across slides for the widget's own "stroke length" animation
+ * (this file's header), which a preset cannot itself keyframe.
+ */
+const PATH_STROKE_TRIM_FULL = { strokeStart: 0, strokeEnd: 1, strokePhase: 0 };
+const PATH_CAPS_ROUND = { strokeCapStart: "round", strokeCapEnd: "round" };
+const PATH_CAPS_FLAT = { strokeCapStart: "flat", strokeCapEnd: "flat" };
+const PATH_JOIN_ROUND = { strokeJoin: "round", strokeMiter: 4 };
+const PATH_SHAPE_OFF = { fill: null, closed: false };
+
+const PRESETS = [
+  { name: "Calligraphy", description: "A broad nib's contrast: a heavy taper at both free ends narrows the stroke to a point, the way a flat pen lifts off the page.",
+    props: { stroke: "#1a1a1a", strokeWidth: 10, strokeCapStart: "taper", strokeCapEnd: "taper", strokeJoin: "round", strokeMiter: 4, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Felt Marker", description: "A thick round-tipped marker: a fat, fully opaque stroke with soft round ends and no sharp corners anywhere along it.",
+    props: { stroke: "#e63946", strokeWidth: 16, ...PATH_CAPS_ROUND, ...PATH_JOIN_ROUND, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Ballpoint", description: "A thin, precise, fully opaque line — the everyday pen stroke every other idiom in this table departs from.",
+    props: { stroke: "#1d3461", strokeWidth: 2, ...PATH_CAPS_FLAT, strokeJoin: "miter", strokeMiter: 4, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Chalk", description: "A desaturated stick of chalk on slate: a wide, pale, slightly translucent stroke with soft round ends — dusty rather than crisp.",
+    props: { stroke: "#e8e4d8cc", strokeWidth: 14, ...PATH_CAPS_ROUND, ...PATH_JOIN_ROUND, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Neon Tube", description: "A glowing acrylic tube: a slim, screaming-saturated stroke held at a constant on-screen width, so it reads as a light source at any zoom rather than a drawn line.",
+    props: { stroke: "#00f0ffee", strokeWidth: 5, ...PATH_CAPS_ROUND, ...PATH_JOIN_ROUND, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: true, ...PATH_SHAPE_OFF } },
+  { name: "Dashed Sketch", description: "A construction line broken into short gapped dashes via the universal stroke-trim window, phased so the rhythm starts a beat in rather than exactly at the first anchor.",
+    props: { stroke: "#7a7a7a", strokeWidth: 2, ...PATH_CAPS_FLAT, strokeJoin: "miter", strokeMiter: 4, strokeStart: 0.04, strokeEnd: 0.96, strokePhase: 0.15, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Draw-In Reveal", description: "The stroke caught mid-draw, trimmed to its first half — apply this and then keyframe Stroke End from here to 1 across a slide for the path to finish drawing itself on screen.",
+    props: { stroke: "#2ec4b6", strokeWidth: 7, ...PATH_CAPS_ROUND, ...PATH_JOIN_ROUND, strokeStart: 0, strokeEnd: 0.5, strokePhase: 0, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Airbrush", description: "A soft wide spray: a very wide, translucent stroke with round ends, so overlapping passes would build up density the way an airbrush does.",
+    props: { stroke: "#ff6f9955", strokeWidth: 30, ...PATH_CAPS_ROUND, ...PATH_JOIN_ROUND, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Technical Pen", description: "A drafting pen's hairline: a fixed, very thin, fully opaque stroke with flat ends and mitered corners — precise construction geometry, not an expressive mark.",
+    props: { stroke: "#111111", strokeWidth: 1, ...PATH_CAPS_FLAT, strokeJoin: "miter", strokeMiter: 8, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Crayon", description: "A waxy crayon stroke: a warm saturated colour, uneven-reading round caps, and a width between marker and pen — a child's drawing implement.",
+    props: { stroke: "#f4a300e6", strokeWidth: 12, ...PATH_CAPS_ROUND, ...PATH_JOIN_ROUND, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Highlighter", description: "A translucent wide band meant to sit OVER existing content: a bright yellow stroke at low opacity-reading alpha, flat ends so a highlighted run stops cleanly.",
+    props: { stroke: "#fff44f66", strokeWidth: 24, ...PATH_CAPS_FLAT, ...PATH_JOIN_ROUND, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+  { name: "Ink Wash", description: "A brush loaded with diluted ink: a broad, softly translucent stroke with round ends that bleeds slightly at the edges, the way wet ink pools on paper.",
+    props: { stroke: "#1a1a2e99", strokeWidth: 20, ...PATH_CAPS_ROUND, ...PATH_JOIN_ROUND, ...PATH_STROKE_TRIM_FULL, strokeScreenSpace: false, ...PATH_SHAPE_OFF } },
+];
+
 export const paintPathPlugin = {
   type: "paint_path",
   ephemeral: EPHEMERAL.NONE,
   title: "Paint Path",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  presets: PRESETS,
   // THE CREATION GESTURE (web/paintPathDraw.js): click each anchor, Shift to
   // axis-lock, Enter or double-click to finish — the polygon's exact repeating-
   // "point" flow. One string; the geometry constructor is paintPathFromWorldPoints.
