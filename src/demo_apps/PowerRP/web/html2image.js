@@ -289,8 +289,20 @@ ${html}
   var finish = function () {
     // The POST-SCRIPT markup: what the author's scripts actually produced, which
     // is what gets rasterized. See this module's TWO PHASES note.
+    //
+    // XMLSerializer, NOT \`outerHTML\`, AND THIS IS NOT A STYLE CHOICE. \`outerHTML\`
+    // produces HTML serialization, in which VOID ELEMENTS ARE UNCLOSED — \`<meta
+    // charset="utf-8">\`, \`<br>\`, \`<img src=…>\`. foreignObject content must be
+    // well-formed XHTML, so such markup makes the <img>-SVG decode fail, and the
+    // failure surfaces one layer away as "the browser could not decode the rendered
+    // page as an image" — a sentence that points at the author's html when the
+    // offender was OUR OWN injected <meta> tag. MEASURED: the produced default card
+    // failed XML parsing with "Unexpected closing tag: head != meta" at line 6.
+    // XMLSerializer emits <meta charset="utf-8"/> and self-closes every void element
+    // the AUTHOR wrote too, which is the general fix rather than a patch for the one
+    // tag this file happens to inject.
     try {
-      report({ ok: true, html: document.documentElement.outerHTML });
+      report({ ok: true, html: new XMLSerializer().serializeToString(document.documentElement) });
     } catch (e) {
       report({ ok: false, error: String(e && e.message || e) });
     }
@@ -409,10 +421,34 @@ async function runInSandbox(html, width, height) {
   const token = `htmlcap-${Math.random().toString(36).slice(2)}-${Date.now()}`;
   const frame = document.createElement("iframe");
   frame.setAttribute("sandbox", CAPTURE_SANDBOX);
-  // OFFSCREEN, NOT `display: none`. A hidden frame is not laid out, so element
-  // sizes read as 0 and any script measuring its container produces a degenerate
-  // layout. Positioning it far off-screen keeps it fully laid out and invisible.
-  frame.style.cssText = `position: fixed; left: -20000px; top: 0; width: ${width}px; height: ${height}px; border: 0; visibility: hidden;`;
+  // ON-SCREEN AND INVISIBLE — NOT OFF-VIEWPORT, AND NOT `display: none`. Both of the
+  // obvious ways to hide this frame break it, for two DIFFERENT reasons, and the
+  // second one cost a whole probe suite before it was measured:
+  //
+  //   `display: none` — the frame is not laid out at all, so element sizes read as 0
+  //     and any script measuring its container produces a degenerate layout.
+  //   `left: -20000px` (WHAT THIS LINE USED TO BE) — the frame IS laid out, but an
+  //     OFF-VIEWPORT frame receives EXACTLY ONE requestAnimationFrame tick and is
+  //     then stalled by the compositor. captureDocument's report path needs TWO
+  //     (fonts.ready → rAF → rAF, so a script that writes DOM in its own load
+  //     handler has been laid out before we serialize it). So the second tick never
+  //     arrived, the frame never reported, and EVERY capture died at the 15s timeout
+  //     — including one built from this widget's own shipped DEFAULT_HTML.
+  //
+  // MEASURED, not reasoned: a standalone CDP repro counting a child frame's rAF
+  // ticks gives 1 for `left:-20000px`, 1 for `clip-path: inset(100%)` (the first
+  // proposed fix — it stalls exactly like off-viewport, which is why the shipped
+  // combo below does NOT use it), and 10 for both `opacity: 0` and an on-screen
+  // `visibility: hidden`. This is NOT headless-specific: offscreen-frame throttling
+  // is ordinary compositor behaviour, so the old positioning was a latent defect in
+  // real editors too, not merely in the test harness.
+  //
+  // THE COMBO, and what each token is for: the frame sits at the origin (so it is
+  // genuinely on-screen and ticks), `visibility: hidden` + `opacity: 0` make it
+  // invisible with no flash, and `pointer-events: none` is belt-and-braces over the
+  // fact that a hidden frame is already not hit-tested — verified: with the frame
+  // present, elementFromPoint at its own corner still returns the page underneath.
+  frame.style.cssText = `position: fixed; left: 0; top: 0; width: ${width}px; height: ${height}px; border: 0; opacity: 0; pointer-events: none; visibility: hidden;`;
   frame.setAttribute("aria-hidden", "true");
   try {
     return await new Promise((resolve, reject) => {
