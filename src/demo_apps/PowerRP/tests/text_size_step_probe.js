@@ -20,6 +20,9 @@
  *      uniform one it shows the plain number (the shape text_wysiwyg_probe reads).
  *  P4  the eight box-level Inspector rows are GONE on a fully-stamped value and
  *      PRESENT on a bare one — R6-13.4 through the real panel, not the registry.
+ *      Since 15a7d333 the panel also holds a "Size" COMPOUND over w/h and keeps X
+ *      and Y inside a "Position" one, so P4 opens every compound and reads the
+ *      box rows from the non-geometry sections; see GEOMETRY_SECTION.
  *
  * Spawns its OWN vite (isolated). Run from SvelteLib root:
  *   node src/demo_apps/PowerRP/tests/text_size_step_probe.js [shotDir]
@@ -258,32 +261,84 @@ try {
     paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }],
   };
   const BOX_ROWS = ["Font", "Size", "Bold", "Align", "Line spacing", "Char spacing", "Word spacing", "Color"];
-  /** Query (in page). The Inspector row LABELS visible for the selected item. */
+  // THE SECTION THE BOX-ROW CHECK LOOKS AWAY FROM, and only that check.
+  // Commit 15a7d333 ("Compound property rows") added a compound over w/h
+  // (core/properties.js COMPOUNDS.wh, category "transform" → title "Transform")
+  // LABELLED "Size", so the panel briefly held TWO rows by that name: the box's
+  // FONT size (plugins/text.js:462, category "text") and the geometry pair.
+  // Matching by label across the whole panel therefore reported `still showing:
+  // Size` for a stamped value whose font-size row HAD correctly hidden — the
+  // label had stopped being a unique handle; the requirement never changed.
+  //
+  // THAT COLLISION IS GONE: the compound was renamed "W × H" on 2026-08-22 (the
+  // newcomer yields — see COMPOUNDS.wh). This scoping STAYS anyway, and not out
+  // of inertia: matching a row by its visible label across a whole panel is a
+  // weak handle in general, and every box-level typography row is declared in
+  // `text` or `formatting` and NONE in `transform`, so asking the section that
+  // owns them is both narrower and truer to what the check means. A font-size row
+  // that fails to hide still sits under "Text" and is still caught.
+  const GEOMETRY_SECTION = "Transform";
+  /** Query (in page). The Inspector row LABELS visible for the selected item,
+   *  across the whole panel. */
   const visibleRowLabels = () => page.evaluate(() =>
     JSON.stringify([...document.querySelectorAll(".inspector .row")].map((r) => r.querySelector(".label")?.textContent?.trim() ?? ""))).then(JSON.parse);
+  /** Query (in page). The same labels, but only from category sections OTHER than
+   *  `GEOMETRY_SECTION` — the set the BOX_ROWS lookup is unambiguous over. */
+  const boxRowLabels = () => page.evaluate((skip) =>
+    JSON.stringify([...document.querySelectorAll(".inspector .prop-category")]
+      .filter((c) => (c.querySelector(".cat-title")?.textContent?.trim() ?? "") !== skip)
+      .flatMap((c) => [...c.querySelectorAll(".row")].map((r) => r.querySelector(".label")?.textContent?.trim() ?? ""))),
+  GEOMETRY_SECTION).then(JSON.parse);
   async function selectAndReadRows(id, shot) {
     await page.evaluate((i) => { window.__powerrp_app.selection = i; }, id);
     await sleep(400);
     // Every collapsible category must be OPEN, or "the row is absent" would just
     // mean "its accordion is folded" — the boolean_uniformity_probe idiom.
-    await page.evaluate(() => { for (const h of document.querySelectorAll(".inspector .cat-head[aria-expanded='false']")) h.click(); });
+    //
+    // THE SELECTOR WAS `.cat-head` AND MATCHED NOTHING. Inspector.svelte's button
+    // has ALWAYS been `.cat-header` (`git log -S 'cat-head"'` on that file returns
+    // no commit), so this sweep was a silent no-op and the safeguard it describes
+    // did not exist — the check passed only because a fresh origin starts with
+    // every category expanded. A collapsed category REMOVES its rows from the DOM
+    // (`{#if !collapsed[cat.id]}`), so a stale `collapsed` setting would have read
+    // as "the row hid correctly". Fixed, and then ASSERTED below rather than
+    // trusted, which is the only way a no-op sweep announces itself.
+    await page.evaluate(() => { for (const h of document.querySelectorAll(".inspector .cat-header[aria-expanded='false']")) h.click(); });
     await sleep(250);
+    // COMPOUND DISCLOSURES TOO, for the same reason and since the same commit: a
+    // leaf inside a COLLAPSED compound is not in the DOM either, so "X is absent"
+    // would mean "Position is folded". X and Y became leaves of the "Position"
+    // compound in 15a7d333 and are read below.
+    await page.evaluate(() => {
+      for (const t of document.querySelectorAll(".inspector .row.compound-row .compound-twisty"))
+        if (t.getAttribute("aria-expanded") === "false") t.click();
+    });
+    await sleep(250);
+    const stillFolded = await page.evaluate(() => ({
+      categories: [...document.querySelectorAll(".inspector .cat-header[aria-expanded='false']")].length,
+      compounds: [...document.querySelectorAll(".inspector .compound-twisty[aria-expanded='false']")].length,
+    }));
+    assert(stillFolded.categories === 0 && stillFolded.compounds === 0,
+      `P4: every category and compound is OPEN before rows are read, or "absent" would only mean "folded" (${JSON.stringify(stillFolded)})`);
     if (shot && shotDir) await page.screenshot({ path: resolve(shotDir, shot) });
-    return visibleRowLabels();
+    return { all: await visibleRowLabels(), box: await boxRowLabels() };
   }
 
   const bareId = await loadText({ runs: [{ text: "Here's the equation:" }], paras: [{}] }, { size: BOX_SIZE });
   const bareLabels = await selectAndReadRows(bareId, "P4-bare-rows-present.png");
-  const missingOnBare = BOX_ROWS.filter((l) => !bareLabels.includes(l));
+  const missingOnBare = BOX_ROWS.filter((l) => !bareLabels.box.includes(l));
   assert(missingOnBare.length === 0, `P4: a BARE value keeps all eight box rows (missing: ${missingOnBare.join(", ")})`);
 
   const stampedId = await loadText(STAMPED, { size: BOX_SIZE });
   const stampedLabels = await selectAndReadRows(stampedId, "P4-stamped-rows-hidden.png");
-  const stillThere = BOX_ROWS.filter((l) => stampedLabels.includes(l));
+  const stillThere = BOX_ROWS.filter((l) => stampedLabels.box.includes(l));
   assert(stillThere.length === 0, `P4: a FULLY STAMPED value hides all eight (still showing: ${stillThere.join(", ")})`);
   // …and the rows that have no run/paragraph twin must survive the same value.
+  // X and Y are read from the OPENED "Position" compound (15a7d333) — they are no
+  // longer top-level rows, but the requirement is about them not HIDING with the
+  // typography sweep, which is exactly what this still asserts.
   for (const label of ["V-Align", "Opacity", "X", "Y"])
-    assert(stampedLabels.includes(label), `P4: "${label}" has no per-run/per-paragraph twin and must NOT hide`);
+    assert(stampedLabels.all.includes(label), `P4: "${label}" has no per-run/per-paragraph twin and must NOT hide`);
 
   if (errors.length) fails.push(...errors.map((e) => `unexpected error: ${e}`));
   if (fails.length) { console.error("SIZE-STEP PROBE FAILURES:\n" + fails.join("\n")); process.exit(1); }

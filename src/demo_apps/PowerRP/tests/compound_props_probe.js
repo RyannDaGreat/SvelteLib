@@ -56,7 +56,7 @@ const SETTLE_MS = 250;
 // what the USER SEES — if a rename happened, the probe should notice it, not
 // silently follow it.
 const POSITION_LABEL = "Position";
-const SIZE_LABEL = "Size";
+const SIZE_LABEL = "W × H"; // the w/h COMPOUND (core/properties.js COMPOUNDS.wh). It was "Size" until 2026-08-22, when it yielded that word to plugins/text.js's older font-size row — two rows cannot share one label, and this one names the pair it edits.
 
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),

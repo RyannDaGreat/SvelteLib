@@ -2770,7 +2770,16 @@ export const COMPOUNDS = {
   // (backburner AF) hangs on: a chain is a statement about the RATIO of two
   // leaves, so it belongs on the row that owns both of them and nowhere else.
   wh: {
-    label: "Size",
+    // "W × H", NOT "Size" — THE NEWCOMER YIELDS (2026-08-22). This compound landed
+    // in 15a7d333 wearing the label "Size", and plugins/text.js:462 has called the
+    // FONT size row "Size" since long before it. On a selected text widget BOTH are
+    // on screen at once (different accordions, so nothing crashes) and the label
+    // stops being a handle for either — which is exactly how tests/text_size_step_probe.js
+    // broke: its box-row lookup found the wrong "Size" and had to be scoped by
+    // category to work at all. A label is what an author points at; two rows cannot
+    // share one. The older meaning keeps the word, and the pair this row actually
+    // edits names itself.
+    label: "W × H",
     editor: "pad2d",
     category: "transform",
     aspectLock: true,

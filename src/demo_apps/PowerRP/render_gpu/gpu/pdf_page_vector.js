@@ -9,9 +9,18 @@
  * vector sub-list ON TOP when the page is safe, and plugins/pdf_page.js emit()
  * prefers it.
  *
- * ── WHY THE LEGACY pdf.js BUILD (node + browser, no worker) ───────────────────
- * gpu/pdf_page_raster.js loads the MAIN pdfjs build + a Worker (Vite `?url`) to
- * rasterize fast in the browser. This module instead loads
+ * ── WHY THE LEGACY pdf.js BUILD, AND WHAT IT IS *NOT* A CONTRAST WITH ────────
+ * THIS PARAGRAPH WAS WRONG UNTIL 2026-08-22, and the way it was wrong is the
+ * reason its "future optimization" note below was never taken up. It said
+ * *"gpu/pdf_page_raster.js loads the MAIN pdfjs build + a Worker … this module
+ * instead loads the legacy build"* — a contrast between two builds. There is no
+ * such contrast: `pdf_page_raster.js:158` loads
+ * `pdfjs-dist/legacy/build/pdf.mjs` too, and its worker at
+ * `pdfjs-dist/legacy/build/pdf.worker.mjs?url` (:165). BOTH paths are on legacy;
+ * what differs is only that the raster path additionally spins a Worker.
+ *
+ * So the choice here is not a divergence to justify — it is the same build, and
+ * the reasons below are why LEGACY is right for both. This module loads
  * `pdfjs-dist/legacy/build/pdf.mjs`, which:
  *   - runs in BARE NODE with no Worker and no DOM (verified) — so the vector
  *     extraction path (operator list + viewport are plain data, no canvas) works
@@ -20,10 +29,13 @@
  *     import graph that reaches this file (plugins/index.js → plugins/pdf_page.js
  *     → here) never fails to parse — the import is done LAZILY inside loadPdfjs()
  *     regardless, mirroring pdf_page_raster's bare-node-safety lesson.
- * Cost: this is a SEPARATE pdfjs instance from the raster path's main-build copy
- * (two parses of the same document). Accepted for P1; consolidating both onto one
- * build is a flagged future optimization (would touch pdf_page_raster's worker
- * loader — out of P1's fence).
+ * Cost: this is a SEPARATE pdfjs INSTANCE from the raster path's (two parses of
+ * the same document) — not, as this line used to say, a separate BUILD. They are
+ * already the same build, so "consolidate both onto one build" was a task with
+ * nothing to do, which is presumably why nobody did it. THE REAL REMAINING COST
+ * is the second `import()` and the second `getDocument` parse; sharing them means
+ * ONE document cache both paths read, which is a genuine piece of work (the raster
+ * side owns a Worker and this side must run without one) and is still open.
  *
  * ── ASYNC + LOUD-FALLBACK CONTRACT (mirrors pdf_page_raster.js) ───────────────
  *   - ensurePdfPageVector(src, page) kicks an idempotent extract+classify; a

@@ -39,6 +39,11 @@
  *     would catch a future "simplification" that has commitCodeModal write the
  *     value directly.
  *
+ * THE X ROW IS REACHED THROUGH A DISCLOSURE NOW. Commit 15a7d333 made `x`/`y`
+ * leaves of a "Position" compound that is collapsed at rest, so the probe opens
+ * that compound before reading the NumericField surface (see openCompound).
+ * Rotation and Blend mode are still top-level rows and are read directly.
+ *
  * Run from the SvelteLib repo root:
  *   node src/demo_apps/PowerRP/tests/equation_code_modal_probe.js
  */
@@ -122,7 +127,45 @@ try {
     await sleep(250);
   }
 
+  /**
+   * Command. Opens a COMPOUND row's disclosure so its LEAF rows render as
+   * ordinary rows, and fails loudly if the disclosure is not there.
+   *
+   * THE OLD SPELLING AND THE NEW ONE. `X` was a top-level Inspector row when this
+   * probe was written. Commit 15a7d333 ("Compound property rows: XY and WH group
+   * over their own leaves") made `x`/`y` LEAVES of a "Position" compound
+   * (core/properties.js COMPOUNDS.xy) that is CLOSED at rest, so `findRow("X")`
+   * returned undefined and this probe crashed with a TypeError at its first
+   * `.code-open` click — a stale SPELLING, not a broken product.
+   *
+   * THE REQUIREMENT IS UNCHANGED: NumericField is one of the three surfaces that
+   * must carry {} on an equation and must not carry it on a literal, and X is
+   * still the NumericField row this probe reads it from. Only the path to the row
+   * changed, so the probe walks that path instead of asserting something weaker
+   * about the collapsed compound.
+   *
+   * Clicked through the row's OWN twisty rather than by seeding the
+   * `powerrp.inspectorCompoundOpen` localStorage key: a renamed key would
+   * silently leave the compound shut and turn this into a confusing "row missing"
+   * red, while a moved twisty throws here naming exactly what moved.
+   */
+  async function openCompound(label) {
+    const found = await page.evaluate((expr) => {
+      const twisty = eval(expr)?.querySelector(".compound-twisty");
+      if (!twisty) return false;
+      if (twisty.getAttribute("aria-expanded") !== "true") twisty.click();
+      return true;
+    }, findRow(label));
+    if (!found) throw new Error(`no compound row labelled "${label}" carrying a .compound-twisty — the Inspector's compound disclosure moved`);
+    await sleep(250);
+  }
+
   // ── A LITERAL row has NO {} ────────────────────────────────────────────────
+  // X is a leaf of the "Position" compound since 15a7d333; open it so the
+  // NumericField row under test is present (see openCompound).
+  await openCompound("Position");
+  ok(await page.evaluate((expr) => !!eval(expr), findRow("X")),
+    "the X leaf row renders once its Position compound is open");
   ok((await codeIcons("X"))?.length === 0, `a LITERAL row shows no {} button; got ${JSON.stringify(await codeIcons("X"))}`);
 
   // ── All three equation surfaces DO ─────────────────────────────────────────

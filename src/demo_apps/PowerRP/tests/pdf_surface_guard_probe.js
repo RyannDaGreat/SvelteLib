@@ -11,8 +11,25 @@
  * null/OOB; WITH the fix they clamp to the surface cap + reportOnce. This is the
  * probe that actually distinguishes the two.
  *
- * Run (dev server must be up):
- *   node tests/pdf_surface_guard_probe.js [http://localhost:3637]
+ * NO SCREENSHOTS, DELIBERATELY (the pdf_drop_probe note): every assertion is a
+ * `page.evaluate` read or a console line, so this probe is unaffected by the host
+ * Chrome capture hang that turns 64 other probes into bare ProtocolErrors
+ * (CLAUDE.md's preflight note). Surface allocation needs no picture.
+ *
+ * ── SELF-CONTAINED, AS OF 2026-08-22 ─────────────────────────────────────────
+ * This probe used to `page.goto("http://localhost:3637")` — a HARDCODED default
+ * naming the dev server a human happens to run. Under the gate nothing listens
+ * there, so it died at `goto` with net::ERR_CONNECTION_REFUSED and a puppeteer
+ * stack: it was measuring the ENVIRONMENT, not the product, exactly the defect
+ * run_all.mjs's own header blames for nine of the first sweep's twelve failures.
+ * It now spins its OWN Vite server on port 0 like its ~160 siblings (the idiom in
+ * pdf_pan_leak_probe.js / route_insert_probe.js). No backend is needed: every
+ * allocation here is made in-page from the app's own modules.
+ *
+ * Run (spins its own server):
+ *   node src/demo_apps/PowerRP/tests/pdf_surface_guard_probe.js
+ * Optional: point it at an editor you already have running instead —
+ *   node src/demo_apps/PowerRP/tests/pdf_surface_guard_probe.js http://localhost:3637
  */
 import { launchBrowser } from "./puppeteerLaunch.js";
 import path from "path";
@@ -20,19 +37,42 @@ import { fileURLToPath } from "url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const POWERRP = path.resolve(HERE, ".."); // tests/ → PowerRP root
-const URL = process.argv[2] || "http://localhost:3637";
+/** An explicit http(s) argument means "use the editor already running there";
+ *  anything else (including no argument) means "spin your own". */
+const EXTERNAL_URL = process.argv[2] && /^https?:\/\//.test(process.argv[2]) ? process.argv[2] : null;
 const CK = `/@fs${path.join(POWERRP, "render_gpu/skia/browser_canvaskit.js")}`;
 const SURF = `/@fs${path.join(POWERRP, "render_gpu/skia/browser_surface.js")}`;
 const GSVC = "/gpuService.js";
 
+/** How long the app gets to publish `window.__powerrp_app`. Generous for the same
+ *  reason pdf_pan_leak_probe.js states: the gate runs three browser probes at
+ *  once, so a cold Vite start plus CanvasKit init can take past a minute under
+ *  that contention. A genuinely dead boot still fails, just later. (Was 20 s,
+ *  which was sized for a warm server a human had already started.) */
+const APP_READY_MS = 180_000;
+
 async function main() {
+  const webRoot = path.resolve(HERE, "../web");
+  let server = null, url = EXTERNAL_URL;
+  if (!EXTERNAL_URL) {
+    const { createServer } = await import("vite");
+    // HMR OFF + no watcher: a source edit mid-run would reload the page and kill
+    // the measurement (cli/render_job.js disables it for a render for this reason).
+    server = await createServer({
+      configFile: path.resolve(webRoot, "vite.config.js"),
+      server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: { ignored: ["**/*"] } },
+    });
+    await server.listen();
+    url = `http://127.0.0.1:${server.httpServer.address().port}/`;
+  }
+
   const browser = await launchBrowser();
   const page = await browser.newPage();
   const clampReports = [];
   page.on("console", (m) => { if (m.type() === "error") { const s = m.text(); if (/clamp|MAX_SURFACE_DIM|heap overrun/i.test(s)) clampReports.push(s); } });
   page.on("pageerror", (e) => console.log("PAGEERR:", String(e).slice(0, 160)));
-  await page.goto(URL, { waitUntil: "networkidle2" });
-  await page.waitForFunction(() => !!window.__powerrp_app, { timeout: 20000 });
+  await page.goto(url, { waitUntil: "networkidle2" });
+  await page.waitForFunction(() => !!window.__powerrp_app, { timeout: APP_READY_MS });
 
   const res = await page.evaluate(async (CK, SURF, GSVC) => {
     const out = {};
@@ -71,6 +111,7 @@ async function main() {
   }, CK, SURF, GSVC).catch((e) => ({ error: String(e && e.stack || e).slice(0, 300) }));
 
   await browser.close();
+  await server?.close();
   console.log(JSON.stringify(res, null, 2));
   console.log(`\nClamp reports captured: ${clampReports.length}`);
   for (const r of clampReports.slice(0, 8)) console.log("  " + r.slice(0, 180));

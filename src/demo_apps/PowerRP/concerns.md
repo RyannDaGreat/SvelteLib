@@ -982,3 +982,44 @@ and what went wrong along the way.
   and killed under the gate's x8 concurrency, PASSES standalone (10 checks). CLAUDE.md
   already records this; noting the re-measurement so the next reader does not spend
   the time again.
+
+## 2026-08-22 — repairing the browser gate, and three defects the probes were right about
+
+Six lanes over the browser reds the pull left. Four landed (two died on a
+machine-sleep API error and were resumed); every fix was checked by a verifier whose
+ONE brief was "did this pass by asserting LESS?" — none had.
+
+- **TWO PROBES WERE NOT FAILING, THEY WERE CRASHING.** `evaluate_affordance_probe` and
+  `equation_code_modal_probe` threw a TypeError after ONE check each, so ~45
+  assertions had never executed — and the gate reports a crash the same way it
+  reports a failure, so nobody knew the coverage was gone. Compound rows (15a7d333)
+  moved X/Y into a COLLAPSED "Position" group; the probes now open it (loudly, by its
+  own twisty, throwing if it is absent) and all 45 run. **A red probe may be hiding a
+  much bigger hole than the one it names — count the checks that ACTUALLY RAN.**
+- **TWO PROBES WERE MEASURING THE HOST.** `pdf_surface_guard_probe` and
+  `pdf_zoom_crash_probe` are the only ones of ~160 that never spin their own Vite
+  server: they `page.goto` a hardcoded port and fail with ERR_CONNECTION_REFUSED when
+  nothing is listening. They now self-spin like their siblings.
+- **`text_size_step_probe`'s expand sweep had ALWAYS been a no-op**: it selected
+  `.cat-head`, a class that has never existed in this repo (`git log -S` finds no
+  commit for it; the real one is `.cat-header`). It "passed" by never expanding
+  anything. Fixed, and it now ASSERTS that no category or compound is left folded —
+  a sweep that can silently do nothing is not a sweep.
+- **THE PROBES WERE RIGHT ABOUT THREE PRODUCT DEFECTS**, and refusing to go green is
+  how they said so:
+  · TWO Inspector rows both labelled "Size" — the new w/h compound and text's
+    long-standing FONT size row, on screen together for a text widget. The newcomer
+    yields: the compound is "W × H". A label is what an author points at.
+  · `.varspanel .var-kind { flex: none; width: 84px }` overlapped the ƒ affordance by
+    28.84px. THE CAUSE IS TWO NUMBERS THAT ARE THE SAME NUMBER: `--a-var-kind-w` is
+    84px and `LABEL_FRAC_DEFAULT` (0.23) is DERIVED from 84px against a 362px row —
+    it is the fraction that makes the label cell exactly 84px. So the picker alone
+    wanted the whole cell, before the name field and before the 14px ƒ gutter, and
+    `flex: none` let it take it. Now `0 1 auto` + `min-width: 0`.
+  · `render_gpu/gpu/pdf_page_vector.js`'s header drew a contrast between "the MAIN
+    pdfjs build" used by the raster path and the legacy build used here. Both are on
+    legacy (`pdf_page_raster.js:158`). The false contrast is why its own flagged
+    optimization ("consolidate both onto one build") was never taken up: that task
+    had nothing to do, while the real cost — a second `getDocument` parse — went
+    unnamed. **A doc hazard does not merely mislead; it can retire a real task by
+    describing it as already-hard and pointless.**

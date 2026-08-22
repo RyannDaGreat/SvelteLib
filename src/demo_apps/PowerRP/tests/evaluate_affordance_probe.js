@@ -15,6 +15,11 @@
  *   - an ERRORING equation's button is aria-disabled and carries the REASON
  *     rather than the promise, and clicking it writes NOTHING.
  *
+ * THE ROW UNDER TEST IS X, WHICH IS NO LONGER A TOP-LEVEL ROW. Commit 15a7d333
+ * grouped `x`/`y` under a "Position" compound that is COLLAPSED at rest, so the
+ * probe opens that disclosure first (see openCompound). The requirement being
+ * pinned did not change — only where the row is reached from.
+ *
  * The icon is asserted by NAME (the <iconify-icon icon="…"> attribute) rather
  * than by pixels: an icon that does not exist in the set renders an EMPTY
  * button with no build error (the 3e79a24 bug), so a screenshot would look
@@ -109,7 +114,47 @@ try {
     await new Promise((r) => setTimeout(r, 200));
   }
 
+  /**
+   * Command. Opens a COMPOUND row's disclosure so its LEAF rows render as
+   * ordinary rows, and fails loudly if the disclosure is not there.
+   *
+   * WHY THIS EXISTS — THE OLD SPELLING AND THE NEW ONE. `X` was a top-level
+   * Inspector row when this probe was written. Commit 15a7d333 ("Compound
+   * property rows: XY and WH group over their own leaves") made `x` and `y`
+   * LEAVES of a "Position" compound (core/properties.js COMPOUNDS.xy) that is
+   * CLOSED at rest, so `findRow("X")` returned undefined and this probe crashed
+   * with a TypeError before its first assertion — a stale SPELLING, not a broken
+   * product.
+   *
+   * THE REQUIREMENT IS UNCHANGED and is still asserted against the same row: an
+   * ordinary numeric row carries ƒ while it holds a literal and "1 2 3" while it
+   * holds an equation, one slot, mutually exclusive. So the probe opens the
+   * compound rather than being weakened to accept whatever the collapsed row
+   * happens to render inline.
+   *
+   * Clicked through the row's OWN twisty rather than by seeding the
+   * `powerrp.inspectorCompoundOpen` localStorage key, because the disclosure a
+   * user would use is the one the probe should use — and because a renamed
+   * storage key would silently leave the compound shut, while a moved twisty
+   * throws here with a sentence naming what moved.
+   */
+  async function openCompound(label) {
+    const found = await page.evaluate((expr) => {
+      const twisty = eval(expr)?.querySelector(".compound-twisty");
+      if (!twisty) return false;
+      if (twisty.getAttribute("aria-expanded") !== "true") twisty.click();
+      return true;
+    }, findRow(label));
+    if (!found) throw new Error(`no compound row labelled "${label}" carrying a .compound-twisty — the Inspector's compound disclosure moved`);
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
   // ── A LITERAL row shows ƒ, and NOT the "1 2 3" button ──────────────────────
+  // X lives inside the "Position" compound since 15a7d333; open it so the row
+  // under test is present (see openCompound).
+  await openCompound("Position");
+  ok(await page.evaluate((expr) => !!eval(expr), findRow("X")),
+    "the X leaf row renders once its Position compound is open");
   const literalIcons = await slotIcons("X");
   ok(literalIcons?.includes("mdi:function-variant"), `literal row shows the ƒ button; got ${JSON.stringify(literalIcons)}`);
   ok(!literalIcons?.includes("mdi:numeric"), `literal row does NOT show the "1 2 3" button (the user's "you only see that when it is an equation"); got ${JSON.stringify(literalIcons)}`);

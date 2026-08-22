@@ -117,6 +117,24 @@ try {
   };
   await expand();
 
+  /** Command. Drops down every COMPOUND row's disclosure, so its LEAF rows render
+   *  as ordinary rows — `expand()` one level down.
+   *
+   *  WHY: commit 15a7d333 ("Compound property rows: XY and WH group over their own
+   *  leaves") made `w`/`h` leaves of a "W × H" compound and `x`/`y` leaves of a
+   *  "Position" one, both COLLAPSED at rest. A collapsed compound does not render
+   *  its children at all, so a probe asking whether a row is PRESENT gets "no" for
+   *  a row that is merely folded — the same trap `expand()` exists for one level
+   *  up. Called where row PRESENCE is the assertion; the rest of this probe reads
+   *  panels whose shape does not depend on it. */
+  const openCompounds = async () => {
+    await page.evaluate(() => {
+      for (const t of document.querySelectorAll(".inspector .row.compound-row .compound-twisty"))
+        if (t.getAttribute("aria-expanded") === "false") t.click();
+    });
+    await sleep(400);
+  };
+
   // ── 1 + 6. THE INTERSECTION ────────────────────────────────────────────────
   const panel = await page.evaluate(() => {
     const labels = [...document.querySelectorAll(".inspector .row .label")].map((e) => e.textContent.trim());
@@ -295,6 +313,13 @@ try {
   });
   await sleep(800);
   await expand();
+  // "Width" is a LEAF of the "W × H" compound (labelled "Size" when 15a7d333 landed it) and is not rendered
+  // while that compound is folded, so this presence check opens the disclosures
+  // before reading (see openCompounds). The requirement is unchanged — the
+  // single-selection panel renders the plugin's OWN rows whole — and it is still
+  // asserted on the same three labels rather than on the compound's parent row,
+  // which would only prove the grouping exists and not that the leaf survived.
+  await openCompounds();
   const singleDom = await page.evaluate(() => ({
     // Row COUNT and LABELS are the single-selection panel's whole shape; if the
     // multi work had leaked into it, one of these would move.
@@ -593,6 +618,17 @@ try {
     const headerRow = cat.querySelector(".cat-header-row");
     const bubble = headerRow?.querySelector(".kf-section");
     const diamond = bubble?.querySelector(".keybtn");
+    // A FULL-SCALE ROW DIAMOND — deliberately NOT just the first `.keybtn` in the
+    // section. Commit 15a7d333 put a COMPOUND row ("Position") at the top of
+    // Transform, and a compound's diamond IS SectionKeyframeControls, so it wears
+    // `.kf-section` and renders at --a-kf-section-scale like a header bubble does
+    // ("the diamond is the section bubble at property scale", 15a7d333). The old
+    // selector picked that one and compared the section bubble against another
+    // section-scale control: 14px vs 14px, ratio 1.00. The REQUIREMENT is
+    // unchanged — a section bubble is ~30% smaller than an ORDINARY ROW's diamond
+    // — so the probe now names what it always meant: the first diamond that is not
+    // itself section-scale. Selecting a specific row by label instead would go
+    // stale the next time Transform's first plain row moves.
     const rowDiamond = cat.querySelector(".cat-rows .kf-controls .keybtn");
     const box = (e) => (e ? Math.round(e.getBoundingClientRect().width) : null);
     return {

@@ -39,8 +39,17 @@
  * .paint-sub-label, and the Inspector's own rows fixed by 4b8da20):
  *   - a gradient STOP's offset (.listfield .list-field) — the user's repro,
  *     14.55px of overlap before, 0.00px after;
- *   - a GLOBAL VARIABLES row's identifier (.varspanel .var-name), an <input> that
- *     cannot ellipsize — 7px of overlap before, -1px after;
+ *   - a GLOBAL VARIABLES row's identifier, an <input> that cannot ellipsize —
+ *     7px of overlap before, -1px after. THAT CELL HAS SINCE BEEN REBUILT: the
+ *     kind picker moved in beside the name (15a7d333), so the label cell is now
+ *     the `.var-ident` wrapper and the gutter is reserved on IT, not on
+ *     `.var-name` (app.css:7804-7812). The disjointness check was re-aimed at the
+ *     cell and JOINED BY TWO CONTAINMENT CHECKS, which are RED against a real
+ *     product defect — the 84px non-shrinkable picker overflows a 55.16px cell
+ *     and displaces the name input out of the label column entirely. The full
+ *     measurement and the offending CSS lines are recorded at the checks
+ *     themselves; nothing is fixed here, because product CSS is outside this
+ *     file's lease;
  *   - the varspanel ADD row, asserted to reserve NO gutter, since it mounts no
  *     ƒ and paying for one would only shrink its text box.
  *
@@ -238,32 +247,123 @@ try {
   // content edge 1162.16 vs ƒ at 1155.16, i.e. 7px of overlap; after: -1px.
   // An input cannot ellipsize, so the gutter is the only thing keeping the caret
   // and the last typed characters out from under the glyph.
-  await page.evaluate(() => {
+  //
+  // API DRIFT, REPAIRED HERE — the probe was wrong, the app was not.
+  // OLD SPELLING: `app.addVariable("myvariable", 1)`. Under the pre-kinds
+  // signature `addVariable(name)` (web/app.svelte.js) the second argument was
+  // simply IGNORED, so that `1` read like an initial value and cost nothing.
+  // NEW SPELLING: `app.addVariable("myvariable", "number")`. Commit 15a7d333
+  // ("Compound property rows…", which shipped core/var_kinds.js) made the second
+  // parameter the KIND — `addVariable(name, kind = "number")` — validated against
+  // VAR_KIND_ZEROS. So `1` became a REJECTED kind: the app console.errors
+  // `"1" is not a variable kind`, returns false, and creates NOTHING. That
+  // reddened this probe twice over — no row to measure, AND the console.error
+  // tripping the page-error filter — while the gutter under test was fine.
+  // WHY "number" IS STATED AND NOT DEFAULTED: this row is asserted to carry a
+  // `.numfield .eq-open`, and only the number kind mounts a NumericField
+  // (VariablesPanel.svelte's `{:else}` branch). The other five kinds mount
+  // Vector2Field/ColorField/BooleanField/Dropdown/<input>, none of which has one
+  // — so the kind is part of the requirement, not an incidental default.
+  const varAdded = await page.evaluate(() => {
     const app = window.__powerrp_app;
     const cmds = app.commands?.all?.() ?? app.commands?.list?.() ?? [];
     const c = cmds.find((c) => c.id === "toggle-panel-globalVariables");
     if (c) (app.commands.run ? app.commands.run(c.id) : c.run(app));
-    if (typeof app.addVariable === "function") app.addVariable("myvariable", 1);
+    return app.addVariable("myvariable", "number");
   });
   await sleep(1200);
+  // Asserted rather than assumed: addVariable reports success/failure by RETURN
+  // VALUE and refuses loudly on the console. Without this the next check reports
+  // the absence as a missing gutter — which is how the drift above read for a
+  // whole round, as a layout regression rather than a bad argument.
+  assert(varAdded === true, "addVariable created the number variable to measure (2nd arg is the KIND since 15a7d333, not a value)");
 
+  //
+  // WHERE THE GUTTER LIVES MOVED, AND SO DID WHAT HAS TO BE MEASURED.
+  // When this probe was written the label cell WAS the bare <input class=
+  // "var-name">, so measuring the input's content box measured the cell. Commit
+  // 15a7d333 put the KIND PICKER in that cell, so the cell is now a flex wrapper
+  // `.var-ident` holding `.var-kind` + `.var-name`, and app.css:7804-7812 moved
+  // the reserved gutter onto the WRAPPER ("left on the input it would reserve the
+  // strip in the middle of the cell, where nothing hangs"). The ƒ therefore lands
+  // against `.var-ident`'s content edge, not the input's — so the CELL is what
+  // the disjointness ruling is about, and the input is one occupant of it.
   const varRow = await page.evaluate(() => {
     const rows = [...document.querySelectorAll(".varspanel .row")];
     const r = rows.find((x) => x.querySelector(".var-name") && x.querySelector(".numfield .eq-open"));
     if (!r) return null;
     const inp = r.querySelector(".var-name");
     const fx = r.querySelector(".numfield .eq-open");
+    const cell = r.querySelector(".var-ident");
+    const kind = r.querySelector(".var-kind");
     const a = inp.getBoundingClientRect();
     const b = fx.getBoundingClientRect();
     const cs = getComputedStyle(inp);
     const contentRight = a.right - parseFloat(cs.paddingRight) - parseFloat(cs.borderRightWidth);
-    return { contentRight, fxX: b.x, overlap: contentRight - b.x, isAddRow: r.classList.contains("add-row") };
+    let cellContentRight = null;
+    if (cell) {
+      const c = cell.getBoundingClientRect();
+      const ccs = getComputedStyle(cell);
+      cellContentRight = c.right - parseFloat(ccs.paddingRight) - parseFloat(ccs.borderRightWidth);
+    }
+    return {
+      contentRight, fxX: b.x, fxRight: b.right,
+      nameX: a.x, nameRight: a.right, nameW: a.width,
+      cellContentRight,
+      kindRight: kind ? kind.getBoundingClientRect().right : null,
+      kindW: kind ? kind.getBoundingClientRect().width : null,
+      // A TRUE INTERVAL INTERSECTION, replacing the one-sided `contentRight - fxX`
+      // this line used to compute. That subtraction silently ASSUMED the name sits
+      // to the LEFT of the ƒ; when the cell overflows and shoves the input to the
+      // RIGHT of it (which is what happens today, see the containment checks below)
+      // it reports a large positive "overlap" for two boxes that never touch —
+      // 35.84px on a pair that are in fact 14.84px apart. A test that can report an
+      // overlap in the wrong direction cannot be used to certify the right one.
+      overlap: Math.min(contentRight, b.right) - Math.max(a.x, b.x),
+      isAddRow: r.classList.contains("add-row"),
+    };
   });
   assert(varRow !== null, "a Global Variables row with a ƒ is present to measure");
   if (varRow) {
-    console.log(`  .. VARSPANEL input content ends ${varRow.contentRight.toFixed(2)}, ƒ starts ${varRow.fxX.toFixed(2)} → overlap ${varRow.overlap.toFixed(2)}px`);
-    assert(varRow.overlap <= 0, `a variable NAME input and its ƒ are DISJOINT (overlap ${varRow.overlap.toFixed(2)}px <= 0)`);
+    console.log(`  .. VARSPANEL name input x=${varRow.nameX.toFixed(2)} right=${varRow.nameRight.toFixed(2)} w=${varRow.nameW.toFixed(2)} (content ends ${varRow.contentRight.toFixed(2)})`);
+    console.log(`  .. VARSPANEL ƒ ${varRow.fxX.toFixed(2)}..${varRow.fxRight.toFixed(2)} | .var-ident content ends ${varRow.cellContentRight?.toFixed(2)} | .var-kind w=${varRow.kindW?.toFixed(2)} right=${varRow.kindRight?.toFixed(2)}`);
+    console.log(`  .. true intersection = ${varRow.overlap.toFixed(2)}px (negative = disjoint)`);
+    assert(varRow.overlap <= 0, `a variable NAME input and its ƒ are DISJOINT (intersection ${varRow.overlap.toFixed(2)}px <= 0)`);
     assert(!varRow.isAddRow, "the measured row is a real value row, not the add-row (which reserves no gutter)");
+
+    // ── THE GUTTER IS ONLY WORTH ANYTHING IF THE CELL STAYS INSIDE IT ─────────
+    // The two checks below are the disjointness ruling stated at the level the
+    // design now lives at: "affordances may TRUNCATE a label, never MOVE it".
+    // Disjointness alone stopped being sufficient the moment the cell gained a
+    // second occupant — the ƒ can be perfectly clear of the NAME while the cell's
+    // contents have been pushed clean through the reserved gutter and out the
+    // other side, which is a worse failure than the one this file was opened for
+    // and which the old one-sided subtraction could not tell apart from success.
+    //
+    // BOTH ARE RED TODAY, AND THE DEFECT IS IN PRODUCT CSS, NOT IN THIS FILE.
+    // Measured at the probe's own 1400x900 viewport, default divider position:
+    //   .var-ident  1100.00 .. 1167.16  (67.16px, padding-right 12px)
+    //               => content box is 55.16px wide, ending 1155.16
+    //   .var-kind      84.00px wide, 1100.00 .. 1184.00   — 28.84px PAST the
+    //               content edge, straight over the ƒ (1155.16..1171.16) and on
+    //               into .numfield, which starts at 1171.16
+    //   .var-name    10.00px wide, 1186.00 .. 1196.00     — crushed to 10px and
+    //               displaced ENTIRELY outside its own cell
+    // Root cause: web/app.css:7833-7836 gives .varspanel .var-kind
+    // `flex: none` (= 0 0 auto, cannot shrink) at a fixed
+    // `width: var(--a-var-kind-w)` = 84px (web/app.css:403), while the label
+    // column is sized by the shared `app.labelFrac` divider, which knows nothing
+    // about that 84px minimum. At the default fraction the column is 67.16px, so
+    // the picker cannot fit and the name input is what pays for it.
+    // NOT FIXED HERE: this probe's lease is tests/list_field_fx_overlap_probe.js
+    // only. Left RED deliberately — a green here would certify a row whose name
+    // field is 10px wide and sitting in the value column.
+    const EDGE_EPS = 0.5; // sub-pixel layout tolerance; the real misses are tens of px
+    assert(varRow.cellContentRight !== null, "the row's identifier cell `.var-ident` exists to measure containment against");
+    assert(varRow.kindRight !== null && varRow.kindRight <= varRow.cellContentRight + EDGE_EPS,
+      `the KIND PICKER stays inside its label cell (right ${varRow.kindRight?.toFixed(2)} <= cell content ${varRow.cellContentRight?.toFixed(2)})`);
+    assert(varRow.nameRight <= varRow.cellContentRight + EDGE_EPS,
+      `the variable NAME input stays inside its label cell (right ${varRow.nameRight.toFixed(2)} <= cell content ${varRow.cellContentRight?.toFixed(2)})`);
   }
 
   // The ADD row must NOT have paid for a gutter it never fills: it mounts no
@@ -280,6 +380,8 @@ try {
   await server.close();
 }
 
-const total = 17;
+// One per assert() call site above — kept in step by hand, and it was already
+// off by one (16 asserts against 17) before the containment checks landed.
+const total = 20;
 console.log(fails.length ? `\nFAILED ${fails.length}/${total}:\n - ${fails.join("\n - ")}` : `\nlist_field_fx_overlap_probe: all checks passed`);
 process.exit(fails.length ? 1 : 0);

@@ -91,6 +91,43 @@ const EXPORT_FPS = 15;
 const EXPORT_FRAMES = 4;
 const EXPORT_WALL_GAP_MS = 30;
 
+/**
+ * How long to wait for the audio state machine to SETTLE after the starting gesture.
+ *
+ * THE STATE MACHINE HAS TWO UNDECIDED STATES, NOT ONE, AND THAT IS THE WHOLE BUG THIS
+ * CONSTANT AND ITS PREDICATE FIX. `web/audioMirror.svelte.js enableAudio()` sets
+ * `status = "starting"` SYNCHRONOUSLY on the gesture, then awaits `ensureEngine()` —
+ * which `addModule`s every worklet URL `core/audio_blocks.js` derives — before it can
+ * reach "running". So "not blocked" is true one frame after the click and says nothing
+ * about whether audio started.
+ *
+ * WHY SO MUCH LONGER THAN THE MEASUREMENT. Measured on a quiet host: click at 28.08 s,
+ * "starting" at 28.11 s, "running" at 28.70 s — 0.6 s. The margin is not for that; it is
+ * for a COLD, CONTENDED Vite dev server, where each of those worklet modules is fetched
+ * and transformed on this very first call (the same contention CLAUDE.md's 120 s splash
+ * wait exists for — a loaded HOST must not be reported as a broken app). Nothing is
+ * loosened by the size of this number: the assertion it guards still demands exactly
+ * "running", and a genuinely dead engine still fails, just later.
+ */
+const AUDIO_SETTLE_TIMEOUT_MS = 30000;
+
+/**
+ * Query. Has the audio state machine reached an ANSWER for the gesture just spent?
+ *
+ * Evaluated IN THE PAGE. "blocked" (no gesture harvested yet) and "starting" (a resume
+ * in flight) are the two values that mean "not decided"; every other value is an answer
+ * the caller's assertion can report — "running" passes, "failed"/"idle" fail and say
+ * which. Ordinary string comparison, so it is safe to serialize into the page.
+ *
+ * @returns {boolean}
+ *
+ * @example // status "blocked"  -> false, keep waiting (the click has not landed yet)
+ * @example // status "starting" -> false, keep waiting (worklets still compiling)
+ * @example // status "running"  -> true, and the assertion passes
+ * @example // status "failed"   -> true, and the assertion fails NAMING the reason
+ */
+const audioStatusSettled = () => !["blocked", "starting"].includes(window.__powerrp_audioState().status);
+
 // HMR IS OFF, for the reason cli/render_job.js turns it off: a source edit landing
 // mid-run reloads the page and destroys the session this probe is measuring — and
 // in a worktree with other agents editing, that is not hypothetical (measured
@@ -185,7 +222,16 @@ try {
     return { x: r.x + r.width / 2, y: r.y + r.height - 40 };
   });
   await page.mouse.click(canvasBox.x, canvasBox.y);
-  await page.waitForFunction(() => window.__powerrp_audioState().status !== "blocked", { timeout: 10000 })
+  // WAIT FOR THE MACHINE TO SETTLE, NOT FOR IT TO LEAVE "blocked". The old spelling was
+  // `status !== "blocked"` with a 10 s cap, and it was a race from the day it was
+  // written rather than something a design change broke: "starting" satisfies it ~30 ms
+  // after the click, so this returned ~590 ms BEFORE the state it was about to assert
+  // on, and the check below reported `(starting: null)` — a probe bug phrased as a
+  // product defect. See AUDIO_SETTLE_TIMEOUT_MS for the measurement. THE ASSERTION IS
+  // UNCHANGED: it still demands exactly "running" from exactly one ordinary click.
+  await page.waitForFunction(audioStatusSettled, { timeout: AUDIO_SETTLE_TIMEOUT_MS })
+    // Swallowed ON PURPOSE: a waitForFunction throw is a puppeteer stack with no
+    // assertion text, and the ok() below already names the status it actually found.
     .catch(() => {});
   const after = await audioStatus();
   ok(after.status === "running", `ONE ordinary click started audio, with no badge and no prompt (${after.status}: ${after.reason})`);

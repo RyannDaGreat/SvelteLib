@@ -7829,10 +7829,32 @@ audio.ae-preview-media {
 /* THE KIND PICKER is deliberately NARROW — it shows a short word ("Color") and
    must not take the room the variable's NAME needs, which is the thing an author
    reads the row for. It is the same Dropdown every select row mounts; only its
-   width is constrained here. */
+   width is constrained here.
+
+   IT MAY SHRINK, AND WITHOUT THAT IT OVERLAPPED THE ƒ (measured 2026-08-22 by
+   tests/list_field_fx_overlap_probe.js, which refused to go green over it: the
+   `.var-kind` right edge sat 28.84px past `.var-ident`'s content edge, under the
+   equation affordance).
+
+   THE CAUSE IS AN EXACT COINCIDENCE OF TWO NUMBERS, which is why it looked fine
+   in isolation: `--a-var-kind-w` is 84px, and `LABEL_FRAC_DEFAULT` (0.23,
+   web/labelFrac.js) is *derived from* 84px against a 362px row — it IS the
+   fraction that makes the label cell 84px wide. So at the default divider the
+   picker alone wants the ENTIRE label cell, before the name field's share and
+   before the 14px gutter this block reserves above for the ƒ. `flex: none`
+   computes to `0 0 auto`, so it took it, and the overflow landed on the
+   affordance.
+
+   `0 1 auto` + `min-width: 0` keeps `width` as the PREFERRED width — nothing
+   changes on a panel wide enough for it — and lets the cell's own bounds win when
+   it is not. The alignment property this block is written for survives: every
+   value row has the same cell width, so they all shrink by the same amount and
+   the name fields still start at one x. An author who wants the full picker drags
+   the divider, which is what the divider is for. */
 .varspanel .var-kind {
-  flex: none;
+  flex: 0 1 auto;
   width: var(--a-var-kind-w);
+  min-width: 0;
 }
 .varspanel .var-kind > * {
   width: 100%;
