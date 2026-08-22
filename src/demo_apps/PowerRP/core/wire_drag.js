@@ -44,8 +44,9 @@
  * highlight is how a UI ends up inviting a drop it then refuses.
  */
 
-import { EXEC_KEY, EXEC_TYPE, PORT_BEAD_R, connectionRefusal, detachPairs, execDisconnectPairs, inputRefs, isNodeRef, wirePairsFor } from "./nodeflow.js";
+import { DEFAULT_WIRE_STYLE, EXEC_KEY, EXEC_TYPE, PORT_BEAD_R, connectionRefusal, detachPairs, execDisconnectPairs, inputRefs, isNodeRef, wirePairsFor, wirePathD } from "./nodeflow.js";
 import { nodePortAnchors } from "./derive.js";
+import { distToSegment, pathDPolylines } from "./outline.js";
 
 /**
  * Pure function. Every port bead in the scene, in WORLD space, with the item it
@@ -317,6 +318,90 @@ function withDetached(items, detach) {
   const [[, value]] = detachPairs(items, detach, detach.ref);
   const state = items[detach.item];
   return { ...items, [detach.item]: { ...state, inputs: { ...state.inputs, [detach.port]: value } } };
+}
+
+// ── THE WIRE ITSELF AS A TARGET (the routing point, 2026-08-22) ─────────────
+//
+// User: "it would be nice if I could double click on a wire to add a routing point
+// widget....just kinda a lone connector...used to make the wires nicer".
+//
+// Every gesture above grabs a BEAD. This pair is the first that grabs the CABLE,
+// and it lives here for the module's stated reason: the canvas owns the pointer
+// events, this module owns every decision — which wire a point lands on, and what
+// inserting a joint into it writes.
+
+/**
+ * Pure function. WHICH WIRE a WORLD point lands on, or null. Nearest wins.
+ *
+ * ── IT MEASURES THE DRAWN PATH, NOT THE CHORD ──────────────────────────────
+ * A wire is a bezier, a straight line or an elbow depending on its resolved style
+ * (core/nodeflow.wirePathD), and the three are nowhere near each other: a bezier
+ * bows a long way off the line between its beads, and an elbow is somewhere else
+ * again. So the test samples THE SAME path string the painter draws
+ * (`pathDPolylines`, core/outline.js's one tokenizer) and measures to those
+ * segments — the author aims at ink, and this answers about ink.
+ *
+ * `tol` is the pointer's slop in WORLD units (the caller converts from screen, as
+ * it does for beads: only it knows the zoom).
+ *
+ * @param {object[]} wires - core/derive.deriveWires output
+ * @param {number} wx - world x
+ * @param {number} wy - world y
+ * @param {number} [tol] - grab radius in world units
+ * @returns {object|null} the wire record, or null
+ *
+ * @example // a straight wire, grabbed at its midpoint
+ * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 100, y: 0}, type: "visual", style: "straight"}], 50, 2, 6).to.item // "b"
+ * @example // …and missed from far off it
+ * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 100, y: 0}, type: "visual", style: "straight"}], 50, 40, 6) // null
+ * @example // a BEZIER is measured on its curve: the chord's midpoint is on the line
+ * @example // between the beads, but the drawn cable bows away from it
+ * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 200, y: 200}, type: "visual", style: "bezier"}], 100, 100, 4) // null
+ * @example wireAt([], 0, 0, 10) // null
+ */
+export function wireAt(wires, wx, wy, tol = 0) {
+  let best = null, bestD = Infinity;
+  for (const w of wires ?? []) {
+    for (const line of pathDPolylines(wirePathD(w.from, w.to, w.style ?? DEFAULT_WIRE_STYLE))) {
+      for (let i = 0; i + 1 < line.length; i++) {
+        const d = distToSegment(wx, wy, { x: line[i][0], y: line[i][1] }, { x: line[i + 1][0], y: line[i + 1][1] });
+        if (d <= tol && d < bestD) { best = w; bestD = d; }
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Pure function. What INSERTING a joint into one wire writes: the DESTINATION
+ * input, with this wire's source replaced by the joint's output and every OTHER
+ * wire on that input left exactly where it was.
+ *
+ * The joint's own `inputs.in` is not written here — it is part of the new item's
+ * creation state, so the whole insertion is one document write (see
+ * web/routeInsert.js). What this owns is the half that edits an EXISTING item.
+ *
+ * A `multiple` input keeps its array and its ORDER: the joint takes the place of
+ * the wire it interrupted rather than jumping to the end, because the author is
+ * looking at a picture in which nothing else moved.
+ *
+ * @param {object} items - folded items
+ * @param {object} wire - one core/derive.deriveWires record
+ * @param {string} routeId - the new joint's item id
+ * @param {string} [outPort] - the joint's output port key
+ * @returns {Array} [[path, value]] pairs
+ *
+ * @example routeInsertPairs({b: {inputs: {i: {item: "a", port: "o"}}}}, {from: {item: "a", port: "o"}, to: {item: "b", port: "i"}}, "r") // [[["items", "b", "inputs", "i"], {item: "r", port: "out"}]]
+ * @example // a multiple input: the joint takes the interrupted wire's PLACE
+ * @example routeInsertPairs({b: {inputs: {mix: [{item: "a", port: "o"}, {item: "c", port: "o"}]}}}, {from: {item: "a", port: "o"}, to: {item: "b", port: "mix"}}, "r") // [[["items", "b", "inputs", "mix"], [{item: "r", port: "out"}, {item: "c", port: "o"}]]]
+ */
+export function routeInsertPairs(items, wire, routeId, outPort = "out") {
+  const joint = { item: routeId, port: outPort };
+  const slot = items?.[wire.to.item]?.inputs?.[wire.to.port];
+  const path = ["items", wire.to.item, "inputs", wire.to.port];
+  if (!Array.isArray(slot)) return [[path, joint]];
+  return [[path, inputRefs(items[wire.to.item], wire.to.port)
+    .map((c) => (c.item === wire.from.item && c.port === wire.from.port ? joint : c))]];
 }
 
 /**

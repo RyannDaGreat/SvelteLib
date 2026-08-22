@@ -112,6 +112,10 @@ import { nodeDisplayPlugin } from "./node_display.js";
 // shape, label, fill, port lists and port colours — for diagrams and flowcharts,
 // wired through the same port protocol as every working node.
 import { visualNodePlugin } from "./visual_node.js";
+// THE ROUTING POINT (user, 2026-08-22): a lone connector — one input, one output,
+// no behaviour — that a cable passes through, so a patch can be routed around a
+// layout and split from where the author put the dot rather than from its source.
+import { routeNodePlugin } from "./route_node.js";
 // The two PURE nodes the per-frame trigger family needs (core/exec_frame.js). They
 // sit with the trio rather than in plugins/exec_index.js because neither declares an
 // exec pin: Compare is arithmetic and Time is a card around the ONE presentation
@@ -153,7 +157,7 @@ import { scene3dPlugins } from "./demo/scene3d.js"; // THE 3D VIEWPORT FAMILY: s
  */
 export const demoPlugins = [demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins];
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, emptyPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, html2imagePlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, pptxPresetPlugin, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, nodeComparePlugin, nodeTimePlugin, visualNodePlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, emptyPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, html2imagePlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, pptxPresetPlugin, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, nodeComparePlugin, nodeTimePlugin, visualNodePlugin, routeNodePlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.

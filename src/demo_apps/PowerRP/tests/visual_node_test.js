@@ -343,15 +343,26 @@ check("the `visual` type's CSS token is in app.css (the generated mirror)", () =
   assert.ok(css.includes(`--a-port-visual: ${PORT_TYPES.visual.color};`));
 });
 
-check("NO shipped non-visual port declares `multiple` or `color` — every existing document reads as before", () => {
+check("THE OPT-IN ROSTER IS EXACTLY WHAT IT SAYS: only these widgets' ports declare `multiple`, `color` or `wire`", () => {
+  // The three port-declaration additions (a per-port colour, an input's
+  // accept-several permission, a per-port wire style) are OPT-IN, and this is what
+  // makes that a fact rather than a hope: the set of widgets whose ports declare
+  // ANY of them is stated here, so a widget cannot acquire one by accident — and
+  // adding a fourth widget to the set is an edit to this line, in front of a
+  // reader. Every port outside the set declares none, which is why every document
+  // written before these existed reads back byte-identically.
+  const OPTED_IN = ["route_node", "visual_node"];
+  const found = new Set();
   for (const p of registry.all()) {
-    if (p.type === "visual_node" || typeof p.ports !== "function") continue;
+    if (typeof p.ports !== "function") continue;
     const ports = declaredPorts(p, p.defaults);
     for (const q of [...ports.inputs, ...ports.outputs]) {
-      assert.ok(!q.multiple, `${p.type}.${q.key} declares multiple`);
-      assert.ok(!("color" in q), `${p.type}.${q.key} declares a colour`);
+      const declares = q.multiple || "color" in q || "wire" in q;
+      if (declares) { found.add(p.type); continue; }
+      assert.ok(!q.multiple && !("color" in q) && !("wire" in q), `${p.type}.${q.key}`);
     }
   }
+  assert.deepStrictEqual([...found].sort(), OPTED_IN, "the opt-in roster drifted — add the widget here deliberately, or take the declaration off its ports");
 });
 
 check("every preset writes every look knob, the port lists, and never `text`", () => {
@@ -416,12 +427,9 @@ check("a wire's style resolves DESTINATION → SOURCE → CAMERA, and reaches th
   assert.throws(() => declaredPorts(plugin, vn({ inPorts: [{ ...port("i"), wire: "loopy" }] })), /declares wire style "loopy"/);
 });
 
-check("no shipped non-visual port declares a wire style either", () => {
-  for (const p of registry.all()) {
-    if (p.type === "visual_node" || typeof p.ports !== "function") continue;
-    const ports = declaredPorts(p, p.defaults);
-    for (const q of [...ports.inputs, ...ports.outputs]) assert.ok(!("wire" in q), `${p.type}.${q.key} declares a wire style`);
-  }
-});
+// (The wire-style half of this sweep used to live here as its own check. It is
+// folded into THE OPT-IN ROSTER above, which asks the same question about all
+// three additions at once — two sweeps over one roster is how they come to
+// disagree about which widgets are exempt.)
 
 console.log(`\nvisual node: ${passed} checks passed`);

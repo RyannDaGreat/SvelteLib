@@ -34,6 +34,7 @@
   import { pressNote, releaseAllPresses, releaseNote } from "../core/live_control.js";
   import { litKeyRects, releaseHeldKeys, removeKeyUp, resetKeyboardPlay, setNoteSink } from "./keyboardPlay.js";
   import { allPortBeads, beadAt, beadKey, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
+  import { insertRoutingPointAt } from "./routeInsert.js"; // double-click a wire → a routing point joins it (one undo unit; the decisions are core/wire_drag's)
   // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
   // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
   // AudioBadge is the autoplay surface. See web/audioMirror.svelte.js.
@@ -44,7 +45,7 @@
   // two transformed corners — not even the true AABB under rotation.
   import AudioBadge from "./AudioBadge.svelte";
   import { fireLiveTrigger, mirrorAudioFrame, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
-  import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, stickyAnchorCandidate, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
+  import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, anchorStickyReach, stickyAnchorCandidate, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // THE HANDLE GLYPH BANK: core/ owns the VOCABULARY (which looks exist and what
   // each is for), this file owns the DRAWING. The split is why a plugin can name a
@@ -1294,7 +1295,20 @@
     if (drag || modal || app.canvasMode) return; // never open mid-gesture or mid-mode
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
-    if (!hit) return;
+    // A DOUBLE-CLICK ON A WIRE INSERTS A ROUTING POINT (user, 2026-08-22: "it would
+    // be nice if I could double click on a wire to add a routing point widget").
+    // Only where NO widget is under the pointer, and that ordering is not a
+    // tie-break: wires are drawn UNDER the cards (core/node_chrome.wireLayerOps
+    // states why), so a wire crossing a card is not visible there and a
+    // double-click over the card is a double-click on the card. Where a wire IS
+    // visible, nothing else is competing for the gesture.
+    if (!hit) {
+      // Consuming it clears the text selection a double-click leaves behind, for
+      // the reason spelled out below — the next drag would otherwise start an
+      // HTML5 drag of that selection and cancel itself.
+      if (insertRoutingPointAt(app, w.x, w.y, SNAP_PX / viewport.zoom)) window.getSelection()?.removeAllRanges();
+      return;
+    }
     // A widget declaring NO activation leaves the rest of this handler with nothing
     // to do (a dblclick on a rect), so bail before the two side effects below —
     // activateNode re-resolves the same handler and is the one that runs it.
@@ -3514,14 +3528,24 @@
       for (const a of nodeAnchors(n))
         out.push({ id: `${n.itemId}:${a.id}`, d: Math.hypot(a.x - w.x, a.y - w.y), itemId: n.itemId, anchorId: a.id, x: a.x, y: a.y, dynamic: false });
     // The "closest" computed anchor of whatever node is UNDER the pointer. It is
-    // only meaningful within the tolerance of the perimeter point it produces —
-    // outside that it is not a candidate at all, so it is not offered.
+    // only meaningful near the perimeter point it produces — far outside, it is not
+    // a candidate at all, so it is not offered.
+    //
+    // OFFERED OUT TO THE STICKY REACH, NOT TO PLAIN `tol` (audit, 2026-08-22). The
+    // preset anchors above are pushed with their TRUE distance, which is what lets
+    // core/snap.stickyAnchorCandidate hold an incumbent past tolerance; filtering
+    // THIS one at `tol` opted it out of that mechanism entirely — one pixel past
+    // tolerance it disappeared from the list, the incumbent could not be found, and
+    // the bind released at exactly the hard threshold the hysteresis exists to
+    // remove. It is the candidate that tracks the pointer CONTINUOUSLY, so it was
+    // the one that flickered most. `stickyAnchorCandidate` still refuses to BIND
+    // anything past plain `tol`, so offering it further only lets it be HELD.
     const hit = pickNode(nodes, w.x, w.y);
     if (hit?.plugin.closestAnchor) {
       const local = hit.plugin.closestAnchor(hit.state, w.x, w.y, hit.world);
       const p = T.apply(hit.world, local.x, local.y);
       const d = Math.hypot(p.x - w.x, p.y - w.y);
-      if (d <= tol) out.push({ id: `${hit.itemId}:closest`, d, itemId: hit.itemId, anchorId: "closest", x: p.x, y: p.y, dynamic: true });
+      if (d <= anchorStickyReach(tol)) out.push({ id: `${hit.itemId}:closest`, d, itemId: hit.itemId, anchorId: "closest", x: p.x, y: p.y, dynamic: true });
     }
     return out;
   }

@@ -34,7 +34,7 @@
  * by the caller (the engine's audio clock), never read here.
  */
 
-import { inputWires } from "./nodeflow.js";
+import { inputRefs, inputWires, resolvedWireSource } from "./nodeflow.js";
 
 /**
  * Pure function. The engine calls one live TRIGGER event produces, given the
@@ -74,7 +74,12 @@ export function triggerRoutes(items, registry, sourceId, sourcePort = "out") {
     // Only an ENGINE MODULE can be struck. A control node or a rect wired here is
     // legal on the canvas and simply has nothing to fire.
     if (!plugin?.audioModule) continue;
-    for (const [targetPort, wire] of inputWires(target)) {
+    for (const [targetPort, rawWire] of inputWires(target)) {
+      // RESOLVED THROUGH ANY ROUTING POINT first (plugins/route_node.js): a press
+      // must still reach a module the author tidied the cable to, and a joint is a
+      // layout decision, not a break in the wire. Identity for a document with no
+      // joints, so nothing about an ordinary patch changes.
+      const wire = resolvedWireSource(items, registry, rawWire);
       if (wire.item !== sourceId) continue;
       if ((wire.port ?? "out") !== sourcePort) continue;
       const port = (plugin.audioSpec?.inputs ?? []).find((p) => p.key === targetPort);
@@ -156,8 +161,13 @@ export function noteRoutes(items, registry, sourceId, phase, note, frequency) {
     // THE PITCH DECISION, made ONCE PER TARGET from the target's own properties.
     // Hoisted out of the port loop because it is a fact about this receiver, not
     // about whichever method port we happen to be looking at.
-    const played = keyboardDrivesPitch(plugin, target, sourceId) ? frequency : undefined;
-    for (const [targetPort, wire] of inputWires(target)) {
+    const played = keyboardDrivesPitch(plugin, target, sourceId, items, registry) ? frequency : undefined;
+    for (const [targetPort, rawWire] of inputWires(target)) {
+      // RESOLVED THROUGH ANY ROUTING POINT first (plugins/route_node.js): a press
+      // must still reach a module the author tidied the cable to, and a joint is a
+      // layout decision, not a break in the wire. Identity for a document with no
+      // joints, so nothing about an ordinary patch changes.
+      const wire = resolvedWireSource(items, registry, rawWire);
       if (wire.item !== sourceId) continue;
       const port = (plugin.audioSpec?.inputs ?? []).find((p) => p.key === targetPort);
       if (!port?.method) continue;
@@ -215,14 +225,27 @@ export function noteRoutes(items, registry, sourceId, phase, note, frequency) {
  * @example // a module with NO pitch input at all: no cable to cut, so the key names the note
  * @example keyboardDrivesPitch({audioSpec: {inputs: [{key: "in", type: "audio"}]}}, {inputs: {}}, "k") // true
  */
-export function keyboardDrivesPitch(plugin, target, sourceId) {
+export function keyboardDrivesPitch(plugin, target, sourceId, items = null, registry = null) {
   const pitchPort = (plugin?.audioSpec?.inputs ?? []).find((p) => PITCH_INPUT_KEYS.has(p.key));
   // NO PITCH INPUT ⟹ the key's pitch is the only one available. Returning false
   // here would silence the keyboard-plays-a-bell patch, which has no pitch cable
   // to disconnect and therefore cannot have been disconnected.
   if (!pitchPort) return true;
-  const wire = target?.inputs?.[pitchPort.key];
-  return wire?.item === sourceId && (wire.port ?? "out") === PITCH_OUTPUT_KEY;
+  // READ THROUGH inputRefs, the one reader of the slot's two shapes, so a pitch
+  // input that ever declares `multiple` answers about its wires rather than about
+  // an array it cannot interpret.
+  const stored = inputRefs(target, pitchPort.key)[0];
+  if (!stored) return false;
+  // …AND THROUGH ANY ROUTING POINT, when the caller has the document to walk. A
+  // joint on the pitch cable (plugins/route_node.js) is a layout decision; without
+  // this the keyboard's own pitch would quietly stop being used and the module
+  // would sound at its own, which is a wrong note rather than an error. The two
+  // arguments are OPTIONAL because this predicate is also asked in the abstract —
+  // by its own doctests and by a caller holding one item and no map — and with no
+  // document in hand the honest answer is about the STORED wire, which is what it
+  // then gives. `noteRoutes`, the one production caller, always passes them.
+  const wire = items && registry ? resolvedWireSource(items, registry, stored) : stored;
+  return wire.item === sourceId && (wire.port ?? "out") === PITCH_OUTPUT_KEY;
 }
 
 /**

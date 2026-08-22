@@ -46,7 +46,7 @@
  */
 
 import { audioKnobValues } from "./audio_nodes.js";
-import { inputWires } from "./nodeflow.js";
+import { inputWires, resolvedWireSource } from "./nodeflow.js";
 // THE CLAMP AND ITS CEILING ARE BORROWED, NOT RE-DERIVED. A ramp that spans the
 // frame it bridges asks the same question the simulation's timestep does — "how
 // much time may one displayed frame claim to cover?" — and answers a lag spike the
@@ -162,7 +162,16 @@ export function readAudioScene(items, registry) {
     // ONE ENTRY PER WIRE, through the one reader of the slot's shape — so an
     // audio input that ever declares `multiple` connects every source it holds
     // (Web Audio sums fan-in natively), with no change here.
-    for (const [targetPort, wire] of inputWires(items[targetId])) {
+    for (const [targetPort, rawWire] of inputWires(items[targetId])) {
+      // A ROUTING POINT IS NOT A MODULE, AND MUST NOT SILENCE THE PATCH. An author
+      // who drops joints into a patch to tidy its cables (plugins/route_node.js)
+      // has changed the LAYOUT, not the signal path — so a wire is resolved back
+      // through any pass-through widget before the engine is asked whether its
+      // source is a module. Without this, `modules[wire.item]` finds the joint,
+      // reads undefined, and the connection is dropped: the patch goes quiet for a
+      // formatting edit. Costs a document with no joints nothing (resolvedWireSource
+      // returns its argument for an ordinary source).
+      const wire = resolvedWireSource(items, registry, rawWire);
       const source = modules[wire.item];
       // Not an audio module (a number node, a deleted item, a rect): NOT A WIRE the
       // engine can make. The canvas still draws it — a number node CAN legitimately

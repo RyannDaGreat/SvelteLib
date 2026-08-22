@@ -72,7 +72,7 @@
  */
 
 import { beatAtTime, soundingNotes } from "./midi_clip.js";
-import { inputRefs, inputWires } from "./nodeflow.js";
+import { inputRefs, inputWires, resolvedWireSource } from "./nodeflow.js";
 
 /** The three playback kinds. `timeline` and `recordable` are both reproducible;
  *  only `live` is not — `PLAYBACK_REPRODUCIBLE` is the one predicate every reader
@@ -176,9 +176,14 @@ export function isTriggerableMidiSource(plugin) {
  */
 export function clipPlaybackKind(items, registry, itemId) {
   // The trigger port is not `multiple`, so its slot holds one wire; inputRefs is
-  // still the reader because it is the ONE reader of the slot's shape.
-  const wire = inputRefs(items?.[itemId], TRIGGER_PORT)[0];
-  if (!wire) return "timeline";
+  // still the reader because it is the ONE reader of the slot's shape. RESOLVED
+  // THROUGH ANY ROUTING POINT, because WHAT the trigger is decides which of the
+  // three playback kinds this clip has — and therefore whether the deck exports
+  // its sound or renders silent. A joint between a Button and a clip that left the
+  // kind reading "timeline" would drop the export warning the user is entitled to.
+  const stored = inputRefs(items?.[itemId], TRIGGER_PORT)[0];
+  if (!stored) return "timeline";
+  const wire = resolvedWireSource(items, registry, stored);
   const source = items?.[wire.item];
   // A DANGLING wire is not a live one. The node reads its type's zero (no pulse
   // ever arrives), so it behaves as an untriggered clip — and saying "live" here
@@ -278,7 +283,12 @@ export function midiRoutes(items, registry, sourceId) {
     // core/live_control.triggerRoutes makes, for the same reason.
     if (!plugin?.audioModule) continue;
     const inputs = plugin.audioSpec?.inputs ?? [];
-    for (const [portKey, wire] of inputWires(target)) {
+    for (const [portKey, rawWire] of inputWires(target)) {
+      // Resolved through any ROUTING POINT (plugins/route_node.js) for the reason
+      // core/live_control.js states: a joint in the cable is a layout decision, and
+      // a clip whose MIDI arrives through one must still be found. Identity when
+      // there are none.
+      const wire = resolvedWireSource(items, registry, rawWire);
       if (wire.item !== sourceId) continue;
       const port = inputs.find((p) => p.key === portKey);
       if (port?.type !== "midi") continue;
@@ -325,7 +335,10 @@ export function clipTriggerTargets(items, registry, sourceId, sourcePort = "out"
     let plugin = null;
     try { plugin = registry.get(state?.type); } catch { continue; }
     if (!isTriggerableMidiSource(plugin)) continue;
-    const wire = inputRefs(state, TRIGGER_PORT)[0];
+    const stored = inputRefs(state, TRIGGER_PORT)[0];
+    // Through any routing point, for clipPlaybackKind's reason one level along:
+    // a press must restart the clip it is cabled to, however the cable is routed.
+    const wire = stored ? resolvedWireSource(items, registry, stored) : null;
     if (wire?.item !== sourceId) continue;
     if ((wire.port ?? "out") !== sourcePort) continue;
     targets.push(id);
@@ -392,7 +405,12 @@ export function clipPlayhead(items, registry, itemId, now, liveStarts = {}, live
     return playheadBeats(liveNow, started, tempo);
   }
   if (kind === "recordable") {
-    const wire = inputRefs(state, TRIGGER_PORT)[0];
+    const stored = inputRefs(state, TRIGGER_PORT)[0];
+    // Through any routing point: `clipPlaybackKind` classified this clip by the
+    // RESOLVED source, so reading the rate off the raw one would look past the
+    // joint at nothing and silently fall back to the timeline — the clip would
+    // stop following the clock the kind says it follows.
+    const wire = stored ? resolvedWireSource(items, registry, stored) : null;
     // The clock's OWN rate, off its own knob leaf. A source that is not a clock (no
     // bpm knob) falls back to the timeline reading rather than pretending to pulse.
     const bpm = Number(items?.[wire?.item]?.audioBpm);

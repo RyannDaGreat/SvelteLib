@@ -440,6 +440,35 @@ export function axisLock(dx, dy, prevAxis, bias = AXIS_LOCK_HYSTERESIS) {
 const ANCHOR_STICKINESS = 1.5;
 
 /**
+ * Pure function. HOW FAR A CANDIDATE MUST STILL BE COLLECTED OUT TO for the
+ * stickiness above to be reachable — `tol * ANCHOR_STICKINESS`.
+ *
+ * ── WHY THIS IS EXPORTED, AND WHAT WENT WRONG WITHOUT IT (audit, 2026-08-22) ─
+ * `stickyAnchorCandidate` holds an incumbent past `tol` — but it can only hold one
+ * that is IN THE LIST it is handed (`candidates.find((c) => c.id === incumbentId)`).
+ * A caller that pre-filters its candidates at plain `tol` therefore silently opts
+ * that candidate out of the whole mechanism: the incumbent vanishes from the list
+ * one pixel past tolerance, `held` is null, and the bind releases at exactly the
+ * hard threshold this hysteresis exists to remove.
+ *
+ * MEASURED IN THE CODE, not hypothesised: web/CanvasView.svelte's
+ * `anchorBindCandidates` pushed PRESET anchors with their true distance (sticky
+ * worked) and the DYNAMIC "closest" one only `if (d <= tol)` — so the one
+ * candidate that tracks the pointer continuously, and therefore flickers most, was
+ * the one kind with no hysteresis at all. A caller bounding its probe now asks
+ * HERE how far, instead of re-deciding it against a constant it cannot see.
+ *
+ * @param {number} tol - the bind tolerance in world units
+ * @returns {number} the distance a candidate must still be offered at
+ *
+ * @example anchorStickyReach(8) // 12
+ * @example anchorStickyReach(0) // 0
+ */
+export function anchorStickyReach(tol) {
+  return Math.max(0, Number(tol) || 0) * ANCHOR_STICKINESS;
+}
+
+/**
  * How much CLOSER a rival anchor must be than the incumbent before it steals the
  * binding, as a fraction of the incumbent's distance. Without it, two anchors a
  * hair apart trade the binding on sub-pixel pointer noise — the same flicker one

@@ -839,7 +839,70 @@ export function inputRefs(state, key) {
 }
 
 /**
- * Pure function. EVERY wire landing on one item, as `[inputPortKey, ref]` pairs in
+ * Pure function. THE REAL SOURCE BEHIND A WIRE — `ref` itself, unless it names the
+ * OUTPUT of a PASS-THROUGH widget, in which case the walk continues along whatever
+ * is wired into that widget's input, and so on down a chain of them.
+ *
+ * ── WHY THIS EXISTS (user, 2026-08-22) ──────────────────────────────────────
+ * The ROUTING POINT (plugins/route_node.js) is "just a lone connector … used to
+ * make the wires nicer": a dot an author drops into a cable to route it around
+ * their layout. The VALUE evaluator needs nothing for it — a joint that returns
+ * its input from `computeOutputs` is an ordinary node and the graph flows through
+ * it. But THREE consumers walk `inputs` THEMSELVES, asking "is my source the thing
+ * I care about?", and to each of them a joint is a stranger:
+ *   core/audio_mirror_diff.js — "is the source an engine module?" No → no engine
+ *     wire, and the patch goes SILENT where the author only tidied its layout.
+ *   core/live_control.js — "did this button's press reach me?" No → the press
+ *     routes nowhere.
+ *   core/clip_playback.js — "is this clip triggered by that control?" Same.
+ * All three now resolve through here first, so a joint is invisible to them too.
+ *
+ * A PLUGIN OPTS IN BY DECLARING `passThrough: {in, out}` — the port key a cable
+ * enters by and the one it leaves by. That is a declaration rather than a type
+ * check for the registry's usual reason: the next widget that is honestly a cable
+ * joint is covered the day it says so, and nothing here knows a type name.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {{item: string, port: string}} ref - the wire's stored source
+ * @returns {{item: string, port: string}} the resolved source (never null for a valid ref)
+ *
+ * @example // a plain source is its own answer
+ * @example const reg = {get: () => ({})};
+ * @example resolvedWireSource({a: {type: "src"}}, reg, {item: "a", port: "out"}) // {item: "a", port: "out"}
+ * @example // …and one behind a joint resolves to the source the joint carries
+ * @example const jreg = {get: (t) => t === "route" ? {passThrough: {in: "in", out: "out"}} : {}};
+ * @example const items = {a: {type: "src"}, r: {type: "route", inputs: {in: {item: "a", port: "out"}}}};
+ * @example resolvedWireSource(items, jreg, {item: "r", port: "out"}) // {item: "a", port: "out"}
+ * @example // an UNWIRED joint is its own source: nothing flows into it, so nothing flows out
+ * @example resolvedWireSource({r: {type: "route"}}, jreg, {item: "r", port: "out"}) // {item: "r", port: "out"}
+ */
+export function resolvedWireSource(items, registry, ref) {
+  let cur = ref;
+  const seen = new Set();
+  while (cur && typeof cur.item === "string" && typeof cur.port === "string") {
+    const key = `${cur.item}.${cur.port}`;
+    // A CYCLE OF JOINTS CANNOT ARISE FROM THE EDITOR (connectionRefusal refuses a
+    // loop at connect time) but CAN from a hand-edited document, and a walk that
+    // trusted the graph would hang the render. Stop where we are and let the
+    // caller see a pass-through as the source — which is a wire it drops, not a
+    // wrong sound.
+    if (seen.has(key)) return cur;
+    seen.add(key);
+    const through = pluginFor(items, registry, cur.item)?.passThrough;
+    if (!through || cur.port !== through.out) return cur;
+    const next = inputRefs(items[cur.item], through.in)[0];
+    // AN UNWIRED JOINT IS ITS OWN SOURCE. Nothing flows into it, so nothing flows
+    // out; returning the joint hands the caller an item it will not recognise and
+    // the wire is dropped, which is exactly what an empty cable should do.
+    if (!next) return cur;
+    cur = next;
+  }
+  return cur;
+}
+
+/**
+ * Pure function. EVERY WIRE landing on one item, as `[inputPortKey, ref]` pairs in
  * port-key order — `inputRefs` over the whole connection map, for the readers that
  * walk a node's inputs looking for a given source (the live-control and clip
  * routers, the audio mirror's connection list). A `multiple` input contributes one

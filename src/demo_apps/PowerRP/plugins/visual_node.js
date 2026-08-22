@@ -118,6 +118,31 @@ export function port(label, color = VISUAL_COLOR, multiple = false) {
 const hasCorners = (s) => visualShapeOf(s) !== "ellipse";
 
 /**
+ * Pure function. THE BODY TEXT'S RESOLVED TYPE STYLE — read by emit() below AND
+ * handed to the in-place editor through `inlineTextEdit.style`, so the caret is
+ * laid out against exactly the style the glyphs are drawn in. Two readers, one
+ * declaration: the divergence this closes was silent (the editor assumed
+ * plaintext's left/top/36/black) and would only have shown as a caret in the
+ * wrong place on an item missing one of the keys.
+ *
+ * @param {object} s - the folded item state
+ * @returns {{size: number, color: string, bold: boolean, font: string, boxStyle: {align: string, valign: string}}}
+ *
+ * @example visualTextStyle({}) // {size: 18, color: "#e8ecf8", bold: false, font: "system", boxStyle: {align: "center", valign: "middle"}}
+ * @example visualTextStyle({size: 30, align: "left"}).boxStyle.align // "left"
+ * @example visualTextStyle({textFill: "#ff0000"}).color // "#ff0000"
+ */
+export function visualTextStyle(s) {
+  return {
+    size: s?.size ?? DEFAULT_TEXT_SIZE,
+    color: s?.textFill ?? NODE_VALUE_INK,
+    bold: s?.bold ?? false,
+    font: s?.font ?? DEFAULT_FONT,
+    boxStyle: { align: s?.align ?? "center", valign: s?.valign ?? "middle" },
+  };
+}
+
+/**
  * Pure function. A whole-look preset row. Every look knob is written (the
  * plaintext family rule), `text` never is. `family` picks the header/rim pair off
  * core/node_chrome.NODE_FAMILIES so the flowchart looks share the node catalogue's
@@ -181,7 +206,11 @@ export const visualNodePlugin = {
   // descriptor fields this widget needs (see the file header): the glyph ink is
   // `textFill`, and the box is the shape's inscribed text box.
   activate: "inline_text_edit",
-  inlineTextEdit: { property: "text", plain: true, ink: "textFill", box: visualNodeTextBox },
+  // `style` hands the editor THE SAME resolved type style emit() lays out with, so
+  // the caret cannot land against a different alignment than the glyphs (the hole
+  // the charCount audit found: the editor otherwise assumes plaintext's
+  // left/top/36/#000000, which this widget does not use).
+  inlineTextEdit: { property: "text", plain: true, ink: "textFill", box: visualNodeTextBox, style: visualTextStyle },
   defaults: {
     type: "visual_node", x: 100, y: 100, w: DEFAULT_W, h: DEFAULT_H,
     z: 0, rotation: 0, scale: 1,
@@ -256,13 +285,12 @@ export const visualNodePlugin = {
       ops.push(text({
         text: String(s.text),
         x: tb.x, y: tb.y,
-        size: s.size ?? DEFAULT_TEXT_SIZE,
-        color: s.textFill ?? NODE_VALUE_INK,
-        bold: s.bold ?? false,
-        font: s.font ?? DEFAULT_FONT,
+        // THE SAME style declaration the in-place editor lays its caret out with
+        // (`inlineTextEdit.style`) — see visualTextStyle for the divergence that
+        // closes.
+        ...visualTextStyle(s),
         boxW: tb.w > 0 ? tb.w : Infinity,
         boxH: tb.h > 0 ? tb.h : Infinity,
-        boxStyle: { align: s.align ?? "center", valign: s.valign ?? "middle" },
       }));
     }
     ops.push(...portBeads(visualNodePlugin, s));

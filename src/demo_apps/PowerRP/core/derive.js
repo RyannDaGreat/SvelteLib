@@ -54,7 +54,7 @@ import { DEFAULT_WIRE_STYLE, EXEC_KEY, evaluateNodeGraph, inputRefs, portLayout,
 // THE FRAME DOMAIN — per-frame triggers (core/exec_frame.js). Its step is driven from
 // deriveRenderTree, the one pass that produces the picture; see the call site for why
 // running several times per frame is safe rather than merely tolerated.
-import { firedWireKeys, stepFrameDomain } from "./exec_frame.js";
+import { firedWireKeys, stateUsesFrameDomain, stepFrameDomain } from "./exec_frame.js";
 import { beginSimulationStep, cameraMaxTimestep } from "./simulation_history.js";
 import { particleTime } from "../render_gpu/particle_clock.js";
 
@@ -552,9 +552,28 @@ export function deriveRenderTree(state, registry, project = "") {
   // (pinned by tests/execframe_test.js's Δt = 0 check). A frozen consumer — a
   // thumbnail, the minimap, a PNG export — writes nothing at all, structurally.
   //
-  // AND IT COSTS A DECK WITHOUT ONE NOTHING: `stateUsesFrameDomain` is a scan for a
-  // plugin declaring `frameStep` and returns before allocating anything, so every
-  // document that predates this derives byte-identically.
+  // AND IT COSTS A DECK WITHOUT ONE NOTHING — BUT ONLY SINCE THE GATE BELOW, and
+  // that is the correction rather than the claim. This sentence used to rest on
+  // `stateUsesFrameDomain` returning early INSIDE `stepFrameDomain`… while the
+  // argument expression was evaluated first, unconditionally. So `beginSimulationStep`
+  // ran on EVERY derive of EVERY deck, and in the LIVE regime `particleTime()` is a
+  // wall clock with no per-frame latch: derive read a LATER instant than the equation
+  // pass had, and ROLLED THE HISTORY A SECOND TIME within one frame. MEASURED over 30
+  // live frames on a deck with `rotation: "= @@ + dt"`: the equation integrated 0.238 s
+  // of 0.488 s elapsed — the rest went to a step nothing read. `= @@ + dt` is supposed
+  // to integrate ALL elapsed time, and before the frame domain existed it did.
+  //
+  // So the scan is hoisted OUT of the argument and gates the whole call. A deck with
+  // no frame node now derives byte-identically again, which is what this paragraph
+  // always said.
+  //
+  // WHAT IS STILL SPLIT, STATED RATHER THAN HIDDEN: a deck that DOES use the frame
+  // domain still opens two steps per live frame — the equation pass's and this one —
+  // so each gets part of the interval. Fixing that needs ONE clock reading per rAF
+  // tick shared by both passes (a latch in render_gpu/particle_clock.js, whose
+  // absence is the root cause), not another gate here; every consumer in a frame
+  // must see one `now`. Exports and the paused editor are unaffected either way
+  // (the export overrides the clock per frame; the editor's is frozen).
   // `beginSimulationStep`, NOT `simulationTimestep`, and the difference is the whole
   // mechanism rather than a choice between two spellings of "how long is this frame".
   // MEASURED: with `simulationTimestep` the deck never ticked. That function OBSERVES
@@ -564,7 +583,9 @@ export function deriveRenderTree(state, registry, project = "") {
   // initial condition while the clock ran. `beginSimulationStep` is the one that rolls
   // `prev ← cur` — and it rolls ONLY when the clock has moved, which is precisely what
   // makes calling it from a function that runs several times per frame correct.
-  const frame = stepFrameDomain(items, registry, beginSimulationStep(particleTime(), cameraMaxTimestep(state)));
+  const frame = stateUsesFrameDomain(items, registry)
+    ? stepFrameDomain(items, registry, beginSimulationStep(particleTime(), cameraMaxTimestep(state)))
+    : NO_FRAME_STEP;
   // WHICH PINS PULSED, published for `deriveWires` to colour with. It is a module
   // cell rather than a return value because `deriveRenderTree` returns a NODE LIST
   // and every one of its ~20 callers destructures it as one; widening that signature
@@ -574,7 +595,7 @@ export function deriveRenderTree(state, registry, project = "") {
   // mutated, so a reader either sees this frame's set or the previous one's, never a
   // half-built one. A deck with no frame nodes writes the same frozen empty set every
   // time, so nothing that predates this can observe the cell at all.
-  lastFiredWires = frame.pulses > 0 ? firedWireKeys(frame.fired) : NO_FIRED_WIRES;
+  const firedThisPass = frame.pulses > 0 ? firedWireKeys(frame.fired) : null;
   for (const [id, outputs] of Object.entries(frame.outputs)) {
     // MERGED OVER the graph's own answer rather than replacing it: a frame node may
     // publish some ports statically (a threshold readout) and some per-step (a
@@ -706,7 +727,12 @@ export function deriveRenderTree(state, registry, project = "") {
     };
   });
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));
-  return resolveMetaballScene(resolveSkyScene(resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes)))));
+  const tree = resolveMetaballScene(resolveSkyScene(resolveGroupSubtrees(resolveCropTargets(applyGroupParenting(nodes)))));
+  // THE FIRED SET TRAVELS WITH THE TREE (firedByTree): stamped on the array this
+  // pass RETURNS — the object `deriveWires` will be handed — rather than on the
+  // intermediate `nodes`, which the resolve chain above may have replaced.
+  if (firedThisPass) firedByTree.set(tree, firedThisPass);
+  return tree;
 }
 
 /**
@@ -1829,24 +1855,45 @@ export function nodePortAnchors(node) {
  *  every reader gets one identity to compare against. */
 const NO_FIRED_WIRES = Object.freeze(new Set());
 
-/** Which exec pins pulsed on the most recent `deriveRenderTree` pass. Written there,
- *  read by `deriveWires` — see the write site for why this is a cell rather than a
- *  return value, and why replacing (never mutating) it is what keeps it safe. */
-let lastFiredWires = NO_FIRED_WIRES;
+/** What a deck with NO frame node steps to: the shape `stepFrameDomain` returns when
+ *  it finds none, frozen and shared so the gated-out path allocates nothing. */
+const NO_FRAME_STEP = Object.freeze({ outputs: Object.freeze({}), fired: Object.freeze({}), pulses: 0 });
 
 /**
- * Query. The exec pins that pulsed on the most recent derive — what `deriveWires`
- * colours with when no set is passed explicitly.
+ * WHICH EXEC PINS PULSED, PER DERIVED TREE — keyed on the node list `deriveRenderTree`
+ * returned, so the answer travels WITH the pass that computed it.
  *
+ * ── IT WAS A MODULE CELL, AND THAT WAS WRONG (audit, 2026-08-22) ────────────
+ * The cell's own comment claimed it was "read by `deriveWires` moments later in the
+ * same walk". The call graph says otherwise: `deriveRenderTree` runs from
+ * web/cameraFrame.js (thumbnails, the minimap, PNG/MP4 export), PresentMode and six
+ * places in web/app.svelte.js, and `deriveWires` is called from
+ * render_gpu/ports.sceneIR — a SEPARATE walk. Any of those derives landing between
+ * the canvas's derive and its sceneIR replaced the set, so a flash could be dropped
+ * or, worse, painted from another slide's pass. A WeakMap keyed on the tree cannot
+ * cross-talk: a walk either has the set its own derive produced, or none.
+ *
+ * A tree that was COPIED before reaching sceneIR (a filter, a spread) is not a key
+ * here and reads NO_FIRED_WIRES — no flash rather than the wrong one, which is the
+ * right way for this to degrade.
+ */
+const firedByTree = new WeakMap();
+
+/**
+ * Query. The exec pins that pulsed on the derive that produced `nodes` — what
+ * `deriveWires` colours with when no set is passed explicitly.
+ *
+ * @param {object[]} [nodes] - a tree from deriveRenderTree
  * @returns {Set<string>} "<item>.<port>" keys, empty when nothing fired
  *
- * @example // firedWiresThisFrame().size // 0 on a deck with no per-frame triggers
+ * @example firedWiresThisFrame([]) // Set(0) {}
+ * @example firedWiresThisFrame() // Set(0) {}
  */
-export function firedWiresThisFrame() {
-  return lastFiredWires;
+export function firedWiresThisFrame(nodes) {
+  return (nodes && firedByTree.get(nodes)) || NO_FIRED_WIRES;
 }
 
-export function deriveWires(nodes, firedKeys = lastFiredWires) {
+export function deriveWires(nodes, firedKeys = firedWiresThisFrame(nodes)) {
   const anchorsByItem = new Map();
   for (const n of nodes ?? []) {
     if (typeof n.plugin?.ports !== "function") continue;
