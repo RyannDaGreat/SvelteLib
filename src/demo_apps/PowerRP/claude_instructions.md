@@ -6806,13 +6806,18 @@ per-port override = `wire` on any port declaration (validated in
 show; `visualNodePorts` drops it). `web/ListField.svelte` gained the `select`
 field control for it. No shipped non-visual port declares one (pinned).
 
-### Inspector scroll memory (same day)
+### Panel scroll memory (2026-08-21/22)
 
-The Property Panel keeps its scroll position across deselect → reselect and
-across switching items. `web/Inspector.svelte` remembers `.panel-body`'s
-scrollTop while an item is selected and restores it after the next selection's
-rows mount (`tick()`); view state only, session-local, never stored.
-`tests/inspector_scroll_probe.js` pins it.
+EVERY panel keeps its scroll position across a content collapse and regrowth
+(deselect → reselect, switching items, the Tools pane losing and regaining its
+sections). It lives in `web/Panel.svelte`, the owner of the ONE scroller
+(`.panel-body`): every scroll event records scrollTop except the browser's
+clamp (a scroll landing exactly on a maximum smaller than what was remembered),
+and a ResizeObserver on the body's content restores the remembered position after
+any content-height change. View state only, session-local, never stored. It
+first landed inside the Inspector and the user moved it up: "It should have been
+done higher up in the class hierarchy." `tests/panel_scroll_probe.js` pins both
+the properties panel and the tools pane.
 
 ### Known bounds / follow-ups
 

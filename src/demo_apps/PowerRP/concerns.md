@@ -772,3 +772,13 @@ never source we author.
   as "inherit"), which needed a `select` field control in ListField.
 - Concurrency note: derive.js changed under me (another session added `fired` on
   wires); edits were re-based on the live text rather than on my stale copy.
+- **CORRECTION — scroll memory belonged in Panel, not Inspector** (user, 2026-08-22:
+  "same applies to ALL panels including tool panels. It should have been done
+  higher up in the class hierarchy"). The Inspector-local version is deleted;
+  `web/Panel.svelte` now remembers `.panel-body`'s last user scroll (a scroll
+  event landing exactly on a shrunken maximum is the browser's clamp, not the
+  user, and is ignored) and restores it from a ResizeObserver on the body's
+  content whenever that content's height changes. Every pane gets it with no
+  opt-in. `tests/panel_scroll_probe.js` (renamed from inspector_scroll_probe)
+  covers the properties panel AND the tools pane. Lesson: a fix for "the
+  scroller resets" goes on the scroller.

@@ -34,7 +34,6 @@
 -->
 <script>
   import "iconify-icon";
-  import { tick } from "svelte";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
   import { appRankItems, appRankGrouped } from "./searchRank.js";
@@ -290,40 +289,10 @@
   // The currently-picked item id (whether created here or not) — drives the
   // name row, the not-yet-created path, and the picker value.
   let pickedItemId = $derived(target?.kind === "item" ? target.itemId : null);
-
-  // ── SCROLL MEMORY (user, 2026-08-21: "the properties need to stop scrolling
-  // back to the top each time I deselect and reselect a widget") ──────────────
-  // THE PANEL BODY IS THE SCROLLER (app.css: "the Panel body is the ONLY
-  // scroller"), and this component is its child. Deselecting unmounts `.rows`,
-  // the content collapses to "Nothing selected", and the browser CLAMPS the
-  // scroller's scrollTop to 0 — so the next selection mounts its rows with the
-  // panel at the top, whatever the author was looking at a click ago. Nothing
-  // here chose that; it is what a shrinking scroll container does.
-  //
-  // So the position is REMEMBERED while an item is selected (every scroll event
-  // records it; the clamp-to-0 that follows a deselect fires with no item
-  // selected and is therefore NOT recorded) and RESTORED after the rows of the
-  // next selection have mounted (`tick()` — the height has to exist before a
-  // scrollTop can land on it). Session-local view state, like the collapse map:
-  // it changes nothing that renders, so it is neither document state nor a
-  // setting. Switching directly from one item to another goes through the same
-  // restore, which is what keeps a flowchart's nodes comparable at one scroll
-  // depth as you click through them.
-  let rootEl = $state(null);
-  let rememberedScrollTop = 0;
-  $effect(() => {
-    const scroller = rootEl?.parentElement;
-    if (!scroller) return;
-    const remember = () => { if (sel) rememberedScrollTop = scroller.scrollTop; };
-    scroller.addEventListener("scroll", remember, { passive: true });
-    return () => scroller.removeEventListener("scroll", remember);
-  });
-  $effect(() => {
-    const scroller = rootEl?.parentElement;
-    if (!sel || !scroller) return;
-    const want = rememberedScrollTop;
-    tick().then(() => { if (scroller.scrollTop !== want) scroller.scrollTop = want; });
-  });
+  // SCROLL MEMORY across deselect/reselect is NOT this component's: it belongs to
+  // the scroller, web/Panel.svelte, which every pane shares (user: "same applies
+  // to ALL panels including tool panels. It should have been done higher up in
+  // the class hierarchy"). It briefly lived here; do not bring it back.
   // Creation slide of the picked item (first slide keying its type).
   let creationIndex = $derived(pickedItemId == null ? null
     : keyframeIndices(app.doc, ["items", pickedItemId, "type"])[0] ?? null);
@@ -3649,7 +3618,7 @@
   </div>
 {/snippet}
 
-<div class="inspector" bind:this={rootEl}>
+<div class="inspector">
   <div class="inspector-head">
     <!-- The item picker lists EVERY object on EVERY slide (Round 2 #29: object
          select becomes searchable) — unbounded, so it types-to-filter ALWAYS,
