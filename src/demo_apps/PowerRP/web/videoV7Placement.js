@@ -10,6 +10,7 @@
  */
 
 import { apply } from "../core/transform.js";
+import { isPlayableVideoSrc } from "../core/video_sampling.js";
 
 /** The widget type this overlay serves (mirrors plugins/demo/video_v7.js). */
 export const VIDEO_V7_TYPE = "video_v7";
@@ -67,22 +68,11 @@ export function overlayCssMatrix(world, w, h, view) {
   };
 }
 
-/**
- * Pure function. Whether `src` is a real playable VIDEO source for the overlay,
- * vs. the blank-placeholder image data URI a freshly-added widget carries. A
- * `data:image/…` URI decodes as an image, never a video, so the overlay must NOT
- * hand it to a <video> element (which errors) — such a widget shows only its
- * Skia poster until a real clip is set.
- *
- * @param {*} src candidate source
- * @returns {boolean}
- * @example isPlayableVideoSrc("clip.mp4") // true
- * @example isPlayableVideoSrc("") // false
- * @example isPlayableVideoSrc("data:image/png;base64,iVBORw0KGgo=") // false
- */
-export function isPlayableVideoSrc(src) {
-  return typeof src === "string" && src.length > 0 && !src.startsWith("data:image/");
-}
+// `isPlayableVideoSrc` USED TO BE DEFINED HERE and now lives in
+// core/video_sampling.js, because video_v6's overlay needs the same test and a
+// web/ module for one video experiment is the wrong place for another's to reach.
+// The move is recorded rather than silent: this file is where anyone looking for
+// it will look first.
 
 /**
  * Pure function. Builds the per-widget overlay descriptors for every visible

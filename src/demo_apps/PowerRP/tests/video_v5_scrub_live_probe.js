@@ -389,7 +389,7 @@ try {
     console.log(`  seeks: ${d("decoded")} decoded, ${d("dropped")} dropped as superseded  (pre-fix would decode ${d("requests") - d("exact")} = every non-cached request)`);
     console.log(`  decoder REPOSITIONS (element "seeked" events — module-independent, a FLOOR on decoder work, not the request count): ${seeks.total} total — ${seeks.duringGesture} during the ${SCRUB_MS} ms gesture, ${seeks.afterRelease} after release, last one +${seeks.lastAfterReleaseMs.toFixed(0)} ms past release`);
     console.log(`  backlog drain after release: ${drain.ms.toFixed(0)} ms (on-screen scope decode counter)`);
-    console.log(`  cache ${after.cacheSize} (cap ${await page.evaluate(() => window.__v5.V5_SCRUB_CACHE_CAP)}) + ${after.pinned} pinned, ${after.failed} failed, ${after.inflight} in flight`);
+    console.log(`  cache ${after.cacheSize} (cap ${await page.evaluate(() => window.__v5.V5_SCRUB_CACHE_CAP)}) + ${after.pinned} pinned, ${after.failed} failed, ${after.retrying ?? 0} retrying, ${after.inflight} in flight`);
     console.log(`  filmstrip: ${dir}`);
     return { firstFrameMs, frames, blanks, box, after, gesture, drain, seeks, delta: { exact: d("exact"), held: d("held"), blank: d("blank"), decoded: d("decoded"), dropped: d("dropped"), requests: d("requests") } };
   }

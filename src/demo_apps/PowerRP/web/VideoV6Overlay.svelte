@@ -17,6 +17,7 @@
   import { createVideoV6Engine } from "./videoV6Gpu.js";
   import { acquireVideoV6El, setActiveVideoV6, onVideoV6Frame, disposeVideoV6 } from "./videoV6Registry.js";
   import { videoV6DeviceQuad } from "./videoV6Layout.js";
+  import { isPlayableVideoSrc } from "../core/video_sampling.js";
 
   // nodes: the POST-CULL visible video_v6 render nodes (CanvasView filters + feeds
   // these); view: the camera {zoom,panX,panY,dpr}; deviceW/H: the scene canvas
@@ -65,7 +66,13 @@
     if (view) {
       for (const n of nodes) {
         const src = n.state.src;
-        if (typeof src !== "string" || src.length === 0) continue;
+        // A BLANK WIDGET IS POSTER-ONLY, NOT A BROKEN CLIP. This test used to be
+        // `typeof src === "string" && src.length > 0` — the weaker half of
+        // isPlayableVideoSrc, missing its data-URI clause — so the widget's OWN
+        // default (BLANK_SRC, a 1x1 transparent PNG) was handed to a <video>,
+        // which fires `error` with MediaError code 4 and made the registry print
+        // "failed to load source" for a widget the author had only just inserted.
+        if (!isPlayableVideoSrc(src)) continue;
         const flags = { autoplay: n.state.autoplay !== false, loop: n.state.loop !== false, muted: n.state.muted !== false };
         const el = acquireVideoV6El(src, flags);
         flagsBySrc.set(src, flags);

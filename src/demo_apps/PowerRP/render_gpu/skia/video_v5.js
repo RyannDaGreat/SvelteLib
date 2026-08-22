@@ -434,13 +434,40 @@ const scrubInflight = new Map();
  *  outgoing frame stays alive until a newer decode replaces it as the pin, and the
  *  LRU still performs the one .delete(). */
 const scrubHeld = new Map();
-/** scopedV5ScrubKey → the message of a seek/decode that FAILED. Such a frame is
- *  never held: a hold that can never resolve would make the drawn pixels depend on
- *  cache history rather than on the document, and "stale forever" is a worse defect
- *  than an honest empty quad. It draws nothing (exactly as before this file grew a
- *  hold) and is not re-requested — the failure was already reported LOUDLY, and this
- *  module's contract is that a failure is never retried silently. */
+/** scopedV5ScrubKey → `{message, attempts}` for a seek/decode that FAILED. Such a
+ *  frame is never held: a hold that can never resolve would make the drawn pixels
+ *  depend on cache history rather than on the document, and "stale forever" is a
+ *  worse defect than an honest empty quad. It draws nothing (exactly as before this
+ *  file grew a hold), and every failure is reported LOUDLY — this module's contract
+ *  is that a failure is never retried SILENTLY, which is not the same as never
+ *  retried.
+ *
+ *  IT COUNTS ATTEMPTS BECAUSE "FAILED" WAS TREATED AS PERMANENT AND IS NOT.
+ *  `createImageBitmap` on an already-loaded element throws InvalidStateError
+ *  TRANSIENTLY — measured clustering into windows on this host, with the same tree
+ *  green minutes later (tests/image_stack_live_probe.js's docblock records what is
+ *  and is not established about the trigger). One such throw used to blacklist the
+ *  key for the LIFE OF THE PAGE: the widget went blank and stayed blank, and no
+ *  paint, scrub or reselect could ever bring it back, because the one gate that
+ *  could re-request it read `scrubFailed.has(key)`. A transient browser state was
+ *  recorded as a permanent document one.
+ *
+ *  A RETRY COSTS ONE DECODE, NOT ONE PER PAINT. The live pump is coalesced per
+ *  source (`entry.pumpQueued`), so re-kicking a failed key on every paint still
+ *  yields at most one seek+decode in flight for that source at a time. So
+ *  V5_SCRUB_MAX_ATTEMPTS attempts are V5_SCRUB_MAX_ATTEMPTS real decodes spread
+ *  across a genuine interval, not three consecutive frames of one gesture. Past the
+ *  cap the key is permanent — an endlessly-retrying blank quad would be a silent
+ *  spin, which is the thing this map was written to prevent. */
 const scrubFailed = new Map();
+
+/** How many times a failing (scope, source, time, wrap) frame is decoded before the
+ *  failure is treated as PERMANENT. Small, because the failure mode this exists for
+ *  is a brief window, and because each attempt is a real seek+decode: the point is
+ *  to survive a transient throw, not to grind on a clip that genuinely will not
+ *  decode. The AWAITED path (requestVideoV5ScrubFrame) never consulted this map at
+ *  all and so was always retry-on-request; this cap governs the LIVE paint path. */
+const V5_SCRUB_MAX_ATTEMPTS = 3;
 
 /** Max decoded V5 scrub frames kept at once — comfortably exceeds the distinct
  *  (source, time) frames a realistic scene shows, so a one-shot prepare pass never
@@ -707,15 +734,45 @@ function kickLiveV5ScrubFrame(uploader, ref, seekTime, wrap, key) {
   });
 }
 
-/** Command, UNTESTED. Reports a failed scrub frame LOUDLY and records the key as
- *  failed, so the hold never covers for it and it is not silently re-requested every
- *  paint. Untested because a seek/decode failure on an ALREADY-LOADED element could
- *  not be induced from a probe; the sibling guard it feeds — a source that fails to
- *  LOAD draws nothing rather than holding another clip's frame — IS covered
- *  (tests/video_v5_scrub_live_probe.js, the broken-source phase). */
+/** Command. Reports a failed scrub frame LOUDLY and counts the attempt, so the hold
+ *  never covers for it and it is not silently re-requested forever. The message says
+ *  WHICH of the two it is — a retry pending, or the cap reached and the frame given
+ *  up on — because "failed" alone left a reader unable to tell a blank quad that is
+ *  about to recover from one that never will.
+ *
+ *  The failing-decode branch itself is UNTESTED in the sense the previous docblock
+ *  meant: a seek/decode failure on an ALREADY-LOADED element could not be INDUCED
+ *  from a probe. It is nonetheless the branch the field reports hit (see
+ *  scrubFailed), which is why it now counts instead of latching. The sibling guard it
+ *  feeds — a source that fails to LOAD draws nothing rather than holding another
+ *  clip's frame — IS covered (tests/video_v5_scrub_live_probe.js, the broken-source
+ *  phase), and the counting rule itself is covered by
+ *  render_gpu/tests/video_v5_retry_test.js against the map directly. */
 function noteV5ScrubFailure(key, ref, seekTime, err) {
-  scrubFailed.set(key, String(err?.message ?? err));
-  console.error(`PowerRP video_v5 (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${err?.message ?? err}`);
+  const attempts = (scrubFailed.get(key)?.attempts ?? 0) + 1;
+  const message = String(err?.message ?? err);
+  scrubFailed.set(key, { message, attempts });
+  const verdict = attempts >= V5_SCRUB_MAX_ATTEMPTS
+    ? `giving up after ${attempts} attempt(s)`
+    : `attempt ${attempts} of ${V5_SCRUB_MAX_ATTEMPTS}, will retry`;
+  console.error(`PowerRP video_v5 (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${message} (${verdict})`);
+}
+
+/**
+ * Pure function. Whether this key's failures have reached the cap, i.e. the frame is
+ * given up on rather than pending another try. A key with NO record has not failed,
+ * so it is not given up on either.
+ *
+ * @param {Map<string, {message:string, attempts:number}>} failed the failure map
+ * @param {string} key a scopedV5ScrubKey
+ * @param {number} [cap] attempts at which a failure becomes permanent
+ * @returns {boolean}
+ * @example v5ScrubGivenUp(new Map(), "k") // false  (never failed)
+ * @example v5ScrubGivenUp(new Map([["k", {message: "x", attempts: 1}]]), "k") // false  (retry pending)
+ * @example v5ScrubGivenUp(new Map([["k", {message: "x", attempts: 3}]]), "k") // true
+ */
+export function v5ScrubGivenUp(failed, key, cap = V5_SCRUB_MAX_ATTEMPTS) {
+  return (failed.get(key)?.attempts ?? 0) >= cap;
 }
 
 /**
@@ -752,10 +809,14 @@ export function getVideoV5ScrubFrame(uploader, ref, seekTime, wrap) {
   _scrubStats.requests += 1;
   const cached = scrubCache.get(key);
   if (cached) { touchScrubLru(key); return noteV5ScrubResolution(uploader, "exact", cached); }
-  // A frame that FAILED, or a source that failed to load, gets no hold and no retry
-  // (see scrubFailed): a stale frame that can never resolve would silently replace a
-  // reported failure with wrong-but-plausible pixels.
-  if (scrubFailed.has(key) || scrubRegistry.get(ref)?.status === "error") return noteV5ScrubResolution(uploader, "failed", null);
+  // A frame GIVEN UP ON, or a source that failed to load, gets no hold: a stale frame
+  // that can never resolve would silently replace a reported failure with
+  // wrong-but-plausible pixels. `v5ScrubGivenUp` and not `scrubFailed.has` — a key
+  // that has failed FEWER than V5_SCRUB_MAX_ATTEMPTS times falls through to the kick
+  // below and is decoded again, because the failure this guard meets in the field
+  // (a transient createImageBitmap throw) recovers on its own and `.has` made it
+  // permanent. Past the cap the behaviour is exactly what it always was.
+  if (v5ScrubGivenUp(scrubFailed, key) || scrubRegistry.get(ref)?.status === "error") return noteV5ScrubResolution(uploader, "failed", null);
   kickLiveV5ScrubFrame(uploader, ref, seekTime, wrap, key); // fire-and-forget; repaints on land
   const heldKey = scrubHeld.get(scopedV5HoldKey(uploader, ref));
   // The pin (evictV5ScrubFrames) is what makes this lookup safe: a held key cannot
@@ -859,6 +920,12 @@ export function videoV5ScrubStats() {
     ..._scrubStats,
     lastResolution: Object.fromEntries(_scrubLastByScope),
     decodedByScope: Object.fromEntries(_scrubDecodedByScope),
-    cacheSize: scrubCache.size, pinned: scrubHeld.size, failed: scrubFailed.size, inflight: scrubInflight.size,
+    // `failed` counts keys GIVEN UP ON, not keys that have ever thrown, so a
+    // transient failure awaiting its retry does not read as a lost frame; `retrying`
+    // is that second population, reported rather than folded in.
+    cacheSize: scrubCache.size, pinned: scrubHeld.size,
+    failed: [...scrubFailed.keys()].filter((k) => v5ScrubGivenUp(scrubFailed, k)).length,
+    retrying: [...scrubFailed.keys()].filter((k) => !v5ScrubGivenUp(scrubFailed, k)).length,
+    inflight: scrubInflight.size,
   };
 }

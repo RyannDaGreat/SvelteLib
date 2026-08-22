@@ -297,3 +297,32 @@ export function emptySpanReport(widget, state) {
       "Set Video end (s) to the clip's length (it is only knowable once the video decodes, so it is a value you supply).",
   };
 }
+
+/**
+ * Pure function. Whether `src` is a real playable VIDEO source, as opposed to the
+ * blank-placeholder IMAGE data URI a freshly-added video widget carries as its
+ * default. A `data:image/…` URI decodes as an image and never as a video, so an
+ * overlay must NOT hand one to a `<video>` element: the element fires `error`
+ * with MediaError code 4 ("Format error"), which every video registry here
+ * reports loudly — so an untouched widget, straight off the insert menu with its
+ * own defaults, printed a console error about a corrupt clip the author never
+ * chose. Such a widget shows only its Skia poster until a real clip is set.
+ *
+ * THIS LIVES IN core/ BECAUSE TWO OVERLAYS NEED IT AND ONE MAY NOT IMPORT THE
+ * OTHER. It was written for video_v7's placement module, and video_v6's overlay
+ * carried the WEAKER half of the same test — `typeof src === "string" &&
+ * src.length > 0`, missing the data-URI clause — which is exactly the defect
+ * above. A hand-maintained second copy of another module's predicate is this
+ * codebase's worst recurring defect (see this file's header); there is one.
+ *
+ * @param {*} src candidate source
+ * @returns {boolean}
+ * @example isPlayableVideoSrc("clip.mp4") // true
+ * @example isPlayableVideoSrc("/asset/Demo/pan.mp4") // true
+ * @example isPlayableVideoSrc("") // false
+ * @example isPlayableVideoSrc(null) // false
+ * @example isPlayableVideoSrc("data:image/png;base64,iVBORw0KGgo=") // false
+ */
+export function isPlayableVideoSrc(src) {
+  return typeof src === "string" && src.length > 0 && !src.startsWith("data:image/");
+}

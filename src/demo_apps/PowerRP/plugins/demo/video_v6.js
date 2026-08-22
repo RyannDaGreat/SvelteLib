@@ -38,10 +38,18 @@ import * as T from "../../core/transform.js";
 import { rect } from "../../render_gpu/ir.js";
 
 /** A 1×1 transparent PNG — the default `src` so a freshly placed widget is a
- *  valid (invisible-until-sourced) item, not a broken ref. A <video> pointed at
- *  a PNG simply never produces a video frame (the overlay draws nothing for it),
- *  so the backing rect shows until a real clip is dropped/picked. Mirrors the
- *  image/video widgets' BLANK_SRC. */
+ *  valid (invisible-until-sourced) item, not a broken ref. Mirrors the
+ *  image/video widgets' BLANK_SRC.
+ *
+ *  THE OVERLAY MUST NOT HAND THIS TO A <video>, and this docblock used to say it
+ *  could: "a <video> pointed at a PNG simply never produces a video frame" is
+ *  FALSE. The element fires `error` with MediaError code 4 ("Format error"), and
+ *  videoV6Registry reports that loudly — correctly, since a src that will not
+ *  decode is exactly what it exists to report. The result was a console error on
+ *  INSERT, from a widget carrying nothing but its own defaults, describing a
+ *  corrupt clip the author had never chosen. `core/video_sampling.isPlayableVideoSrc`
+ *  is the gate (web/VideoV6Overlay.svelte); until a real clip is set the widget
+ *  is poster-only and the backing rect shows. */
 export const BLANK_SRC =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
