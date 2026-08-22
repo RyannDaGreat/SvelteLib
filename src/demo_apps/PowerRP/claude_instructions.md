@@ -6910,3 +6910,142 @@ unit both ways, the split, and a miss on empty canvas doing nothing).
 - A joint's `portType` can be changed to something its existing wires do not match;
   the wires still draw and the value reads its type's zero. That is the same
   behaviour any port-list change already has.
+
+
+## USER MESSAGES, VERBATIM — 2026-08-21 / 2026-08-22 (ROUNDS 8-9 and the audit)
+
+**WHY THIS SECTION EXISTS.** CLAUDE.md's rule is that user requirements are "captured
+verbatim when given", and the ROUND 8/9 sections above quote only the fragments each
+design turned on. The user caught that: *"it looks lieke you forgot t copy my
+verbatim"*. A fragment is an INTERPRETATION — it is the part a reader (me) judged
+load-bearing, which is exactly the judgement a future reader needs to be able to
+re-make for themselves. So the full text of every ask in this session is here, in
+order, unedited (typos included; where a message came with a screenshot or a console
+dump, that is noted in brackets).
+
+---
+
+**1 — the visual node (the founding ask):**
+
+"I'm going to need to make a custom node element. You know how audio nodes look right
+now? Well, I just want one so that I can do visuals. So it should be able to let me
+customize the name of the node, the color, the shape of the node, does it have pointy
+edges, is it a circle kind of thing, and I need to be able to customize the list of
+inputs and outputs it has, and the colors of those inputs and outputs as well. This
+will be purely for visual things at the moment, but I mean, so the nodes won't actually
+do anything, but it should share the same structure, the same data type as the audio
+ones. It just doesn't do anything. We'll just call this a visual node widget, and some
+of them could be diamonds, some of them could be circles or ovals. We could have the
+ones we have right now, which is like the top area for the label, but we also might want
+another kind which looks slightly different, where it would look like a flow chart,
+right, where the, where I double click it and it has text built into it, and I'm just
+editing the text on this singular widget. It's not a compound widget, it's not multiple
+widgets on top of each other. So it makes it easy to quickly build a chart by like
+making some nodes and like copy pasting them around and stuff. Yeah, so I want to have a
+diamond one, I want to have a circle one, I want to have a square one with like, and one
+with like variable amounts of rounded edges, and also one with chamfered edges. That too.
+Those are the main shapes I'm thinking of right now. Oh, and maybe a triangle one too.
+And then when I double click again, I edit the text in the middle, and I should be able
+to control the font just like I would normal, a plain text, a normal plain text. So it's
+like, maybe under the hood we can use the rendering functions of the plain text widget,
+plus the, you know, the other shapes, and we could have like a fill material for that
+shape too, which by default would be a singular color. It could be gradients, and we're
+like, you know. Well, basically it takes all the things from other widgets. It's a more
+customizable node, and we can also customize the type of, yeah, the color that comes out
+of each one. Yeah, just like what I just said. There would be no typers. Yeah. All right,
+notify me when it's done."
+
+**2 — labels, presets, and `multiple`:**
+
+"Yeah, I mean, sometimes we'll have only text in the middle of it. Sometimes we'll have
+labeled nodes, sometimes the nodes might be unlabeled. And we can have presets for all of
+these. I mean, if I just have a zero null string for the label, right, that explains where
+the node entrance and exit will come out of, right? So yeah, I mean, the audio nodes have
+a title on the top and then labels for all the all the actual nodes in the bottom, but
+there's the other kind which like won't even have that might actually have one to many,
+like we may even make it allowed to accept multiple as an option for the inputs like that
+should probably be a Boolean, by the way, if you're not familiar with Boolean. Is the
+ability for all nodes, by the way, including audio ones, which will be, I guess, by
+default turned off, but except multiple is something we could turn on, which lets one node
+input except multiple node outputs. This is typically reserved for if the ordering doesn't
+matter."
+
+(Note "except multiple" is dictation for ACCEPT multiple — the flag shipped as `multiple`.)
+
+**3 — where doctrine goes** (quoting back a paragraph I had put in CLAUDE.md):
+
+"THE VISUAL NODE IS A NODE THAT DOES NOTHING (user, 2026-08-21: "I just want o --> That
+does not go in claudeMD. In fact, we have tons of junk in the claudemd that should have
+gone in the manifest. Claudemd needs to have guiding rules - not specifics unless they're
+critical hazards"
+
+**4 — [screenshot of a labelled chamfered "Block" with its text sitting low]:**
+
+"--> is there a way to get just centered text? the text is not vertically centered."
+
+**5 — [screenshot of the Inspector's PORTS section]:**
+
+"what a visually confusing mess...why are they not indented like others i.e. gradient and
+material etc? this looks so flat but it's not."
+
+**6 —** "Which property controls whether or not the top label for the note is there?"
+
+**7 —** "the properties need to stop scrolling back to the top each time I deselect and
+reselect a widget...so annoying."
+
+**8 — [screenshot of a hooked bezier between two close nodes]:**
+
+"this looks silly. why not just be a straight line in this situation? Options?"
+
+**9 —** "I want the BEST solution. not the cheapest."
+
+**10 —** "push when done"
+
+**11 — the scroll fix was in the wrong class:**
+
+"uh....same applies to ALL panels including tool panels. It should have been done higher
+up in the class hierarchy"
+
+**12 — [screenshots of a Font row erroring on `=note_font`, and of the same variable in the
+Variables panel]:**
+
+"why is this erroring. We recently pulled a ton of commits. were they buggy"
+
+…and, in the same breath:
+
+"You have to analyze deeply. Did they make other mistakes too"
+
+**13 —** "Prepare and fix"
+
+**14 — the routing point:**
+
+"it would be nice if I could double click on a wire to add a routing point widget....just
+kinda a lone connector...used to make the wires nicer"
+
+**15 —** "a routing node is just a lone connector pretty much - it can let you split one
+connector into multiple outputs later on down the connection, which is nice for
+formatting"
+
+**16 —** "as you may have guessed - it is a widget too"
+
+**17 — [a console dump: a 404, the local-storage notice, `PowerRP expression error at
+vars.note_font: Unknown variable "jetbrains"`, two missing local assets, the videoV8
+WebGPU line, and ~100 repeats of `Uncaught TypeError: Cannot read properties of undefined
+(reading 'charCount')` from `paraAndLocal` via `wordAt` and `caretRect`]:**
+
+"Have agent look at that"
+
+**18 — the image paste:**
+
+"also why can't i copy and paste images into birdseye anymore i have to drag + drop an
+external image. it refuses to recognize when I have an image in my clipboard that's
+different from the image copied from copying nodes. please have the agent read thru the
+manifest, this is the newest bug in an old problem - some change might have broke it, or
+maybe its a new problem. anyway, try to replicate but have the agent go thru the
+manifest/concerns to have a handle on the history of this problem"
+
+**19 —** "git commit and push as u go brtw"
+
+**20 —** "whats the new widget called"
+
+**21 —** "it looks lieke you forgot t copy my verbatim"

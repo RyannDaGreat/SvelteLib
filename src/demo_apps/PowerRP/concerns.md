@@ -893,3 +893,11 @@ assumed. Both hatches in this docblock read as plausible and neither existed; no
 noticed for three weeks because every test wrote the two clipboards in the order that
 hides it — `tests/paste_upload_probe.js` pastes the image BEFORE it ever copies a widget.
 **Test the order the user actually works in.**
+
+- **MISTAKE — verbatim capture was partial.** ROUND 8/9 quoted only the fragments each
+  design turned on, and several other asks were paraphrased or truncated (the panel
+  scroll's "so annoying", the full image-paste report, the whole `multiple` dictation).
+  The user: *"it looks lieke you forgot t copy my verbatim"*. Every message of the
+  session is now in the manifest's USER MESSAGES, VERBATIM section, unedited. Lesson: a
+  quoted fragment is my INTERPRETATION of what mattered — the record has to carry the
+  whole thing so a later reader can judge for themselves.
