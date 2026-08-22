@@ -782,3 +782,39 @@ never source we author.
   opt-in. `tests/panel_scroll_probe.js` (renamed from inspector_scroll_probe)
   covers the properties panel AND the tools pane. Lesson: a fix for "the
   scroller resets" goes on the scroller.
+
+
+## 2026-08-22 — the routing point, and three audit fixes I owned
+
+- Built the routing point (manifest ROUND 9). The interesting design question was
+  the PASS-THROUGH: the value evaluator handles a joint for free, but the audio
+  mirror, the live-control router and the clip router each walk `inputs` themselves
+  and would have seen it as a stranger — a joint dropped into an audio patch would
+  have SILENCED it for a formatting edit. `resolvedWireSource` is the one walk all
+  three now go through, and `passThrough` is a declaration so the next honest cable
+  joint is covered the day it says so.
+- **MISTAKE — a test premise that was arithmetically wrong.** `route_node_test`'s
+  "a bezier is not its chord" check first sampled BOTH at t = 1/2, where they
+  COINCIDE: wirePathD pushes both control points out by the same reach, so they are
+  symmetric about the chord's midpoint and the curve passes through it. The check
+  proved nothing until it was moved to t = 1/4. Lesson: when a test asserts two
+  things differ, assert first that the fixture actually separates them.
+- **The visual node's own sweep tripped on the new widget**, because it said "no
+  shipped non-visual port declares `multiple` or `color`" — a claim that was really
+  "these additions are opt-in". Replaced with an explicit OPTED_IN roster the sweep
+  compares against, so adding a fourth widget is an edit in front of a reader
+  rather than a silently widened exemption.
+- Audit findings I owned: derive's SECOND simulation roll per live frame is gated
+  behind `stateUsesFrameDomain` (the in-file comment already CLAIMED it cost a
+  joint-free deck nothing; the argument expression was evaluated unconditionally, so
+  `= @@ + dt` lost half its elapsed time — the residual for decks that DO use the
+  frame domain is now stated with the real fix named, a per-rAF clock latch); the
+  fired-wire set moved from a process-global cell to a WeakMap keyed on the derived
+  tree, so a thumbnail's derive can no longer overwrite the canvas's flash; and the
+  dynamic "closest" anchor candidate is now collected out to `anchorStickyReach(tol)`
+  so it can be HELD by the hysteresis that every preset anchor already had.
+- **A probe caught a bug that was not mine and not real**: `route_insert_probe`
+  reported `projectComponent is not defined` from the browser while bare node was
+  clean. It was a transient half-applied edit in `core/expressions.js`, which
+  another agent held open at that moment. Lesson for concurrent work: re-run before
+  believing a browser-only failure in a file someone else is editing.

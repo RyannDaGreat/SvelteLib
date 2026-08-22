@@ -6829,3 +6829,65 @@ the properties panel and the tools pane.
   whether the row is inert for every node family — worth a measurement.
 - CLAUDE.md is overdue for the sweep the user named: specifics → this manifest,
   rules stay.
+
+
+## ROUND 9 (user, 2026-08-22): THE ROUTING POINT
+
+### The ask (verbatim)
+
+"it would be nice if I could double click on a wire to add a routing point
+widget....just kinda a lone connector...used to make the wires nicer" — then, asked
+what it does: "a routing node is just a lone connector pretty much - it can let you
+split one connector into multiple outputs later on down the connection, which is
+nice for formatting" — and "as you may have guessed - it is a widget too".
+
+### What shipped
+
+**`plugins/route_node.js`** — type `route_node`, "Routing Point". A 16-unit disc:
+ONE input, ONE output, no behaviour. It splits by BEING A NODE (an output already
+fans out to as many inputs as you like), and `computeOutputs` returns its input, so
+it is invisible to the value graph — a display behind three joints reads what it
+would behind none. `portType` is a select over PORT_TYPES and `color` is an
+ordinary colour leaf; both ports carry them, so the cable in, the dot and the cable
+out are one colour. It paints ONE ellipse and NO port beads (two rings plus a body
+would be three circles where the author asked for one); the ports sit on the disc's
+left and right edges via `placePorts`, and the rim projects onto the disc.
+
+**THE GESTURE**: double-click a wire → `web/routeInsert.js insertRoutingPointAt`.
+The decisions are pure and in core: `core/wire_drag.wireAt` picks the wire under a
+world point by measuring the DRAWN path (`wirePathD` → `pathDPolylines` →
+`distToSegment`), not the chord — the three wire styles are nowhere near each other;
+`routeInsertPairs` says what the destination input becomes, and on a `multiple`
+input the joint takes the interrupted wire's PLACE so nothing else moves. The item
+and the rewire are ONE commit (one undo unit). The joint inherits the wire's type
+and colour and is centred on the pointer. `web/CanvasView.svelte`'s `onDblClick`
+tries it only when NO widget is under the pointer — wires draw UNDER cards, so a
+click over a card is a click on the card. An EXEC wire is refused with a sentence
+(an exec out fires at most one continuation, so there is nothing to split).
+
+**THE PASS-THROUGH PROTOCOL** — `core/nodeflow.resolvedWireSource(items, registry,
+ref)` walks a wire's source back across any plugin declaring
+`passThrough: {in, out}`, with a visited set so a hand-edited cycle cannot hang it,
+and an UNWIRED joint as its own source (nothing flows in, nothing flows out). The
+value evaluator needs none of this; the THREE consumers that walk `inputs`
+themselves do, and all three now resolve first:
+  `core/audio_mirror_diff.js` — otherwise a patch tidied with joints goes SILENT
+    (the source is not a module, so the engine wire is dropped);
+  `core/live_control.js` — a button press behind a joint routed nowhere; also
+    `keyboardDrivesPitch`, which gained optional `items`/`registry` (absent = the
+    honest answer about the STORED wire, for its doctests and abstract callers);
+  `core/clip_playback.js` — `clipPlaybackKind` (which decides whether a deck
+    EXPORTS its sound or renders silent), `clipTriggerTargets`, `midiTargets` and
+    the recordable clock read.
+
+**Tests**: `tests/route_node_test.js` (12 checks — the widget, the pass-through incl.
+an audio patch and a live press, the gesture) and `tests/route_insert_probe.js` (14
+checks in the real editor: insert, continuity, the value still flowing, ONE undo
+unit both ways, the split, and a miss on empty canvas doing nothing).
+
+### Known bounds
+
+- An EXEC wire cannot take one (refused with the reason).
+- A joint's `portType` can be changed to something its existing wires do not match;
+  the wires still draw and the value reads its type's zero. That is the same
+  behaviour any port-list change already has.
