@@ -953,3 +953,32 @@ and what went wrong along the way.
   records only, so every `>>>`-style example is outside it. That is why a stale one in
   `core/var_kinds.js` survived long enough for an audit to find it, and it is a gate
   defect, not a file defect.
+- **THE DOCTEST GATE WENT GREEN FOR THE FIRST TIME** (6760 executed, 0 failed, 0
+  unparseable) once the audit's fixes landed and three stragglers no brief covered
+  were dealt with. Each was a different way for an example to be wrong:
+  · `core/pptx_translate/paint.js` read a POINT value off its own input where the
+    code returns PIXELS (12700 EMU = 1 pt = 1.333 px at 96 dpi). The conversion was
+    right; the example had been red against correct code.
+  · `core/pptx_translate/translate.js`'s `idMinter` example was written as a
+    STATEMENT plus an expression (`const mint = …; [mint(), mint()]`), which the
+    runner cannot parse — so it was the entire UNPARSEABLE count, sitting outside
+    the gate while appearing to specify the function. Now an IIFE, one expression.
+  · `web/projectApi.js` — **a real bug, not a stale example.** `/\.pptm?$/i` matches
+    `.ppt` and `.pptm` and NOT `.pptx`, so a dropped deck named its project
+    "Q3 Roadmap.pptx"; `isPptxFile` carried the same pattern, where it mattered more
+    (a .pptx was recognised only by its MIME type, so a drop supplying no type was
+    not a deck at all). `[xm]?` in both. Lesson: a red doctest is not always the
+    example's fault — read the CODE before "fixing" the expectation, and here the
+    red had been sitting long enough that everyone assumed it was cosmetic.
+- **AND ONE OF MY OWN, THE SAME SLIP TWICE.** `core/wire_drag.js`'s `wireAt` doctest
+  asserted a bezier MISSES its chord midpoint. It does not: `wirePathD` pushes both
+  control points out by the same reach, so they are symmetric about that midpoint and
+  the curve passes through it — the identical arithmetic error I had already caught
+  and fixed in `tests/route_node_test.js` hours earlier, repeated in the docblock of
+  the very function that test covers. Rewritten at the quarter point with MEASURED
+  numbers. Lesson: fixing a wrong belief in one place does not fix the copies of it
+  you wrote elsewhere from the same wrong belief — grep for them.
+- **`sky_twinkle_trails_test.js` re-confirmed as the documented false red**: 1501 s
+  and killed under the gate's x8 concurrency, PASSES standalone (10 checks). CLAUDE.md
+  already records this; noting the re-measurement so the next reader does not spend
+  the time again.
