@@ -6199,3 +6199,155 @@ used" means.
 Absent `recent` renders NOTHING and leaves the layout byte-identical, so a consumer that
 does not opt in cannot tell the prop exists: `.cp` became a ROW whose single child is the
 column it always was.
+
+## ROUND 8 (user, 2026-08-21): THE VISUAL NODE
+
+### The ask (verbatim where it matters)
+
+"I'm going to need to make a custom node element. You know how audio nodes look
+right now? Well, I just want one so that I can do visuals. So it should be able to
+let me customize the name of the node, the color, the shape of the node, does it
+have pointy edges, is it a circle kind of thing, and I need to be able to customize
+the list of inputs and outputs it has, and the colors of those inputs and outputs as
+well. This will be purely for visual things at the moment … the nodes won't actually
+do anything, but it should share the same structure, the same data type as the audio
+ones." Shapes: the card "we have right now, which is like the top area for the
+label"; a flowchart kind "where I double click it and it has text built into it …
+It's not a compound widget"; "a diamond one, … a circle one, … a square one with …
+variable amounts of rounded edges, and also one with chamfered edges … maybe a
+triangle one too." Text: "I should be able to control the font just like I would …
+a normal plain text … maybe under the hood we can use the rendering functions of the
+plain text widget". Fill: "a fill material for that shape too, which by default
+would be a singular color. It could be gradients". Ports: "we can also customize
+the … color that comes out of each one … There would be no types."
+
+Follow-up: "sometimes we'll have only text in the middle of it. Sometimes we'll have
+labeled nodes, sometimes the nodes might be unlabeled. And we can have presets for
+all of these. … if I just have a zero null string for the label, right, that explains
+where the node entrance and exit will come out of … we may even make it allowed to
+accept multiple as an option for the inputs … that should probably be a Boolean …
+the ability for all nodes, by the way, including audio ones, which will be, I guess,
+by default turned off, but accept multiple is something we could turn on, which lets
+one node input accept multiple node outputs. This is typically reserved for if the
+ordering doesn't matter."
+
+Doc ruling (same day, on a paragraph of this that landed in CLAUDE.md): "That does
+not go in claudeMD. In fact, we have tons of junk in the claudemd that should have
+gone in the manifest. Claudemd needs to have guiding rules - not specifics unless
+they're critical hazards." So THIS section is where the specifics live; CLAUDE.md
+kept one rule (connection slots have two shapes — read them through `inputRefs`).
+
+### What shipped
+
+**`plugins/visual_node.js`** — the declaration. **`core/visual_node.js`** — every
+piece of geometry, in bare node. It declares `ports(state)` like every node, spreads
+`NODE_ITEM_REFS`, carries `inputs: {}`, paints beads through
+`core/node_chrome.portBeads`, has NO `computeOutputs` (a sink) and no engine
+binding. Its ports are the new **`visual` PORT TYPE** (`core/nodeflow.PORT_TYPES`):
+`zero: null`, `readable: false`, `valueless: true` (the exec treatment — no
+output-property row, no refusal sentence about a value that does not exist), no
+coercions either way, a quiet lavender-grey default colour `#a9b1d6` that a port
+overrides. `web/app.css` carries the generated `--a-port-visual` token.
+
+**Shapes** (`shape` select): `card` (title strip + the standard port column),
+`rect`, `ellipse`, `diamond`, `triangle` (box-filling isosceles, apex up — NOT
+core/shapes.js's circle-inscribed one, whose base sits at 0.75·h). Polygonal shapes
+take `cornerRadius` + `cornerStyle` (`round` | `chamfer`); `core/shapes.roundedPolygonPathD`
+grew the optional third `cornerStyle` argument (chamfer = the same trim bridged by
+an `L` instead of a `Q`; default byte-identical), and `ellipsePathD` (four kappa
+cubics) was added. All path ops, never arcs — the PDF backend contract.
+
+**Ports from two LIST properties** (`PROPS.inPorts` / `PROPS.outPorts`, category
+`ports`, record elements `{label, color}` + `multiple` on inputs, sequence order,
+`inPortsActive`/`outPortsActive` companions). Element i IS port `in<i>` / `out<i>`:
+HIDE keeps the number and its wires; PURGE/INSERT renumber — the polygon-vertex
+trade, stated in `core/visual_node.js`'s header. A blank label draws the jack alone
+(`portBeads` skips a blank label op). `web/ListField.svelte` gained the `text` field
+control this needed (it had number/color/angle/boolean only). A top-level list row's
+`.list-cell` is now drawn NESTED (one label gutter in, hairline left bracket —
+the interp strip's idiom) after the user read the two port lists as two more
+categories; this nests the polygon's `points` identically.
+
+**Ports on the ink**: `placePorts(state, rows)` is a new registry hook applied INSIDE
+`core/nodeflow.portLayout` — a card keeps the column; any other shape centres it
+vertically and projects each bead onto the outline at its own y (`outlineEdgeX`), so
+painter, hit test and wire endpoints still read ONE geometry. The rim (`closestAnchor`)
+is `closestPointOnOutlines` over the sampled outline, a projection not a clamp.
+
+**Text**: plaintext's contract inside a shape — `text`, `font`, `size`, `bold`,
+`align` (center), `valign` (middle), `textFill` (paint-capable; `fill` is the SHAPE's
+material), `activate: "inline_text_edit"`. `inlineTextEdit` gained two descriptor
+fields: `ink` (which leaf is the glyph colour) and `box(state)` (the LOCAL rect the
+text is laid out in — the rect inscribed in the silhouette, `visualNodeTextBox`).
+`web/TextEditController.svelte` reads both, places its overlay root at the box origin
+and converts pointer/caret coordinates through it, so the caret lands on the glyphs
+inside a diamond (pinned by `tests/visual_node_probe.js`: caret x between the beads).
+
+**Label**: `label` (default "Node"), `labelFill`, `headerFill`. Blank = UNLABELED:
+on the card the title strip disappears (the strip is the body outline CLIPPED to the
+header band — `visualHeaderOutline`, Sutherland–Hodgman against one edge — so it is
+exact for any corner radius/style); on any other shape the label is a small bold
+caption at the TOP EDGE of the content box, and the text box is the WHOLE content
+box regardless — so `valign: middle` centres the text on the shape, not on what
+the caption left (user, same day, on a labelled chamfered block: "the text is not
+vertically centered"; the first version carved the caption off the box).
+
+**Presets** (`presets`, one family, `look()`): Node Card, Process, Decision (green
+yes / red no outputs), Terminal, Chamfered Block, Merge (triangle, two unlabelled
+inputs), Hub (one `multiple` input), Plain Label (no ports). Every preset writes every
+look knob INCLUDING `inPorts`/`outPorts`; none writes `text`. Tints come from
+`NODE_FAMILIES` so the flowchart vocabulary wears the catalogue's six restrained hues.
+
+**Dynamic wiring rows**: because the port list is a property, the per-port wiring
+rows cannot be declared once. `dynamicInspector(state)` is a new registry hook the
+Inspector reads beside `inspector` (single-selection and creation panels; NOT the
+multi-selection intersection, by design). The visual node returns
+`nodeInputRows(plugin, state)` from it.
+
+### The two universal protocol additions (OFF on every other shipped port)
+
+**Per-port `color`** — a hex literal on a port declaration; `core/nodeflow.portColorOf`
+is the one lookup. Reaches: the painted bead (`portBeads`), the overlay bead and the
+ghost wire (`web/CanvasView.svelte` reads `b.color` / `wireDrag.anchorColor`), the
+anchor record (`nodePortAnchors`), and the committed wire (`deriveWires` carries
+`wire.color`; `wireOps` paints it). A malformed colour is refused at `declaredPorts`.
+
+**`multiple: true` on an INPUT** (refused on an output: every output already fans
+out). The `inputs.<port>` slot then holds an ARRAY of `{item, port}`; an ordinary
+input keeps the single record, so no document is rewritten. `inputRefs(state, key)`
+and `inputWires(state)` are the ONE reader of both shapes, and every consumer was
+moved onto them: `connectionsOf`, `resolveNode`, `deriveWires`, `portIsWired`,
+`core/audio_mirror_diff.js` (so an audio input that ever declares `multiple`
+connects every source — Web Audio sums fan-in natively), `core/live_control.js`,
+`core/clip_playback.js`, and clone remap (`core/document.expandRefPaths` now fans a
+wildcard over an ARRAY slot per index, so `["inputs","*","item"]` reaches
+`inputs.mix.0.item`, `inputs.mix.1.item`). Semantics: `wirePairsFor` APPENDS;
+`connectionRefusal` refuses the same wire twice ("that output is already wired into
+this input"); `detachPairs(items, to, ref)` removes ONE wire and writes the `null`
+override when the last goes; `wireDragStart` on a wired multiple bead picks up the
+NEWEST wire (`detach.ref` names it; a stated rule, not "nearest"); `wireDrop`'s
+reroute back onto the same socket is not a double append (`withDetached`);
+`resolveNode` hands the plugin an ARRAY of coerced values (empty when unwired) — how
+they combine is the receiving plugin's business. The Inspector renders a `multiple`
+row as the wire list with per-wire remove plus an add picker (`row.multiple`
+branch, `commitPairs`).
+
+### Tests
+
+`tests/visual_node_test.js` (bare node: geometry, ports-from-lists, the `multiple`
+protocol end to end incl. clone remap, the roster sweep that no shipped non-visual
+port opts in, presets), `tests/visual_node_probe.js` (browser: beads in port
+colours on the overlay, the multi-wire Inspector control, real double-click into
+the diamond's text with the caret between its beads, typing + Escape commit).
+Doctests on every new pure function.
+
+### Known bounds / follow-ups
+
+- PURGING a port renumbers later ports' keys and therefore their wires (hide instead).
+- `dynamicInspector` rows are not unified across a multi-selection.
+- Item `opacity` on node widgets: no universal reader was found in `render_gpu/ports.js`
+  for `state.opacity` (only the fade's `scaledOpacity`); the visual node matches the
+  other node widgets (declares the row, passes no opacity into its ops). Unverified
+  whether the row is inert for every node family — worth a measurement.
+- CLAUDE.md is overdue for the sweep the user named: specifics → this manifest,
+  rules stay.

@@ -62,7 +62,7 @@
  * tests/visual_node_test.js runs it in bare node.
  */
 
-import { NODE_BODY_GAP, NODE_HEADER_H, NODE_PAD, NODE_TITLE_SIZE, nodeBodyTop, nodeBox, textLineH } from "./node_chrome.js";
+import { NODE_HEADER_H, NODE_PAD, NODE_TITLE_SIZE, nodeBodyTop, nodeBox, textLineH } from "./node_chrome.js";
 import { NODE_CORNER_R, PORT_BEAD_R } from "./nodeflow.js";
 
 /** How far a bead reaches INSIDE the edge it straddles — its radius (portLayout's
@@ -467,14 +467,18 @@ export function visualContentBox(s) {
   }
 }
 
-/** The caption line's height plus the gap beneath it — what a non-card label
- *  takes off the top of the content box. */
-const CAPTION_H = textLineH(NODE_TITLE_SIZE) + NODE_BODY_GAP / 2;
-
 /**
  * Pure function. Where a NON-CARD label is drawn: one caption line across the top
  * of the content box. Null when the node has no label, or when the label is the
  * card's title strip (drawn from visualHeaderPathD instead).
+ *
+ * THE CAPTION DOES NOT PUSH THE TEXT DOWN (user, 2026-08-21, on a labelled
+ * chamfered block: "the text is not vertically centered"). The first version
+ * carved the caption's line off the top of the text box, so a middle-aligned
+ * text centred in what was LEFT — visibly below the shape's centre. The text box
+ * is the whole content box, the caption sits at its top edge, and the two only
+ * meet when the text is tall enough to fill the box — which is the honest overlap
+ * of two things the author put in one shape, not a layout rule hiding one of them.
  *
  * @param {object} s - the folded item state
  * @returns {{x: number, y: number, w: number, h: number}|null}
@@ -491,21 +495,21 @@ export function visualLabelBox(s) {
 
 /**
  * Pure function. THE TEXT BOX — where the body text is laid out, and therefore
- * where the in-place editor edits it (the plugin's `inlineTextEdit.box`). The
- * content box, minus the caption line when a non-card label occupies it.
+ * where the in-place editor edits it (the plugin's `inlineTextEdit.box`). It IS
+ * the content box, whether or not a caption sits at its top (see visualLabelBox
+ * for why the caption takes nothing off it), so `valign: middle` centres the text
+ * on the SHAPE.
  *
  * @param {object} s - the folded item state
  * @returns {{x: number, y: number, w: number, h: number}} LOCAL
  *
  * @example visualNodeTextBox({shape: "diamond", w: 200, h: 100}) // {x: 50, y: 25, w: 100, h: 50}
- * @example // a labeled diamond's text starts under its caption
- * @example visualNodeTextBox({shape: "diamond", w: 200, h: 100, label: "Decide"}).y // 43.4
+ * @example // a labeled diamond's text is still centred on the diamond
+ * @example visualNodeTextBox({shape: "diamond", w: 200, h: 100, label: "Decide"}).y // 25
  * @example visualNodeTextBox({shape: "card", w: 180, h: 110, label: "Osc"}) // {x: 10, y: 38, w: 160, h: 62}
  */
 export function visualNodeTextBox(s) {
-  const box = visualContentBox(s);
-  if (!visualLabelBox(s)) return box;
-  return { x: box.x, y: box.y + CAPTION_H, w: box.w, h: Math.max(0, box.h - CAPTION_H) };
+  return visualContentBox(s);
 }
 
 /** Pure function. Is the body text blank — nothing to draw?

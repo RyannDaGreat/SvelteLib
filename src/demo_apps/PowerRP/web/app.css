@@ -8149,6 +8149,16 @@ audio.ae-preview-media {
   grid-row: 2;
   grid-column: 1 / -1;
   min-width: 0;
+  /* NESTED, VISIBLY (user, 2026-08-21, on a visual node's two port lists: "what a
+     visually confusing mess... why are they not indented like others i.e.
+     gradient and material etc? this looks so flat but it's not"). The list's own
+     collapse header reuses the category accordion's look, so a list sitting flush
+     with the category read as a SECOND category rather than as the value of the
+     row above it. The same bracket the interp strip uses — one label gutter in and
+     a hairline on the left — is what says "this belongs to that row". */
+  margin-left: var(--a-row-label-gutter);
+  border-left: var(--a-hairline) solid var(--border);
+  padding-left: var(--a-sp-2);
 }
 
 .inspector .row.row-list > .kf-controls {

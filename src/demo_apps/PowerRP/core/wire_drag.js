@@ -221,6 +221,12 @@ export function wireTargets(items, registry, beads, drag) {
   // place the backward-drag symmetry is spent; everything downstream sees an
   // ordinary (output → input) pair.
   const wantSide = drag.anchor.isInput ? "output" : "input";
+  // A PICKED-UP WIRE IS JUDGED AS IF IT WERE ALREADY OFF ITS SOCKET. The wire is
+  // in the user's hand, but the document still stores it, so a `multiple` input
+  // would refuse its own wire as a duplicate the moment it was lifted — the bead
+  // it came from would dim, and dropping it back would be refused. Every verdict
+  // is therefore asked against the items with the detached wire removed.
+  const base = detachedBase(items, drag);
   for (const b of beads ?? []) {
     if (b.item === drag.anchor.item && b.key === drag.anchor.port) continue;
     const id = beadKey(b);
@@ -228,7 +234,7 @@ export function wireTargets(items, registry, beads, drag) {
     const [from, to] = drag.anchor.isInput
       ? [{ item: b.item, port: b.key }, { item: drag.anchor.item, port: drag.anchor.port }]
       : [{ item: drag.anchor.item, port: drag.anchor.port }, { item: b.item, port: b.key }];
-    out.set(id, connectionRefusal(items, registry, from, to));
+    out.set(id, connectionRefusal(base, registry, from, to));
   }
   return out;
 }
@@ -269,7 +275,9 @@ export function wireDrop(items, registry, drag, target) {
   const [from, to] = drag.anchor.isInput
     ? [{ item: target.item, port: target.key }, { item: drag.anchor.item, port: drag.anchor.port }]
     : [{ item: drag.anchor.item, port: drag.anchor.port }, { item: target.item, port: target.key }];
-  const refusal = connectionRefusal(items, registry, from, to);
+  // The same view wireTargets judged by: the picked-up wire is off its socket.
+  const base = detachedBase(items, drag);
+  const refusal = connectionRefusal(base, registry, from, to);
   if (refusal) return { pairs: [], kind: "refused", refusal };
   // A REROUTE clears the OLD end in the same pair list as it writes the new one, so
   // the whole move is one undo unit. Order matters only if the two are the same
@@ -281,11 +289,17 @@ export function wireDrop(items, registry, drag, target) {
   const clear = drag.detach && !(drag.detach.item === held.item && drag.detach.port === held.port)
     ? clearPairs(items, drag.detach) : [];
   // A REROUTE ONTO THE SAME `multiple` INPUT (picked up wire A, dropped back on the
-  // socket it came from) must not be an APPEND on top of the still-stored A: the
-  // append reads the items as they are, so the picked-up wire is removed from the
-  // view it reads first. Every other case reads the unchanged items.
-  const base = drag.detach?.ref && !drag.detach.exec ? withDetached(items, drag.detach) : items;
+  // socket it came from) must not be an APPEND on top of the still-stored A, so the
+  // append reads the same detached view the refusal did.
   return { pairs: [...clear, ...wirePairsFor(base, registry, from, to)], kind: drag.detach ? "reroute" : "connect", refusal: null };
+}
+
+/** Pure function. The item map a drag's decisions are made against: the items
+ *  with the picked-up DATA wire removed (`withDetached`), or the items unchanged
+ *  for a new wire or an exec detach (an exec wire lives on the output and cannot
+ *  collide with itself). */
+function detachedBase(items, drag) {
+  return drag.detach?.ref && !drag.detach.exec ? withDetached(items, drag.detach) : items;
 }
 
 /** Pure function. The pairs that clear whichever end a detach names. One dispatcher

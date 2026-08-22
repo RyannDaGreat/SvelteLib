@@ -697,3 +697,52 @@ and met a 2.35 MB minified third-party bundle under `web/public/`. Confirmed
 pre-existing by stashing. They now skip `public/` for the same stated reason they
 already skip `dist/` — Vite's `public/` is BY DEFINITION copied verbatim and is
 never source we author.
+
+## 2026-08-21 — ROUND 8: the visual node (progress log)
+
+- Built `core/visual_node.js` + `plugins/visual_node.js`, the `visual` port type,
+  per-port `color`, the `multiple` input protocol, `placePorts` and
+  `dynamicInspector` hooks, the ListField `text` field, and the TextEditController
+  `ink`/`box` descriptor fields. Details in the manifest's ROUND 8.
+- **MISTAKE — doctrine in the wrong file.** The round's paragraph went into
+  CLAUDE.md; the user: "That does not go in claudeMD … Claudemd needs to have
+  guiding rules - not specifics unless they're critical hazards." Moved to the
+  manifest; CLAUDE.md kept one hazard rule (connection slots have two shapes).
+  Lesson: CLAUDE.md = rules; the manifest = the project.
+- **MISTAKE — three hand-computed doctest expectations were wrong** (diamond bead
+  x 72.5 → 86.25, an ambiguous centre-of-diamond rim query, ellipse inscribed width
+  50.7 → 70.7). Caught by `doctest_test.js`. Lesson: run the doctest gate before
+  believing an `@example` you wrote from arithmetic in your head; pick queries with
+  one nearest edge, not ties.
+- **MISTAKE — a test forgot the plugin's DEFAULT `cornerRadius` (10)**, so the
+  diamond it measured was rounded and the bead sat at 195.5, not 200. The geometry
+  was right; the fixture was under-specified. Lesson: state every knob a geometry
+  test depends on.
+- **Pre-existing reds, confirmed at HEAD via a worktree with node_modules linked**
+  (not by stashing): `audio_patches_test.js` (vcv-ambient-drone: `vessek` has no
+  `p1`/`i3`, `caudal.speed` out of range), `doctest_test.js` (pptx_translate
+  `resolveLine` strokeWidth 1 vs 1.333, `projectApi.pptxDisplayName`, an
+  unparseable `@example` in `core/pptx_translate/translate.js:88`). Untouched here.
+- Node suite: 340 pass / 2 fail (the two above). `visual_node_probe.js`: all
+  checks pass. A PowerRP `vite build` (the app's OWN config) exits 0.
+- **MISTAKE — the caption pushed the text down.** On a labelled non-card shape the
+  text box lost the caption's line at its top, so middle-aligned text centred in
+  the remainder and sat visibly below the shape's centre (user screenshot: a
+  chamfered "Block" with its text low). Fixed: the text box IS the content box;
+  the caption sits at its top edge. Lesson: "centred" means centred on the thing
+  the author sees, not on a box they cannot.
+- **A reroute back onto the same `multiple` socket was refused as a duplicate**
+  because `wireTargets`/`wireDrop` judged the drop against items that still
+  stored the picked-up wire. Fixed by judging every verdict against the detached
+  view (`detachedBase`). Caught by `tests/visual_node_test.js`.
+- The user committed the in-flight tree as `bff6e7c6 visualnodetest` mid-round
+  (no `[C]`); the remaining fixes and the doc move land in the follow-up commit.
+- **MISTAKE — the port lists read as two extra categories.** The list control's
+  own collapse header reuses the category accordion's look, and `.list-cell` sat
+  flush with the category, so "1 INPUT" / "1 OUTPUT" read as siblings of PORTS
+  (user screenshot: "what a visually confusing mess... why are they not indented
+  like others i.e. gradient and material etc? this looks so flat but it's not").
+  Fixed with the interp strip's nested bracket (one label gutter + hairline) on
+  `.inspector .row.row-list > .list-cell`, which also nests the polygon's points
+  and every other top-level list row the same way. Lesson: a reused header look
+  carries the reused header's RANK; nesting has to be drawn, not implied.

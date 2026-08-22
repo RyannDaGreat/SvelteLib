@@ -126,16 +126,25 @@ check("the rim PROJECTS onto the shape — an interior query lands on the ink, n
   assert.ok(Math.abs(far.x - 100) < 1e-6 && Math.abs(far.y - 50) < 1e-6, `the ellipse's right extreme, got ${JSON.stringify(far)}`);
 });
 
-check("the text box is INSIDE every silhouette, and a label's caption sits above it", () => {
+check("the text box is INSIDE every silhouette, and a label's caption sits at its top without shrinking it", () => {
   for (const shape of VISUAL_SHAPES) {
     const s = vn({ shape, w: 200, h: 120, label: "Lbl", inPorts: [port("a")], outPorts: [port("o")] });
     const box = visualNodeTextBox(s);
     const outline = visualNodeOutline(shape, 200, 120, 10, "round");
-    for (const [x, y] of [[box.x, box.y], [box.x + box.w, box.y], [box.x, box.y + box.h], [box.x + box.w, box.y + box.h]])
+    // The ellipse's inscribed box has its corners EXACTLY on the curve, and the
+    // sampled outline's chords run just inside it — so the corners are tested one
+    // unit in toward the box's centre, which is still "inside the shape".
+    const EPS = 1;
+    for (const [x, y] of [[box.x + EPS, box.y + EPS], [box.x + box.w - EPS, box.y + EPS], [box.x + EPS, box.y + box.h - EPS], [box.x + box.w - EPS, box.y + box.h - EPS]])
       assert.ok(pointInPolygon(outline, x, y) || shape === "card", `${shape}: text box corner (${x}, ${y}) is outside the shape`);
     const lb = visualLabelBox(s);
     if (shape === "card") assert.strictEqual(lb, null, "a card's label is its strip, not a caption");
-    else assert.ok(lb && lb.y + lb.h <= box.y, `${shape}: the caption overlaps the text box`);
+    else {
+      assert.ok(lb && lb.y === box.y && lb.x === box.x, `${shape}: the caption sits at the text box's top edge`);
+      // THE USER'S CORRECTION: a labelled shape's text is centred on the SHAPE, so
+      // the text box must be the same box a label-less node gets.
+      assert.deepStrictEqual(box, visualNodeTextBox({ ...s, label: "" }), `${shape}: the caption pushed the text box down`);
+    }
   }
 });
 
@@ -168,8 +177,8 @@ check("every visual port is `visual`-typed, carries its element's colour, and mu
 });
 
 check("a port's colour reaches the painted bead, the anchor, AND the wire leaving it", () => {
-  const src = vn({ outPorts: [port("o", "#12ab34")] });
-  const dst = vn({ inPorts: [port("i", "#000000")] , inputs: { in0: { item: "a", port: "out0" } } });
+  const src = vn({ inPorts: [], outPorts: [port("o", "#12ab34")] });
+  const dst = vn({ inPorts: [port("i", "#000000")], outPorts: [], inputs: { in0: { item: "a", port: "out0" } } });
   const bead = portBeads(plugin, src).find((o) => o.op === "ellipse");
   assert.deepStrictEqual(bead.fill.slice(0, 3).map((c) => Math.round(c * 255)), [0x12, 0xab, 0x34]);
   const nodes = [
