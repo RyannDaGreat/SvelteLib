@@ -285,6 +285,19 @@ function startBackendWithRetry() {
  */
 const SKIP_LINE = /^SKIP — .*/m;
 
+/** How many trailing output lines a FAILING child contributes to the summary.
+ *
+ *  IT WAS 3, AND THREE LINES IS OFTEN THE STACK WITHOUT THE MESSAGE. Measured on
+ *  a real red: `text_word_delete_probe` reported one `at file:///…:44:14` frame,
+ *  a blank line and `Node.js v24.19.0` — no error text at all, so triage had to
+ *  re-run the probe by hand just to learn WHAT failed. That cost is paid on every
+ *  red, by every reader, forever; the saving was a handful of rows on runs that
+ *  are green anyway. Twelve is enough for a node assertion's actual/expected
+ *  block and for a probe's own failure list, and a run with enough failures to
+ *  make twelve unreadable is already telling you to stop reading and start
+ *  fixing. */
+const FAILURE_TAIL_LINES = 12;
+
 /** Command (spawns a child). Runs one test file; resolves {ok, skip, ms, tail}. Never
  *  throws — a crashed child is a FAILING TEST, not an error in the runner, and its
  *  output is kept so the report can show why rather than just that. */
@@ -361,7 +374,7 @@ function runOne(kind, file, slot = 0) {
     child.on("close", (code) => {
       clearTimeout(killer);
       const skip = code === 0 ? (buf.match(SKIP_LINE)?.[0] ?? null) : null;
-      done({ ok: code === 0, skip, ms: Date.now() - started, tail: buf.trimEnd().split("\n").slice(-3).join("\n") });
+      done({ ok: code === 0, skip, ms: Date.now() - started, tail: buf.trimEnd().split("\n").slice(-FAILURE_TAIL_LINES).join("\n") });
     });
     child.on("error", (e) => { clearTimeout(killer); done({ ok: false, skip: null, ms: Date.now() - started, tail: String(e) }); });
   });
