@@ -25,7 +25,7 @@
   // `deriveWires` IS DELIBERATELY NOT IMPORTED any more: the committed wires are
   // scene content (render_gpu/ports.sceneIR), and calling it here would rebuild a
   // second copy of them for a layer that no longer draws any.
-  import { portColor } from "../core/nodeflow.js";
+  import { DEFAULT_WIRE_STYLE, portColor, wirePathD, wireStyleFor } from "../core/nodeflow.js";
   import { KNOB_FOCUS_GAP } from "../core/node_chrome.js";
   import { KNOB_R, knobDragValue } from "../core/node_knobs.js";
   import { knobFocusUi, knobCursorFor, knobDialAt, knobStateKey, knobTurnRefusal, knobWritePairs } from "./knobFocus.js";
@@ -33,7 +33,7 @@
   // mode's teardown. The SET is core/ so the presenter shares it; the MODE is web/.
   import { pressNote, releaseAllPresses, releaseNote } from "../core/live_control.js";
   import { litKeyRects, releaseHeldKeys, removeKeyUp, resetKeyboardPlay, setNoteSink } from "./keyboardPlay.js";
-  import { allPortBeads, beadAt, beadKey, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
+  import { allPortBeads, beadAt, beadKey, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
   // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
   // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
   // AudioBadge is the autoplay surface. See web/audioMirror.svelte.js.
@@ -4009,6 +4009,10 @@
       // The anchor bead's declared colour, if its port has one, so the ghost wire
       // is the colour the committed wire will be (wireOps reads the same override).
       anchorColor: anchorBead?.color ?? null,
+      // …and its declared port (for a `wire` style override) plus the camera's
+      // deck default, so the ghost's SHAPE is the committed wire's shape too.
+      anchorPort: anchorBead ?? null,
+      deckWireStyle: app.nodes().find((n) => n.type === "camera")?.state?.wireStyle ?? DEFAULT_WIRE_STYLE,
       cursor: { x: w.x, y: w.y },
       targets: wireTargets(items, app.registry, beads, started),
       hovered: null,
@@ -5633,7 +5637,14 @@
         // so the bezier's control points still leave an output rightward and enter
         // an input leftward. Without this the ghost would curl the wrong way for
         // exactly half of all wire gestures.
-        d: wireDrag.anchor.isInput ? wireBezierPath(end, a) : wireBezierPath(a, end),
+        // THE GHOST IS DRAWN IN THE STYLE THE DROP WOULD COMMIT: the same
+        // destination → source → camera resolution deriveWires uses, with the
+        // hovered bead standing in for the end not yet known. Over empty space a
+        // drag from an output has no destination, so its ghost follows the camera.
+        d: ((style) => (wireDrag.anchor.isInput ? wirePathD(end, a, style) : wirePathD(a, end, style)))(
+          wireDrag.anchor.isInput
+            ? wireStyleFor(wireDrag.anchorPort, wireDrag.hovered, wireDrag.deckWireStyle)
+            : wireStyleFor(wireDrag.hovered, wireDrag.anchorPort, wireDrag.deckWireStyle)),
         color: overRefused ? null : (wireDrag.anchorColor ?? portColor(wireDrag.anchor.type)),
       };
     }

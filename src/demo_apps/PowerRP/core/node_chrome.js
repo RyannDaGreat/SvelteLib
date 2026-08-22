@@ -43,7 +43,7 @@
 
 import { ellipse, path, rect, text } from "../render_gpu/ir.js";
 import { NATURAL_LINE_HEIGHT } from "./richtext.js";
-import { NODE_CORNER_R, PORT_BEAD_R, portColor, portColorOf, portLayout, wireBezierPath } from "./nodeflow.js";
+import { DEFAULT_WIRE_STYLE, NODE_CORNER_R, PORT_BEAD_R, portColor, portColorOf, portLayout, wirePathD } from "./nodeflow.js";
 import {
   bandFitScale, KNOB_BAND_MIN_SCALE,
   KNOB_LABEL_GAP, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_R, KNOB_TRACK_WIDTH, knobRadius,
@@ -1304,6 +1304,8 @@ export const WIRE_FLASH_WIDTH_EXTRA = 1.5;
  *
  * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"}).length // 2
  * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"})[1].d // "M 0 0 C 100 0 100 0 200 0"
+ * @example // a record carrying a style is drawn in it (deriveWires resolves one per wire)
+ * @example wireOps({from: {x: 0, y: 0}, to: {x: 100, y: 60}, type: "visual", style: "elbow"})[1].d // "M 0 0 L 50 0 L 50 60 L 100 60"
  * @example // the halo is the WIDER of the two, and is drawn FIRST so the wire lands on top
  * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"}).map((o) => o.strokeWidth) // [4.5, 2.5]
  * @example // the wire carries the SOURCE type's colour (ir.js has parsed it to RGBA)
@@ -1314,7 +1316,9 @@ export const WIRE_FLASH_WIDTH_EXTRA = 1.5;
  * @example wireOps({from: {x: 0, y: 0}, to: {x: 9, y: 0}, type: "exec", fired: true})[0].strokeWidth // 6
  */
 export function wireOps(wire) {
-  const d = wireBezierPath(wire.from, wire.to);
+  // THE STYLE WAS RESOLVED BY deriveWires (destination port → source port →
+  // camera); a record with none — a hand-built one in a test — draws the default.
+  const d = wirePathD(wire.from, wire.to, wire.style ?? DEFAULT_WIRE_STYLE);
   // ROUND CAPS at both ends, matching the editor overlay's `stroke-linecap: round`
   // — a wire's end sits AT its bead's centre, so a flat cap would leave the cable
   // stopping half a bead short of the socket it plugs into.

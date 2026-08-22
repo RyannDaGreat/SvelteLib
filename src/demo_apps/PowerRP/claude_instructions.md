@@ -6781,6 +6781,31 @@ widget builds its card from the same chrome constants rather than a third copy.
 The census's source-level backstop scans `plugins/node_*.js` by filename, so
 `visual_node.js` was never in it; that is the same exemption, stated there too.
 
+### Wire styles (same day; user: "I want the BEST solution. not the cheapest.")
+
+**The hook**: `wireBezierPath`'s 40-unit reach floor applied to every wire, so two
+beads 70 apart got crossing control points. Forward wires (dx > 0) now use
+`min(160, dx/2)` — monotonic in x, cannot hook, near-straight when short; the
+floor remains for dx ≤ 0 (the stacked/backward loop it exists for). Long forward
+wires are byte-identical.
+
+**The choice**: `core/nodeflow.js` WIRE_STYLES = bezier | straight | elbow;
+`wirePathD(from, to, style)` is the ONE dispatcher (painter `wireOps`, both
+exporters through it, the ghost wire in CanvasView). `wireElbowPath` is H-V-H with
+the riser at the midpoint forward, and out/down/back/in (ELBOW_STUB = 20) backward.
+Resolution (`wireStyleFor`): the DESTINATION input's `wire` → the SOURCE output's
+`wire` → the camera's `wireStyle` — input first because the connection is stored on
+the input. `deriveWires` resolves it once per wire (`wire.style`, always present).
+
+**Where the knobs live**: deck default = `PROPS.wireStyle` in the camera's
+`rendering` bundle (keyframable; `defaultCameraState` spreads the bundle so a
+fresh camera is born with it, and an old deck fills it as quiet version skew);
+per-port override = `wire` on any port declaration (validated in
+`declaredPorts`), surfaced on the visual node's `inPorts`/`outPorts` elements as a
+`select` ("Deck default" is stored as `"inherit"` because a select needs a value to
+show; `visualNodePorts` drops it). `web/ListField.svelte` gained the `select`
+field control for it. No shipped non-visual port declares one (pinned).
+
 ### Inspector scroll memory (same day)
 
 The Property Panel keeps its scroll position across deselect → reselect and

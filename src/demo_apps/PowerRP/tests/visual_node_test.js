@@ -29,8 +29,9 @@ import { fileURLToPath } from "node:url";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import {
-  PORT_TYPES, connectionRefusal, connectionsOf, declaredPorts, detachPairs, evaluateNodeGraph,
-  findPort, inputRefs, inputWires, isNodeWidget, nodeInputRows, portAt, portColorOf, portLayout, portTypeCssVars, wirePairsFor,
+  PORT_TYPES, WIRE_STYLES, connectionRefusal, connectionsOf, declaredPorts, detachPairs, evaluateNodeGraph,
+  findPort, inputRefs, inputWires, isNodeWidget, nodeInputRows, portAt, portColorOf, portLayout, portTypeCssVars,
+  wireBezierPath, wirePairsFor, wirePathD,
 } from "../core/nodeflow.js";
 import { deriveWires, nodePortAnchors } from "../core/derive.js";
 import { portBeads, wireOps } from "../core/node_chrome.js";
@@ -369,6 +370,58 @@ check("every preset writes every look knob, the port lists, and never `text`", (
   }
   const hub = looks.find((l) => l.name === "Hub");
   assert.ok(hub.props.inPorts[0].multiple === true, "the Hub look demonstrates accept-several");
+});
+
+console.log("visual node: wire styles");
+
+check("a short forward bezier never hooks: its x is monotonic, and the stacked case keeps its loop", () => {
+  // The user's picture: beads ~70 apart, 60 down. Control points must not cross.
+  const d = wireBezierPath({ x: 0, y: 0 }, { x: 70, y: 60 });
+  const [, c1x, , c2x] = d.match(/C (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+)/).slice(1).map(Number);
+  assert.ok(c1x <= c2x, `control points crossed: ${d}`);
+  // Sample the cubic: x must never decrease along it.
+  const xs = [];
+  for (let t = 0; t <= 1; t += 0.05) xs.push((1 - t) ** 3 * 0 + 3 * (1 - t) ** 2 * t * c1x + 3 * (1 - t) * t ** 2 * c2x + t ** 3 * 70);
+  for (let i = 1; i < xs.length; i++) assert.ok(xs[i] >= xs[i - 1] - 1e-9, "the cable doubled back on itself");
+  // Level with or behind the source, the floor still loops the cable out and back.
+  assert.strictEqual(wireBezierPath({ x: 0, y: 0 }, { x: 0, y: 100 }), "M 0 0 C 40 0 -40 100 0 100");
+  assert.strictEqual(wireBezierPath({ x: 0, y: 0 }, { x: 200, y: 0 }), "M 0 0 C 100 0 100 0 200 0", "a long forward wire is byte-identical to before");
+});
+
+check("the three styles are three path grammars, and an unknown one throws", () => {
+  assert.strictEqual(wirePathD({ x: 0, y: 0 }, { x: 70, y: 60 }, "straight"), "M 0 0 L 70 60");
+  assert.strictEqual(wirePathD({ x: 0, y: 0 }, { x: 100, y: 60 }, "elbow"), "M 0 0 L 50 0 L 50 60 L 100 60");
+  assert.strictEqual(wirePathD({ x: 100, y: 0 }, { x: 0, y: 80 }, "elbow").split(" L ").length, 6, "a backward elbow is five segments: out, down, back, in");
+  assert.strictEqual(wirePathD({ x: 0, y: 0 }, { x: 200, y: 0 }), wireBezierPath({ x: 0, y: 0 }, { x: 200, y: 0 }), "the default is the bezier");
+  assert.throws(() => wirePathD({ x: 0, y: 0 }, { x: 1, y: 1 }, "wiggly"), /unknown wire style/);
+  assert.deepStrictEqual([...WIRE_STYLES], ["bezier", "straight", "elbow"]);
+});
+
+check("a wire's style resolves DESTINATION → SOURCE → CAMERA, and reaches the painted path", () => {
+  const cameraPlugin = registry.get("camera");
+  const camera = (wireStyle) => ({ itemId: "cam", type: "camera", state: { ...cameraPlugin.defaults, ...(wireStyle ? { wireStyle } : {}) }, plugin: cameraPlugin, world: IDENT });
+  const src = (wire) => vn({ inPorts: [], outPorts: [{ ...port("o"), ...(wire ? { wire } : {}) }] });
+  const dst = (wire) => vn({ inPorts: [{ ...port("i"), ...(wire ? { wire } : {}) }], outPorts: [], inputs: { in0: { item: "a", port: "out0" } } });
+  const tree = (cam, s, d) => [camera(cam), { itemId: "a", state: s, plugin, world: IDENT }, { itemId: "b", state: d, plugin, world: { ...IDENT, x: 400 } }];
+  assert.strictEqual(cameraPlugin.defaults.wireStyle, "bezier", "the camera is born with the deck default");
+  assert.strictEqual(deriveWires(tree(null, src(), dst()))[0].style, "bezier");
+  assert.strictEqual(deriveWires(tree("elbow", src(), dst()))[0].style, "elbow", "the camera sets the deck default");
+  assert.strictEqual(deriveWires(tree("elbow", src("straight"), dst()))[0].style, "straight", "a source port overrides the camera");
+  assert.strictEqual(deriveWires(tree("elbow", src("straight"), dst("bezier")))[0].style, "bezier", "the destination port overrides the source");
+  const [wire] = deriveWires(tree("elbow", src(), dst()));
+  assert.ok(wireOps(wire)[1].d.startsWith("M ") && wireOps(wire)[1].d.includes(" L ") && !wireOps(wire)[1].d.includes(" C "), "the painted cable is the elbow");
+  // "inherit" in a stored port element declares nothing.
+  assert.strictEqual(deriveWires(tree("straight", src("inherit" === "inherit" ? undefined : null), dst()))[0].style, "straight");
+  assert.ok(!("wire" in declaredPorts(plugin, vn({ inPorts: [port("i")] })).inputs[0]), "a fresh port carries no override (its stored value is \"inherit\")");
+  assert.throws(() => declaredPorts(plugin, vn({ inPorts: [{ ...port("i"), wire: "loopy" }] })), /declares wire style "loopy"/);
+});
+
+check("no shipped non-visual port declares a wire style either", () => {
+  for (const p of registry.all()) {
+    if (p.type === "visual_node" || typeof p.ports !== "function") continue;
+    const ports = declaredPorts(p, p.defaults);
+    for (const q of [...ports.inputs, ...ports.outputs]) assert.ok(!("wire" in q), `${p.type}.${q.key} declares a wire style`);
+  }
 });
 
 console.log(`\nvisual node: ${passed} checks passed`);

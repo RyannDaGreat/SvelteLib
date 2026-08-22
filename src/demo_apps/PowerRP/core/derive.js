@@ -50,7 +50,7 @@ import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 // THE NODE-GRAPH SEAM (see deriveRenderTree). One-way: nodeflow.js imports nothing
 // from this module, so the port/type/connection layer stays independently testable
 // in bare node with no derivation in the picture.
-import { EXEC_KEY, evaluateNodeGraph, inputRefs, portLayout, resolveNode, topoOrder } from "./nodeflow.js";
+import { DEFAULT_WIRE_STYLE, EXEC_KEY, evaluateNodeGraph, inputRefs, portLayout, resolveNode, topoOrder, wireStyleFor } from "./nodeflow.js";
 // THE FRAME DOMAIN — per-frame triggers (core/exec_frame.js). Its step is driven from
 // deriveRenderTree, the one pass that produces the picture; see the call site for why
 // running several times per frame is safe rather than merely tolerated.
@@ -1775,6 +1775,7 @@ export function nodePortAnchors(node) {
       key: p.key, type: p.type, label: p.label, side: p.side, x: w.x, y: w.y,
       ...(p.color !== undefined ? { color: p.color } : {}),
       ...(p.multiple ? { multiple: true } : {}),
+      ...(p.wire !== undefined ? { wire: p.wire } : {}),
     };
   });
 }
@@ -1852,6 +1853,12 @@ export function deriveWires(nodes, firedKeys = lastFiredWires) {
     anchorsByItem.set(n.itemId, nodePortAnchors(n));
   }
   const wires = [];
+  // THE DECK'S CABLE LOOK is the camera's `wireStyle` (core/nodeflow.js WIRE
+  // STYLES). The tree is the one place the camera and every port are in hand, so
+  // each wire's style is resolved HERE — destination port, then source port, then
+  // the camera — and carried on the record, which is what makes the painter, the
+  // exporters and the overlay agree by construction.
+  const deckStyle = (nodes ?? []).find((n) => n.type === "camera")?.state?.wireStyle ?? DEFAULT_WIRE_STYLE;
   const push = (src, dst, from, to) => {
     if (!src || !dst) return;
     // The wire is the colour of its SOURCE bead: the type's, or the port's own
@@ -1860,11 +1867,14 @@ export function deriveWires(nodes, firedKeys = lastFiredWires) {
     // `fired` is stamped ONLY when true, so a wire on a frame with no pulse — which
     // is every wire on every frame of every deck that predates the frame domain — is
     // the byte-identical record it always was, with no new key. `color` follows the
-    // same rule: absent unless the port declared one.
+    // same rule: absent unless the port declared one. `style` is ALWAYS present: a
+    // wire always has a look, and a reader that had to default it would be a second
+    // place the resolution order is spelled.
     const fired = firedKeys?.has(`${from.item}.${from.port}`) ? { fired: true } : null;
     wires.push({
       from: { ...from, x: src.x, y: src.y }, to: { ...to, x: dst.x, y: dst.y }, type: src.type,
       ...(src.color !== undefined ? { color: src.color } : {}),
+      style: wireStyleFor(dst, src, deckStyle),
       ...fired,
     });
   };

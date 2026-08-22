@@ -207,6 +207,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import Dropdown from "../../../lib/Dropdown.svelte";
   import NumericField from "./NumericField.svelte";
   import ColorField from "./ColorField.svelte";
   import BooleanField from "./BooleanField.svelte";
@@ -761,6 +762,16 @@
                 <AngleField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} value={elementFieldValue(decl.element, el, f.name)} {disabled} />
               {:else if f.kind === "boolean"}
                 <BooleanField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} value={Boolean(elementFieldValue(decl.element, el, f.name))} {disabled} />
+              {:else if f.kind === "select"}
+                <!-- A CHOICE field (a port's wire style). The row-level select's
+                     own control, one level down, fed from the field's declared
+                     options exactly as core/properties.selectRowItems feeds a row;
+                     a pick is one undo unit. -->
+                <Dropdown
+                  items={(f.options ?? []).map((v) => ({ value: v, label: f.optionLabels?.[v] ?? v }))}
+                  value={elementFieldValue(decl.element, el, f.name) ?? f.options?.[0]}
+                  onchange={(v) => { app.setPreview([[fieldPath, v]]); app.commitPreview(); }}
+                />
               {:else if f.kind === "text"}
                 <!-- A STRING field (a visual node's port label). The Inspector's
                      own text-row contract, one level down: oninput previews the

@@ -755,3 +755,20 @@ never source we author.
   selected, so it is not recorded), restore it after `tick()` when a selection
   lands. `tests/inspector_scroll_probe.js` pins deselect→reselect, A→B, and that
   a new position is the one remembered.
+
+## 2026-08-21 — wire styles (user: "I want the BEST solution. not the cheapest.")
+
+- A short forward bezier HOOKED (beads ~70 apart: control points at +40/−40
+  crossed). Root cause: the 40-unit reach floor applied to every wire, though its
+  only job is the stacked/backward case. Fix: forward wires use |dx|/2 capped (x
+  is monotonic, no hook possible); the floor stays for dx ≤ 0.
+- The user rejected the patch-only answer, so the feature is a CHOICE: `WIRE_STYLES`
+  bezier | straight | elbow. Deck default = `wireStyle` on THE CAMERA (the
+  `rendering` bundle, so `defaultCameraState` is born with it and old decks fill
+  it quietly as version skew); per-port override = `wire` on a port declaration,
+  resolved destination → source → camera in `deriveWires` and carried as
+  `wire.style`; one dispatcher `wirePathD` for painter, exporters and the ghost.
+  The visual node's port elements gained a `wire` select ("Deck default" stored
+  as "inherit"), which needed a `select` field control in ListField.
+- Concurrency note: derive.js changed under me (another session added `fired` on
+  wires); edits were re-based on the live text rather than on my stale copy.

@@ -63,7 +63,7 @@
 
 import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
-import { NODE_INPUT_ROW_KIND } from "./nodeflow.js";
+import { INHERIT_WIRE_STYLE, NODE_INPUT_ROW_KIND, WIRE_STYLES, WIRE_STYLE_LABELS } from "./nodeflow.js";
 import { VEC2_ROW_KIND, VECTOR_KINDS, COLOR_CHANNEL_MAX, COLOR_VECTOR_ADDRESS, colorAlphaAxis } from "./vector_values.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
@@ -1703,6 +1703,11 @@ export const PROPS = {
   // devicePixelRatio), dither OFF.
   antialias: { label: "Anti-aliasing", kind: "select", options: ANTIALIAS_MODES, optionLabels: ANTIALIAS_MODE_LABELS, category: "rendering", default: "standard", help: "How shape and text edges are smoothed. Standard blends edge pixels (the default look). Off gives crisp, pixelated staircase edges and renders a little faster. (A higher-quality supersample mode is planned.)" },
   retina: { label: "Retina (HiDPI)", kind: "boolean", category: "rendering", default: true, help: "Renders at the display's full pixel density (its device pixel ratio) so edges stay sharp on high-DPI screens. Off renders at 1:1 CSS pixels — softer on a Retina display but faster." },
+  // THE DECK'S CABLE LOOK (core/nodeflow.js WIRE STYLES): how every node wire is
+  // drawn unless a port overrides it. On the CAMERA because it is the one mandatory
+  // per-document widget that already owns scene-wide rendering decisions — and, as
+  // a camera leaf, it keyframes, so a deck may change its cables per slide.
+  wireStyle: { label: "Wire style", kind: "select", options: WIRE_STYLES, optionLabels: WIRE_STYLE_LABELS, category: "rendering", default: "bezier", help: "How the wires between nodes are drawn across this deck: a curved cable (the node-editor look), a straight line, or a right-angled elbow (the flowchart connector). A node's port can override it for the wires that land on it." },
   // ── dither: THE REUSABLE DITHER BUNDLE (user, 2026-08-08: "These should all be
   // bundled up into a dithering options property bundle - since other things might
   // use dither soon too" … "not just gradient") ────────────────────────────────
@@ -2466,6 +2471,7 @@ export const PROPS = {
         { name: "label", kind: "text", label: "Label", help: "The name drawn beside this input's bead. Leave it blank for the jack alone — a bare socket still says where a wire comes in." },
         { name: "color", kind: "color", label: "Colour", help: "The bead's colour, and the colour of every wire drawn into it. A visual port carries no value, so its colour means whatever you say it means." },
         { name: "multiple", kind: "boolean", label: "Accept several", help: "Let this one input take wires from SEVERAL outputs at once, in no particular order. Off, it holds one wire and a new drop replaces it." },
+        { name: "wire", kind: "select", options: [INHERIT_WIRE_STYLE, ...WIRE_STYLES], optionLabels: { [INHERIT_WIRE_STYLE]: "Deck default", ...WIRE_STYLE_LABELS }, label: "Wire", help: "How the wires landing on this input are drawn: the deck's own style (the camera's Wire style), or curved, straight or elbow just for this socket. The input's choice wins over the source's." },
       ],
     },
     order: "sequence",
@@ -2479,6 +2485,7 @@ export const PROPS = {
       fields: [
         { name: "label", kind: "text", label: "Label", help: "The name drawn beside this output's bead. Leave it blank for the jack alone." },
         { name: "color", kind: "color", label: "Colour", help: "The bead's colour, and the colour of every wire drawn out of it." },
+        { name: "wire", kind: "select", options: [INHERIT_WIRE_STYLE, ...WIRE_STYLES], optionLabels: { [INHERIT_WIRE_STYLE]: "Deck default", ...WIRE_STYLE_LABELS }, label: "Wire", help: "How the wires leaving this output are drawn, unless the input they land on says otherwise: the deck's own style, or curved, straight or elbow just for this socket." },
       ],
     },
     order: "sequence",
@@ -2672,7 +2679,7 @@ export const BUNDLES = {
   // camera), single-sourced here like every other family. Order = Inspector row
   // order (the two on/off toggles first, then the dither pair). Spread its
   // defaults with bundleDefaults("rendering") — every key has a scalar default.
-  rendering: ["antialias", "retina"],
+  rendering: ["antialias", "retina", "wireStyle"],
   // THE DITHER bundle (user, 2026-08-08: "bundled up into a dithering options
   // property bundle - since other things might use dither soon too"). Order = row
   // order, and it is the order the picture is built in: what depth to quantise TO,

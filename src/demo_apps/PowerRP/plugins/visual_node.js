@@ -54,7 +54,7 @@
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
-import { NODE_ITEM_REFS, nodeInkBounds, nodeInputRows, portColor } from "../core/nodeflow.js";
+import { INHERIT_WIRE_STYLE, NODE_ITEM_REFS, nodeInkBounds, nodeInputRows, portColor } from "../core/nodeflow.js";
 import {
   NODE_BODY, NODE_FAMILIES, NODE_HEADER, NODE_PAD, NODE_RIM, NODE_RIM_WIDTH, NODE_TITLE_INK,
   NODE_TITLE_SIZE, NODE_VALUE_INK, nodeBox, portBeads, titleLineTop,
@@ -105,11 +105,11 @@ const CORNER_LABELS = { round: "Round", chamfer: "Chamfer" };
  * @param {boolean} [multiple] - an INPUT's "accept several" permission
  * @returns {{label: string, color: string, multiple?: boolean}}
  *
- * @example port("in") // {label: "in", color: "#a9b1d6"}
- * @example port("mix", "#ff8800", true) // {label: "mix", color: "#ff8800", multiple: true}
+ * @example port("in") // {label: "in", color: "#a9b1d6", wire: "inherit"}
+ * @example port("mix", "#ff8800", true) // {label: "mix", color: "#ff8800", multiple: true, wire: "inherit"}
  */
 export function port(label, color = VISUAL_COLOR, multiple = false) {
-  return { label, color, ...(multiple ? { multiple: true } : {}) };
+  return { label, color, ...(multiple ? { multiple: true } : {}), wire: INHERIT_WIRE_STYLE };
 }
 
 /** Pure function. Is the shape one with corners to treat? (The ellipse has none.)

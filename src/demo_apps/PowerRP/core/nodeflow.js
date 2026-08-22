@@ -609,11 +609,14 @@ export function declaredPorts(plugin, state) {
     // distinction it cannot make.
     if (p.multiple && side === "output")
       throw new Error(`nodeflow: output port "${p.key}" on "${plugin?.type}" declares multiple — every output already fans out; \`multiple\` is an INPUT's permission to take several wires`);
+    if (p.wire !== undefined && !WIRE_STYLES.includes(p.wire))
+      throw new Error(`nodeflow: ${side} port "${p.key}" on "${plugin?.type}" declares wire style ${JSON.stringify(p.wire)} (have: ${WIRE_STYLES.join(", ")})`);
     return {
       key: p.key, type: p.type, label: p.label ?? p.key, side,
       ...(p.feedbackSafe ? { feedbackSafe: true } : {}),
       ...(p.color !== undefined ? { color: p.color } : {}),
       ...(p.multiple ? { multiple: true } : {}),
+      ...(p.wire !== undefined ? { wire: p.wire } : {}),
     };
   });
   return { inputs: norm(raw.inputs, "input"), outputs: norm(raw.outputs, "output") };
@@ -1837,13 +1840,153 @@ export const WIRE_MAX_REACH = 160;
  * @param {{x: number, y: number}} to - the destination end
  * @returns {string} an SVG path `d`
  *
+ * ── THE FLOOR APPLIES ONLY TO A WIRE THAT GOES BACKWARDS (user, 2026-08-21) ─
+ * The floor used to apply to every wire, and on a short FORWARD wire it hooked:
+ * two beads 70 apart got control points at +40 and −40, which CROSS, so the cable
+ * left the output, doubled back on itself and arrived from the wrong side — "this
+ * looks silly. why not just be a straight line". The floor's one job is the
+ * stacked case (the destination level with or behind the source), where a reach
+ * of |dx|/2 would be ~0 and the "curve" a straight line through both cards. So:
+ * FORWARD (dx > 0) the reach is |dx|/2 capped — control points meet at the
+ * midpoint at worst, so the curve is monotonic in x and can never hook, and a
+ * very short wire is all but straight; BACKWARD (dx ≤ 0) the floor holds, so the
+ * cable still loops out and back readably.
+ *
  * @example wireBezierPath({x: 0, y: 0}, {x: 200, y: 0}) // "M 0 0 C 100 0 100 0 200 0"
  * @example wireBezierPath({x: 0, y: 0}, {x: 0, y: 100}) // "M 0 0 C 40 0 -40 100 0 100"
+ * @example // a short forward wire no longer hooks: its control points meet at the midpoint
+ * @example wireBezierPath({x: 0, y: 0}, {x: 70, y: 60}) // "M 0 0 C 35 0 35 60 70 60"
  */
 export function wireBezierPath(from, to) {
   const dx = to.x - from.x;
-  const reach = Math.min(WIRE_MAX_REACH, Math.max(WIRE_MIN_REACH, Math.abs(dx) / 2));
+  const reach = dx > 0
+    ? Math.min(WIRE_MAX_REACH, dx / 2)
+    : Math.min(WIRE_MAX_REACH, Math.max(WIRE_MIN_REACH, Math.abs(dx) / 2));
   return `M ${from.x} ${from.y} C ${from.x + reach} ${from.y} ${to.x - reach} ${to.y} ${to.x} ${to.y}`;
+}
+
+// ── WIRE STYLES ──────────────────────────────────────────────────────────────
+//
+// User, 2026-08-21, on a hooked bezier between two close visual nodes: "why not
+// just be a straight line in this situation? Options?" → "I want the BEST
+// solution. not the cheapest." The best is a CHOICE, because a patch and a
+// flowchart want different cables: a bezier is the node-editor idiom (Audulus,
+// Reaktor — the founding taste anchor), a straight line is the simplest diagram
+// connector, and an orthogonal ELBOW is what every flowchart tool draws.
+//
+// WHERE THE CHOICE LIVES — two places, one rule:
+//   THE DECK DEFAULT is `wireStyle` on THE CAMERA (core/properties.js, the
+//     `rendering` bundle beside anti-aliasing). The camera is the one mandatory,
+//     per-document widget that already owns scene-wide rendering decisions, so a
+//     deck-wide look needs no new settings surface — and because it is a camera
+//     leaf it is KEYFRAMABLE, so a deck may switch its cables per slide.
+//   A PORT MAY OVERRIDE IT with `wire` on its declaration (declaredPorts), the way
+//     it may override its colour. Resolution (wireStyleFor): the DESTINATION
+//     input's `wire`, else the SOURCE output's, else the camera's. The input
+//     first, because the connection is STORED on the input (the module header's
+//     whole argument) and the bead the author drags a cable INTO is the one they
+//     are looking at when they decide what that cable should be.
+// Every consumer — the painted wire (core/node_chrome.wireOps), the ghost wire
+// (web/CanvasView.svelte), the exporters (through wireOps) — goes through
+// `wirePathD`, so a style is one path function and cannot differ per surface.
+
+/** The three cable looks, in picker order. */
+export const WIRE_STYLES = Object.freeze(["bezier", "straight", "elbow"]);
+export const WIRE_STYLE_LABELS = Object.freeze({ bezier: "Curved", straight: "Straight", elbow: "Elbow" });
+/** What a deck draws until its camera says otherwise: the node-editor curve. */
+export const DEFAULT_WIRE_STYLE = "bezier";
+/** The spelling a port uses to say "no override" in a stored list element, where
+ *  a select control needs a value to show (core/visual_node.js reads it). */
+export const INHERIT_WIRE_STYLE = "inherit";
+
+/** How far an ELBOW cable runs straight out of a bead before it turns, and how
+ *  far back it comes before it lands — the backward route's stubs. Half the
+ *  bezier's minimum reach: enough to read as "out, around, in". */
+export const ELBOW_STUB = WIRE_MIN_REACH / 2;
+
+/**
+ * Pure function. A STRAIGHT cable: one segment, bead to bead.
+ *
+ * @param {{x: number, y: number}} from - the source end
+ * @param {{x: number, y: number}} to - the destination end
+ * @returns {string} an SVG path `d`
+ *
+ * @example wireStraightPath({x: 0, y: 0}, {x: 70, y: 60}) // "M 0 0 L 70 60"
+ */
+export function wireStraightPath(from, to) {
+  return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
+}
+
+/**
+ * Pure function. An ORTHOGONAL cable — the flowchart connector. FORWARD it is
+ * horizontal–vertical–horizontal with the riser at the midpoint (the classic
+ * elbow); BACKWARD (the destination level with or behind the source) it runs a
+ * stub out of the output, drops to the half-way height, runs back past the
+ * input, and lands with a stub — five segments that keep "leaves rightward,
+ * enters leftward" true for every configuration, as the bezier's control points
+ * do. A level forward wire collapses to the straight horizontal it is.
+ *
+ * @param {{x: number, y: number}} from - the source end
+ * @param {{x: number, y: number}} to - the destination end
+ * @returns {string} an SVG path `d`
+ *
+ * @example wireElbowPath({x: 0, y: 0}, {x: 100, y: 60}) // "M 0 0 L 50 0 L 50 60 L 100 60"
+ * @example wireElbowPath({x: 0, y: 0}, {x: 100, y: 0}) // "M 0 0 L 50 0 L 50 0 L 100 0"
+ * @example // backwards: out, down to half-way, back, in
+ * @example wireElbowPath({x: 100, y: 0}, {x: 0, y: 80}) // "M 100 0 L 120 0 L 120 40 L -20 40 L -20 80 L 0 80"
+ */
+export function wireElbowPath(from, to) {
+  if (to.x > from.x) {
+    const mx = (from.x + to.x) / 2;
+    return `M ${from.x} ${from.y} L ${mx} ${from.y} L ${mx} ${to.y} L ${to.x} ${to.y}`;
+  }
+  const my = (from.y + to.y) / 2;
+  const out = from.x + ELBOW_STUB, back = to.x - ELBOW_STUB;
+  return `M ${from.x} ${from.y} L ${out} ${from.y} L ${out} ${my} L ${back} ${my} L ${back} ${to.y} L ${to.x} ${to.y}`;
+}
+
+/**
+ * Pure function. THE cable path for a style — the one dispatcher every surface
+ * draws a wire through. An unknown style THROWS rather than drawing the default:
+ * a misspelled style that quietly curved would be a knob with no effect.
+ *
+ * @param {{x: number, y: number}} from - the source end
+ * @param {{x: number, y: number}} to - the destination end
+ * @param {string} [style] - a WIRE_STYLES entry; default DEFAULT_WIRE_STYLE
+ * @returns {string} an SVG path `d`
+ *
+ * @example wirePathD({x: 0, y: 0}, {x: 200, y: 0}) // "M 0 0 C 100 0 100 0 200 0"
+ * @example wirePathD({x: 0, y: 0}, {x: 70, y: 60}, "straight") // "M 0 0 L 70 60"
+ * @example wirePathD({x: 0, y: 0}, {x: 100, y: 60}, "elbow") // "M 0 0 L 50 0 L 50 60 L 100 60"
+ * @example // wirePathD({x: 0, y: 0}, {x: 1, y: 1}, "wiggly") // throws
+ */
+export function wirePathD(from, to, style = DEFAULT_WIRE_STYLE) {
+  switch (style) {
+    case "bezier": return wireBezierPath(from, to);
+    case "straight": return wireStraightPath(from, to);
+    case "elbow": return wireElbowPath(from, to);
+    default: throw new Error(`nodeflow: unknown wire style ${JSON.stringify(style)} (have: ${WIRE_STYLES.join(", ")})`);
+  }
+}
+
+/**
+ * Pure function. WHICH STYLE a cable between two declared ports is drawn in: the
+ * destination's `wire`, else the source's, else the fallback (the camera's
+ * `wireStyle`, or DEFAULT_WIRE_STYLE when there is no camera in hand). The
+ * resolution order is the one the WIRE STYLES section argues for.
+ *
+ * @param {object|null} dst - the destination INPUT's declaration (may carry `wire`)
+ * @param {object|null} src - the source OUTPUT's declaration (may carry `wire`)
+ * @param {string} [fallback] - the deck default
+ * @returns {string} a WIRE_STYLES entry
+ *
+ * @example wireStyleFor({wire: "elbow"}, {wire: "straight"}, "bezier") // "elbow"
+ * @example wireStyleFor({}, {wire: "straight"}, "bezier") // "straight"
+ * @example wireStyleFor({}, {}, "elbow") // "elbow"
+ * @example wireStyleFor(null, null) // "bezier"
+ */
+export function wireStyleFor(dst, src, fallback = DEFAULT_WIRE_STYLE) {
+  return dst?.wire ?? src?.wire ?? fallback;
 }
 
 /**

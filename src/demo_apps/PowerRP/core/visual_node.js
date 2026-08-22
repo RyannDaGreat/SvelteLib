@@ -63,7 +63,7 @@
  */
 
 import { NODE_HEADER_H, NODE_PAD, NODE_TITLE_SIZE, nodeBodyTop, nodeBox, textLineH } from "./node_chrome.js";
-import { NODE_CORNER_R, PORT_BEAD_R } from "./nodeflow.js";
+import { INHERIT_WIRE_STYLE, NODE_CORNER_R, PORT_BEAD_R } from "./nodeflow.js";
 
 /** How far a bead reaches INSIDE the edge it straddles — its radius (portLayout's
  *  "half in, half out"). A rect's text box clears this on the sides that carry
@@ -252,6 +252,9 @@ export function visualShapeOf(s) {
  * @example visualNodePorts({inPorts: [{label: "a", color: "#ff0000"}, {label: "b", color: "#ff0000"}, {label: "c", color: "#ff0000"}], inPortsActive: [true, false, true]}).inputs.map((p) => p.key) // ["in0", "in2"]
  * @example // an input may accept several wires
  * @example visualNodePorts({inPorts: [{label: "mix", color: "#ff0000", multiple: true}]}).inputs[0].multiple // true
+ * @example // a socket may choose its cable look; "inherit" (or no field at all) leaves it to the camera
+ * @example visualNodePorts({inPorts: [{label: "a", color: "#ff0000", wire: "elbow"}]}).inputs[0].wire // "elbow"
+ * @example "wire" in visualNodePorts({inPorts: [{label: "a", color: "#ff0000", wire: "inherit"}]}).inputs[0] // false
  * @example visualNodePorts({}) // {inputs: [], outputs: []}
  */
 export function visualNodePorts(s) {
@@ -266,6 +269,10 @@ export function visualNodePorts(s) {
         label: String(el?.label ?? ""),
         color: el?.color,
         ...(withMultiple && el?.multiple ? { multiple: true } : {}),
+        // A per-socket cable look (core/nodeflow.js WIRE STYLES). "inherit" — and
+        // an element written before the field existed — declares nothing, so the
+        // camera's deck default governs.
+        ...(el?.wire && el.wire !== INHERIT_WIRE_STYLE ? { wire: el.wire } : {}),
       }];
     });
   };
