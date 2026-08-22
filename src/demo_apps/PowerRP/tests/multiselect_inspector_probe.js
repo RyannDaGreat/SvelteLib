@@ -629,7 +629,8 @@ try {
     // — so the probe now names what it always meant: the first diamond that is not
     // itself section-scale. Selecting a specific row by label instead would go
     // stale the next time Transform's first plain row moves.
-    const rowDiamond = cat.querySelector(".cat-rows .kf-controls .keybtn");
+    const rowDiamond = [...cat.querySelectorAll(".cat-rows .kf-controls .keybtn")]
+      .find((b) => !b.closest(".kf-section")) ?? null;
     const box = (e) => (e ? Math.round(e.getBoundingClientRect().width) : null);
     return {
       found: true,
