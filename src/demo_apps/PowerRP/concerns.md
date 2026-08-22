@@ -1121,3 +1121,42 @@ means something.
 
 The two survivors — `clipboard_duplicate_probe` and `paste_parity_probe` — fail
 standalone with real assertion text and are a separate matter, under investigation.
+
+## 2026-08-22 — CLOSING OUT THE FOUR SURVIVORS
+
+The previous entry ended with `clipboard_duplicate_probe` and `paste_parity_probe`
+"under investigation". Both are resolved: **the product was right, the probes were
+asserting the rule `a983cc91` deliberately reversed.**
+
+The mechanism is worth keeping because it is a way a test can rot that review does not
+catch. `a983cc91` moved paste's deciding evidence from the image's BYTES to the
+ownership MARKER, and made the app ask `osClipboardTagging()` — a question about what
+the BROWSER CAN DO — rather than reasoning from what one event happened to carry. Both
+probes had cases that omitted the marker from their DataTransfer and CALLED THAT "the
+browser that drops the custom flavor". Those were the same thing until that commit.
+Afterwards the comment and the fixture said different things, and **the comment was the
+more convincing of the two**, so every reader who checked came away satisfied.
+
+Fixed by making the fixtures mean what the comments say — E1 passes the marker; 1b
+shadows `ClipboardItem.supports` to actually reach the untagged branch and asserts the
+override took before relying on it — and NOT by weakening the assertions. 1b in
+particular is the only coverage anywhere of the untagged arm, which exists precisely so
+a browser without custom flavors does not lose element paste: going green by deleting
+it would have retired the guarantee the user's original bug report was about.
+
+A latent race surfaced in the same pass: `paste_parity` section 2 asked whether an image
+existed ANYWHERE on the slide, matched an earlier case's widget on the first poll, and
+read the upload counter before its own POST fired. It had always been wrong; 1b's old
+outcome left no image behind, which hid it. **A fixture change exposing an unrelated
+bug is normal and should be expected, not treated as evidence the change was wrong.**
+
+**AND THE THIRD CRY-WOLF FINDING OF THE ROUND.** With the V5 retry landed,
+`image_stack_live_probe` still reddened — on `attempt 1 of 3, will retry`, with all
+fourteen picture assertions passing. A healed hiccup at error level. The fix is the
+LEVEL (warn while retries remain, error at the cap), not the probe's filter. The
+one-line shortcut — widen the filter — would have discarded the one signal in the repo
+that caught the permanent-blacklist bug in the first place. Glyph counter, portability
+gate, and now this: three separate instances in one round of a loud channel firing on a
+routine or self-healing condition. That is the round's real theme, and it is worth
+stating as a rule: **a warning that fires when nothing is wrong is not harmless noise;
+it is a withdrawal from the credibility the next real warning needs.**

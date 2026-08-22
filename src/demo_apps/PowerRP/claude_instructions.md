@@ -7299,3 +7299,59 @@ disguised as a dozen unrelated product defects — which is how it has read ever
 so far. CLAUDE.md carries the short form beside the screenshot-preflight hazard, since
 both answer the same question: *before believing a browser red, what else could have
 produced it?*
+
+### THE TWO PASTE PROBES, AND THE RULE ABOUT SOFTENING A CONSOLE CHECK
+
+The gate-concurrency fix left FOUR browser reds. Two were the media-transient class
+(below); two were `clipboard_duplicate_probe` and `paste_parity_probe`, which failed
+STANDALONE with real assertion text. **The product was correct in both; the probes had
+stopped matching their own prose.**
+
+`a983cc91` moved the deciding evidence from BYTES to the MARKER: on a browser that can
+tag a copy, an image arriving without `POWERRP_CLIPBOARD_MIME` is foreign BY
+DEFINITION and its signature is never consulted. Headless Chrome on 127.0.0.1 answers
+`"tagged"` (MEASURED: `ClipboardItem.supports("web application/x-powerrp-item")` →
+true). Both probes had cases that simply OMITTED the type, so each described one branch
+in its comment while exercising the other — the fixture had drifted from the sentence
+above it, and the sentence was still perfectly persuasive.
+
+**THE FIX WAS TO MAKE EACH FIXTURE MEAN WHAT ITS COMMENT SAYS, NEVER TO WEAKEN WHAT IT
+GUARDS.** That distinction did real work here:
+  · `clipboard_duplicate_probe` E1 now PASSES the marker — "our own copy comes back" is
+    what it claims to test and the marker is what makes a copy ours. E2 keeps its
+    unmarked fixture and asserts the SCREENSHOT outcome (an image widget, one upload),
+    which is the case `a983cc91` was written for. **The pair now differs in exactly one
+    input**, so it is evidence about which signal decides rather than two examples of
+    one outcome. That assertion has now been reversed TWICE and both reversals are
+    recorded in place, because the second only looks like the first undone: the
+    re-encoding argument was never wrong, the QUESTION changed.
+  · `paste_parity` 1b guards a real user-facing guarantee — on a browser that cannot
+    carry custom flavors, element paste must still work — and **nothing else covers
+    it**, so weakening was not available. Its premise is a CAPABILITY that had been
+    spelled as an ABSENCE; it now shadows `ClipboardItem.supports` to make
+    `osClipboardTagging()` answer `"untagged"`, ASSERTS THAT THE OVERRIDE TOOK before
+    relying on it, and restores it immediately.
+  · A latent race in `paste_parity` section 2 fell out of the same read: its detector
+    asked whether an image existed ANYWHERE on the slide, so it matched an earlier
+    case's widget on the first poll and read the upload counter before this case's POST
+    fired. It keys on ids absent before now. **The hazard was always there; 1b's old
+    outcome hid it by leaving no image behind** — which is how a fixture change can
+    expose a bug that has nothing to do with it.
+
+### A RETRY THAT SUCCEEDS IS NOT AN ERROR
+
+With the V5 retry landed, `image_stack_live_probe` went on reddening — on the message
+`attempt 1 of 3, will retry`, **with all fourteen of its picture assertions passing**.
+The frames recovered, the cards decoded, nothing was lost. `console.error` was simply
+the wrong channel.
+
+So the level follows the verdict: a pending retry is `console.warn`, a give-up is
+`console.error`. Both stay LOUD — the distinction costs no silence.
+
+**THE STANDING RULE, because the shortcut here was obvious and wrong:** do not soften a
+console check to accommodate a message. Fix the message's LEVEL, or fix the thing it
+reports. Widening that probe's filter would have gone green in one line and discarded
+the one signal in the repo that caught the permanent-blacklist bug in the first place.
+It is the same rule as the glyph counter and the portability gate, arriving for the
+third time this round: **a loud channel that fires on a routine or self-healing
+condition is being spent, and what it buys is that the next real message is ignored.**
