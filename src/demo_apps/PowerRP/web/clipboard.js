@@ -136,3 +136,157 @@ function copyViaTextarea(text, label) {
     document.body.removeChild(ta);
   }
 }
+
+/**
+ * The three answers to "what does a copy made in THIS browser actually put on
+ * the OS clipboard" — the fact a paste needs in order to know what the ABSENCE
+ * of POWERRP_CLIPBOARD_MIME proves.
+ *
+ *   "tagged"   — the marker rides beside the PNG, so every copy this browser
+ *                makes is labelled. An image arriving WITHOUT the marker is
+ *                therefore proof the pasteboard has been replaced since.
+ *   "untagged" — image writes work but the marker type is refused (the loud
+ *                retry path in app.#writeImagePngToOs). Our own render then
+ *                arrives indistinguishable from a screenshot, so absence proves
+ *                NOTHING and the element must keep winning.
+ *   "never"    — there is no async image-write API here at all (an insecure
+ *                context, which this app deliberately runs in over plain HTTP).
+ *                We put nothing on the OS clipboard, so any image on it came
+ *                from somewhere else.
+ *
+ * @example ["tagged", "untagged", "never"].includes("untagged")
+ * // true
+ */
+export const OS_CLIPBOARD_TAGGINGS = ["tagged", "untagged", "never"];
+
+/**
+ * Query (reads browser capabilities; no side effects). Which of
+ * OS_CLIPBOARD_TAGGINGS describes this browser.
+ *
+ * A CAPABILITY CHECK, NOT A MEMORY OF THE LAST WRITE. `ClipboardItem.supports`
+ * answers the same question the write path asks and answers it BEFORE any copy
+ * has happened, so a fresh tab is as well informed as one that has copied ten
+ * times, and there is no per-copy flag to persist, invalidate or get wrong
+ * across tabs. Measured in this repo's headless Chrome on a 127.0.0.1 origin:
+ * `supports("web application/x-powerrp-item")` -> true,
+ * `supports("application/x-nonsense")` -> false (the `web ` prefix is what makes
+ * a custom type legal — see POWERRP_CLIPBOARD_MIME), and the whole of
+ * `ClipboardItem` is undefined over a non-secure origin.
+ *
+ * The "never" condition MIRRORS app.#writeImagePngToOs's own early return, and
+ * that is deliberate: the two must agree about whether a copy reached the OS
+ * clipboard, or a paste would reason about an image we never wrote.
+ *
+ * A browser with `ClipboardItem` but NO `supports` static answers "untagged" —
+ * the conservative arm, because an unanswerable capability question must not be
+ * read as a yes.
+ *
+ * @returns {"tagged"|"untagged"|"never"}
+ *
+ * @example // In Chrome on https/localhost: "tagged"
+ * @example // Over plain HTTP on a LAN address (no navigator.clipboard): "never"
+ */
+export function osClipboardTagging() {
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") return "never";
+  if (typeof ClipboardItem.supports !== "function") return "untagged";
+  return ClipboardItem.supports(POWERRP_CLIPBOARD_MIME) ? "tagged" : "untagged";
+}
+
+/**
+ * Pure function. Given that the app DOES hold a pasteable in-app payload, does
+ * this paste event nevertheless carry something FOREIGN that should win?
+ *
+ * ── THE BUG THIS RULE REPLACES (user, 2026-08-21) ────────────────────────────
+ * "why can't i copy and paste images into birdseye anymore i have to drag +
+ *  drop an external image. it refuses to recognize when I have an image in my
+ *  clipboard that's different from the image copied from copying nodes."
+ *
+ * The previous rule called a bare `image/png` AMBIGUOUS whenever anything was on
+ * the in-app clipboard and resolved it toward the element, on the stated theory
+ * that a user who wants the screenshot waits until "the widget copy is stale, or
+ * pastes into a slide where no internal copy exists". NEITHER ESCAPE HATCH
+ * EXISTS: the in-app clipboard is a `localStorage` mirror plus a server session
+ * that are never cleared and are not scoped to a slide. So the FIRST widget copy
+ * a browser ever made disabled system-image paste permanently — there was no
+ * gesture, anywhere, that pasted a screenshot again.
+ *
+ * ── THE AMBIGUITY IS NOT REAL WHERE OUR COPIES ARE TAGGED ────────────────────
+ * A copy writes POWERRP_CLIPBOARD_MIME and the PNG as ONE ClipboardItem, and a
+ * screenshot REPLACES the pasteboard whole rather than adding to it. So on a
+ * "tagged" browser an image with NO marker cannot be the one we wrote. That is
+ * evidence, not a preference, and it does not overturn the standing ruling
+ * (R3 #36 / d39e13f0, "the internal widget payload must win over the clipboard's
+ * image flavor") — it removes the case that ruling was about. Where the evidence
+ * is genuinely unavailable ("untagged"), the element still wins exactly as
+ * before, and `untaggedCopyNotice` says so out loud.
+ *
+ * The order, first match wins:
+ *   1. No files at all            -> not foreign (a plain in-app paste).
+ *   2. Our marker on the event    -> not foreign, whatever else is there.
+ *   3. Any NON-image file         -> foreign. Our copy only ever writes an image.
+ *   4. Image, no marker, "tagged" -> FOREIGN: the pasteboard is no longer ours.
+ *   5. Image, no marker, "never"  -> FOREIGN: we never wrote one to begin with.
+ *   6. Image, no marker,"untagged"-> not foreign: indistinguishable, element wins.
+ *
+ * @param {File[]} files - the paste event's clipboardData.files
+ * @param {string[]} types - the paste event's clipboardData.types
+ * @param {"tagged"|"untagged"|"never"} tagging - osClipboardTagging()'s answer
+ * @returns {boolean} true iff the OS clipboard's contents should win
+ *
+ * @example foreignImagePaste([], [], "tagged")
+ * // false   (nothing foreign on the clipboard at all)
+ * @example foreignImagePaste([{type: "image/png"}], ["Files"], "tagged")
+ * // true    (a screenshot: our copies carry the marker, and this one does not)
+ * @example foreignImagePaste([{type: "image/png"}], ["web application/x-powerrp-item", "Files"], "tagged")
+ * // false   (our own copy coming back — paste the ELEMENT, not the bitmap)
+ * @example foreignImagePaste([{type: "image/png"}], ["Files"], "untagged")
+ * // false   (this browser refuses the marker, so an untagged PNG may be ours)
+ * @example foreignImagePaste([{type: "application/pdf"}], ["Files"], "untagged")
+ * // true    (a non-image file can never be one of our copies)
+ * @example foreignImagePaste([{type: "image/png"}], ["Files"], "never")
+ * // true    (no image-write API here, so we never put an image on the clipboard)
+ */
+export function foreignImagePaste(files, types, tagging) {
+  if (!files.length) return false;
+  if (types.includes(POWERRP_CLIPBOARD_MIME)) return false;
+  if (files.some((f) => !f.type.startsWith("image/"))) return true;
+  return tagging !== "untagged";
+}
+
+/**
+ * Pure function. The sentence for the ONE case where a system-clipboard image
+ * loses and the user has no way to make it win — or null when that is not what
+ * is happening.
+ *
+ * WHY IT MUST BE SAID. On an "untagged" browser the two candidate meanings of a
+ * bare PNG are genuinely indistinguishable, so the element wins and the user's
+ * screenshot silently does not appear. Silence there is the same failure the
+ * report above describes; the difference between a bound and a bug is whether
+ * the bound is stated. It names the working gesture (drag and drop), because a
+ * refusal that does not say what to do instead is half a refusal.
+ *
+ * It fires only when all of "we hold a payload", "an image is on the OS
+ * clipboard", "no marker" and "untagged" hold at once — never on an ordinary
+ * in-app paste, and never at all on a browser that carries the marker.
+ *
+ * @param {File[]} files - the paste event's clipboardData.files
+ * @param {string[]} types - the paste event's clipboardData.types
+ * @param {"tagged"|"untagged"|"never"} tagging - osClipboardTagging()'s answer
+ * @returns {string|null} the warning to log, or null
+ *
+ * @example untaggedCopyNotice([{type: "image/png"}], ["Files"], "tagged")
+ * // null    (the marker settles it — nothing was shadowed)
+ * @example untaggedCopyNotice([], [], "untagged")
+ * // null    (no image on the clipboard to shadow)
+ * @example untaggedCopyNotice([{type: "image/png"}], ["Files"], "untagged").startsWith("Paste: ")
+ * // true
+ */
+export function untaggedCopyNotice(files, types, tagging) {
+  if (tagging !== "untagged") return null;
+  if (!files.length || types.includes(POWERRP_CLIPBOARD_MIME)) return null;
+  if (files.some((f) => !f.type.startsWith("image/"))) return null;
+  return "Paste: an image is on your system clipboard, but this browser will not carry PowerRP's " +
+    `ownership marker (${POWERRP_CLIPBOARD_MIME}), so that image cannot be told apart from the PNG ` +
+    "your own last Copy left there — the copied widget was pasted instead. Drag the image file onto " +
+    "the canvas to insert it, or use a browser that supports web custom clipboard formats.";
+}

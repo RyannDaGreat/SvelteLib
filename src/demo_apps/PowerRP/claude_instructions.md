@@ -5984,6 +5984,25 @@ pastes widgets. The precedence is written at `web/app.svelte.js:4415`, and
 meant the screenshot is one Ctrl+Z, whereas the old bias silently flattened a widget into a
 bitmap and lost its editability."* **Nothing about that behaviour may change.**
 
+**AMENDED 2026-08-22 — THE BIAS IS FOR THE AMBIGUOUS CASE, AND ONE CASE IS NOT AMBIGUOUS.**
+That sentence was read as "an image never beats the element", and the code did exactly that:
+`#isForeignFilePaste` returned foreign only for a NON-image file, so once a browser had copied
+a widget ONCE, a system-clipboard image could never be pasted again — the mirror is
+`localStorage` plus a server session, nothing clears either, and neither is scoped to a slide.
+The docblock's two escape hatches ("copies it AFTER the widget copy is stale", "a slide where
+no internal copy exists") did not exist. The user met it as *"why can't i copy and paste images
+into birdseye anymore i have to drag + drop an external image"*. It shipped with `d39e13f0`
+(2026-07-30), not with the 2026-08-21 merge.
+THE RULE NOW LIVES IN `web/clipboard.js` (`osClipboardTagging` / `foreignImagePaste` /
+`untaggedCopyNotice`), beside the marker it reasons about, and turns on whether the browser
+can TAG a copy at all (`ClipboardItem.supports`, a capability check rather than a remembered
+write). Where it CAN: an image arriving with NO marker is PROOF it is not ours — a copy writes
+marker and PNG as ONE `ClipboardItem`, and a screenshot replaces the pasteboard whole — so the
+image wins, and ROUND 3 #36 is not overturned, its case is simply gone. Where it CANNOT (a
+browser that takes `image/png` and refuses the custom type), the element still wins exactly as
+before and the user is TOLD why instead of the paste doing nothing anyone can explain. Pinned
+by `tests/paste_screenshot_precedence_probe.js`, whose middle case is red without this.
+
 **THE ONLY REASON IT IS BROWSER-LOCAL IS THAT THE FLAVOUR BODY IS THE STRING `"1"`**
 (`app.svelte.js:4287` — *"ownership is carried by the TYPE's presence, so nothing here needs
 to survive or be parsed"*). The real payload lives on the server keyed by the

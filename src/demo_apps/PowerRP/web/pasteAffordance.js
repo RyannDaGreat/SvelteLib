@@ -61,9 +61,19 @@
  *     (`osImageSeen`, which App.svelte's onPaste sets), never by a guess. When
  *     nothing has been observed, there is no image badge; the button does not
  *     claim knowledge it has no way to have.
+ *   • SINCE THE PRECEDENCE FIX (2026-08-21) THE BADGE CAN UNDER-REPORT AN IMAGE
+ *     PASTE, and that is worth stating rather than leaving as an implication. A
+ *     screenshot taken after an in-app copy now WINS at paste time — the OS
+ *     clipboard no longer carries our ownership marker, which is proof it was
+ *     replaced (`web/clipboard.js foreignImagePaste`). Nothing here can see that
+ *     marker before the paste event exists, so a live in-app payload still
+ *     renders the widget badge and the paste inserts the image. Under-promising
+ *     stays the right failure: the alternative is badging an image whenever
+ *     anything might be on the OS clipboard, which is a confident wrong answer
+ *     about the far commoner case.
  *
- * That last bullet is the honest version of "an image glyph for an external
- * image paste". The alternative — badging an image whenever our own clipboard is
+ * THE OS-CLIPBOARD-IMAGE bullet (the third) is the honest version of "an image
+ * glyph for an external image paste". The alternative — badging an image whenever our own clipboard is
  * empty, on the theory that an external paste is what is left — would show an
  * image badge for a genuinely empty clipboard, which is a confident wrong answer
  * about the one case the user is most likely to hit by accident.
@@ -193,10 +203,15 @@ export function propertySubsetKind(payload) {
  * `osImageSeen` is the LAST OBSERVED external image paste (see the header's
  * third bullet: there is no synchronous way to look at the OS clipboard, so this
  * is a memory of one, not a reading of one). It is the WEAKEST evidence here and
- * ranks last accordingly: an internal payload always wins, because our own copy
- * also writes a PNG to the OS clipboard, so an image alone is never proof the
- * user meant the image (the same precedence `app.#isForeignFilePaste` settles at
- * paste time, and this must not contradict it).
+ * ranks last accordingly: an in-app payload wins the BADGE, because a memory of
+ * an image seen earlier is not evidence that one is on the clipboard now.
+ *
+ * THAT IS A STATEMENT ABOUT THE BADGE, NOT ABOUT THE PASTE. `app.#isForeignFilePaste`
+ * decides the real thing from the paste event's own `types`, where the absence of
+ * our ownership marker proves the OS clipboard was replaced since our copy
+ * (`web/clipboard.js foreignImagePaste`). This function has no access to that, so
+ * it is deliberately the more conservative of the two rather than a mirror of it —
+ * see the header's fourth bullet.
  *
  * @param {object|null} payload - the mirror's parsed payload, or null when empty/unreadable
  * @param {boolean} [osImageSeen] - has an external image paste been observed in this session?
@@ -209,7 +224,7 @@ export function propertySubsetKind(payload) {
  * @example clipboardKind(null, true)
  * // 'image'
  * @example clipboardKind({powerrp_items: {a: {}}}, true)
- * // 'items'   (ours wins — our own copy also writes a PNG, so an image is not proof)
+ * // 'items'   (a remembered image is not evidence one is on the clipboard NOW)
  * @example clipboardKind(null)
  * // 'empty'
  */

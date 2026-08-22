@@ -818,3 +818,78 @@ never source we author.
   clean. It was a transient half-applied edit in `core/expressions.js`, which
   another agent held open at that moment. Lesson for concurrent work: re-run before
   believing a browser-only failure in a file someone else is editing.
+
+## 2026-08-21 — A SYSTEM-CLIPBOARD IMAGE COULD NOT BE PASTED AFTER THE FIRST WIDGET COPY
+
+**THE REPORT (user, verbatim):** *"also why can't i copy and paste images into
+birdseye anymore i have to drag + drop an external image. it refuses to recognize
+when I have an image in my clipboard that's different from the image copied from
+copying nodes. please have the agent read thru the manifest, this is the newest bug
+in an old problem."*
+
+**THE OLD PROBLEM, and how it was solved before.** Three entries in the manifest are
+the same question asked at different times. `1b7a3df8` (2026-07-27) built the
+bidirectional canvas clipboard and disambiguated by HASHING the PNG (`png_sig`,
+`web/clipboard.js imageSignature`). ROUND 3 #36 (`claude_instructions.md:546`) is the
+user finding that broken: *"copying a gear widget and pasting produced an IMAGE
+widget instead of a widget copy… The internal widget payload must win over the
+clipboard's image flavor."* `d39e13f0` (2026-07-30) diagnosed why the hash could never
+work — **the OS pasteboard RE-ENCODES an image in transit** (581 bytes in, 645 out,
+measured on macOS) — and replaced it with a LABEL that survives verbatim:
+`POWERRP_CLIPBOARD_MIME`, written beside the PNG in one `ClipboardItem`. R7-26
+(`claude_instructions.md:5960`) then records that *"nothing about that behaviour may
+change"* and quotes `web/app.svelte.js:4415` as where the precedence is written.
+
+**THE OVER-CORRECTION, which is this bug.** `d39e13f0` did not use the marker as
+EVIDENCE. It made the marker one of two ways to prove ownership and then made
+everything else lose anyway: `#isForeignFilePaste` returns foreign only for a
+NON-IMAGE file, so a bare `image/png` lost to the in-app clipboard unconditionally.
+Its docblock justified that with two escape hatches — *"A user who wants the
+screenshot copies it AFTER the widget copy is stale, or pastes into a slide where no
+internal copy exists"* — and **BOTH ARE FICTIONAL.** The in-app clipboard is
+`localStorage["powerrp.clipboardMirror"]` plus a cookie-keyed server session; nothing
+anywhere clears either, and neither is scoped to a slide. So the FIRST widget copy a
+browser ever makes disables system-image paste **permanently**, and drag-and-drop is
+the only remaining way in — exactly what the user says. It is not a regression from
+the 2026-08-21 `nug` merge (77 commits, none touching the paste decision);
+`git log -L` puts the last change to that method at `514d0452`, 2026-08-02, and it was
+a comment. **The bug shipped 2026-07-30 and the node work merely made people copy
+often enough to meet it.**
+
+**MEASURED, not reasoned.** `tests/paste_screenshot_precedence_probe.js` boots the real
+app and pastes a synthetic `ClipboardEvent`. Empty in-app clipboard → the image becomes
+a widget (case 1, green). Copy a widget first, then paste a DIFFERENT image → a CLONE of
+the copied widget appears, zero uploads (case 2, RED). The two outcomes both add exactly
+one item, so the assertion is on `src`, not on a count.
+
+**THE AMBIGUITY IS NOT REAL ON A BROWSER THAT TAGS OUR COPIES**, and that is the fix.
+A copy writes the marker and the PNG as ONE `ClipboardItem`; a screenshot REPLACES the
+pasteboard whole. So an image arriving with NO marker is proof the clipboard is no
+longer the one we wrote. `web/clipboard.js` now owns that rule as three pure/query
+functions: `osClipboardTagging()` (a capability check — `ClipboardItem.supports("web
+application/x-powerrp-item")`, MEASURED true in this repo's headless Chrome on a
+127.0.0.1 origin and false for a non-`web ` type; the whole of `ClipboardItem` is
+undefined over the plain-HTTP origins this app deliberately serves), `foreignImagePaste`,
+and `untaggedCopyNotice`. Where the evidence is genuinely unavailable — a browser that
+takes `image/png` but refuses the custom type — the element still wins exactly as before
+AND the notice says so, because that is the one case with no gesture that reaches the
+screenshot.
+
+**WHY A CAPABILITY CHECK AND NOT A REMEMBERED WRITE.** The first design recorded the
+outcome of the last OS write in `localStorage` beside the mirror. `ClipboardItem.supports`
+answers the same question BEFORE any copy has happened, so a fresh tab is as well informed
+as one that has copied ten times, and there is no per-copy flag to persist, invalidate, or
+get wrong across tabs.
+
+**WHAT IS NOT DONE, AND WHY.** `web/app.svelte.js` was HELD BY ANOTHER AGENT for the whole
+of this work, so the call site was stated rather than edited. The probe is therefore RED at
+the time of writing and its case-2 message names the four-line patch. With that patch
+applied to the SERVED bytes only (a Vite `transform` plugin in a scratch script, nothing on
+disk), all three cases go green — that is the proof, not an expectation.
+
+**LESSON.** A precedence rule that resolves an ambiguity must state where the LOSING side
+can still be reached, and that statement has to be checked against the code rather than
+assumed. Both hatches in this docblock read as plausible and neither existed; nobody
+noticed for three weeks because every test wrote the two clipboards in the order that
+hides it — `tests/paste_upload_probe.js` pastes the image BEFORE it ever copies a widget.
+**Test the order the user actually works in.**
