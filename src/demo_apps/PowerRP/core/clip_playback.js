@@ -72,6 +72,7 @@
  */
 
 import { beatAtTime, soundingNotes } from "./midi_clip.js";
+import { inputRefs, inputWires } from "./nodeflow.js";
 
 /** The three playback kinds. `timeline` and `recordable` are both reproducible;
  *  only `live` is not — `PLAYBACK_REPRODUCIBLE` is the one predicate every reader
@@ -174,8 +175,10 @@ export function isTriggerableMidiSource(plugin) {
  * @example clipPlaybackKind({c: {type: "node_midi_clip", inputs: {trigger: {item: "k", port: "out"}}}, k: {type: "audio_clock"}}, {get: () => ({audioModule: "clock"})}, "c") // "recordable"
  */
 export function clipPlaybackKind(items, registry, itemId) {
-  const wire = items?.[itemId]?.inputs?.[TRIGGER_PORT];
-  if (!wire || typeof wire.item !== "string") return "timeline";
+  // The trigger port is not `multiple`, so its slot holds one wire; inputRefs is
+  // still the reader because it is the ONE reader of the slot's shape.
+  const wire = inputRefs(items?.[itemId], TRIGGER_PORT)[0];
+  if (!wire) return "timeline";
   const source = items?.[wire.item];
   // A DANGLING wire is not a live one. The node reads its type's zero (no pulse
   // ever arrives), so it behaves as an untriggered clip — and saying "live" here
@@ -275,8 +278,8 @@ export function midiRoutes(items, registry, sourceId) {
     // core/live_control.triggerRoutes makes, for the same reason.
     if (!plugin?.audioModule) continue;
     const inputs = plugin.audioSpec?.inputs ?? [];
-    for (const [portKey, wire] of Object.entries(target?.inputs ?? {})) {
-      if (wire?.item !== sourceId) continue;
+    for (const [portKey, wire] of inputWires(target)) {
+      if (wire.item !== sourceId) continue;
       const port = inputs.find((p) => p.key === portKey);
       if (port?.type !== "midi") continue;
       routes.push({ id: targetId, port: portKey });
@@ -322,7 +325,7 @@ export function clipTriggerTargets(items, registry, sourceId, sourcePort = "out"
     let plugin = null;
     try { plugin = registry.get(state?.type); } catch { continue; }
     if (!isTriggerableMidiSource(plugin)) continue;
-    const wire = state?.inputs?.[TRIGGER_PORT];
+    const wire = inputRefs(state, TRIGGER_PORT)[0];
     if (wire?.item !== sourceId) continue;
     if ((wire.port ?? "out") !== sourcePort) continue;
     targets.push(id);
@@ -389,7 +392,7 @@ export function clipPlayhead(items, registry, itemId, now, liveStarts = {}, live
     return playheadBeats(liveNow, started, tempo);
   }
   if (kind === "recordable") {
-    const wire = state.inputs?.[TRIGGER_PORT];
+    const wire = inputRefs(state, TRIGGER_PORT)[0];
     // The clock's OWN rate, off its own knob leaf. A source that is not a clock (no
     // bpm knob) falls back to the timeline reading rather than pretending to pulse.
     const bpm = Number(items?.[wire?.item]?.audioBpm);

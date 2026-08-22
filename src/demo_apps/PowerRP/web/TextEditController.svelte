@@ -93,10 +93,27 @@
   // owning plugin's emit() exactly so the editor's layout equals the render's.
   // The ink color reads a DIFFERENT state prop per mode: plaintext paints glyphs
   // with `fill` (its paint-capable ink prop), the rich text widget with `color`.
+  // THE PLAIN WIDGET'S OWN DESCRIPTOR (`inlineTextEdit`, core/registry.js) may name
+  // WHICH leaf is the glyph ink (`ink`, default `fill` — plaintext's) and WHERE the
+  // text box sits inside the item (`box(state)`, default the whole item box). Both
+  // exist for the visual node: its `fill` is the SHAPE's fill and its text is laid
+  // out in the rect inscribed in that shape, so an editor that read `fill` and the
+  // item box would show a caret in the wrong colour at the wrong place. Rich mode
+  // has no descriptor and keeps its own keys.
+  let edit = $derived(plain ? (node.plugin?.inlineTextEdit ?? {}) : {});
+  let inkKey = $derived(plain ? (edit.ink ?? "fill") : "color");
   let inherited = $derived({
     font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? DEFAULT_PARA_SIZE,
-    color: (plain ? node.state.fill : node.state.color) ?? "#000000", bold: node.state.bold ?? false,
+    color: node.state[inkKey] ?? "#000000", bold: node.state.bold ?? false,
   });
+  // THE TEXT BOX, LOCAL: where the glyphs are laid out. Every LOCAL coordinate
+  // below (caret, selection, hit-surface, pointer) is relative to ITS origin, and
+  // the overlay root is placed at that origin — so the editor lands on the glyphs
+  // whether the box is the whole item or a rect inscribed in a diamond.
+  let textBox = $derived(
+    typeof edit.box === "function"
+      ? edit.box(node.state)
+      : { x: 0, y: 0, w: node.state.w ?? 0, h: node.state.h ?? 0 });
 
   // TWO VALUES, ONE STORED VALUE — the seam that keeps an edit from RE-SHADOWING
   // the box rows. `rich` is SHAPE-CANONICAL but STYLE-UNRESOLVED: it is what may
@@ -132,11 +149,11 @@
       ? {
           text: richTextToPlain(resolved),
           size: s.size ?? DEFAULT_PARA_SIZE,
-          color: s.fill ?? "#000000",
+          color: s[inkKey] ?? "#000000",
           bold: s.bold ?? false,
           font: s.font ?? DEFAULT_FONT,
-          boxW: (s.w ?? 0) > 0 ? s.w : Infinity,
-          boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
+          boxW: textBox.w > 0 ? textBox.w : Infinity,
+          boxH: textBox.h > 0 ? textBox.h : Infinity,
           boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
         }
       : {
@@ -153,11 +170,11 @@
   // positioned in LOCAL units inside a root CSS-transformed by this, so they land
   // exactly on the Skia glyphs at any zoom/rotation.
   let box = $derived.by(() => {
-    const p = T.apply(node.world, 0, 0);
+    const p = T.apply(node.world, textBox.x, textBox.y);
     const sc = worldToScreen(p.x, p.y);
     return {
       x: sc.x, y: sc.y,
-      w: node.state.w ?? 0, h: node.state.h ?? 0,
+      w: textBox.w, h: textBox.h,
       scale: zoom * (node.world.scale ?? 1),
       deg: (node.world.rotation ?? 0) * 180 / Math.PI,
     };
@@ -615,10 +632,13 @@
   function onPaste(e) { e.preventDefault(); const t = e.clipboardData?.getData("text/plain") ?? ""; if (t) typeText(t); }
 
   // ── pointer: click-to-place caret + drag-select + double-click word ───────────
+  /** Pure function. An item-LOCAL point as a TEXT-BOX-local one (the layout's own
+   *  frame): the box origin subtracted. Identity for a widget whose box is the item. */
+  function toBoxLocal(lp) { return { x: lp.x - textBox.x, y: lp.y - textBox.y }; }
   function localFromEvent(e) {
     const rect = document.querySelector(".render-area").getBoundingClientRect();
     const w = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
-    return T.apply(T.invert(node.world), w.x, w.y); // world → item LOCAL
+    return toBoxLocal(T.apply(T.invert(node.world), w.x, w.y)); // world → item LOCAL → box LOCAL
   }
   function focusSink() { if (sinkEl) sinkEl.focus({ preventScroll: true }); }
   function onHitPointerDown(e) {
@@ -663,21 +683,21 @@
   function offsetAtScreen(sx, sy) {
     if (!layout) return 0;
     const w = screenToWorld(sx, sy);
-    const lp = T.apply(T.invert(node.world), w.x, w.y);
+    const lp = toBoxLocal(T.apply(T.invert(node.world), w.x, w.y));
     return layout.offsetAtPoint(lp.x, lp.y);
   }
   function caretScreen(off = focus) {
     if (!layout) return null;
     const c = layout.caretRect(off);
-    const top = T.apply(node.world, c.x, c.top);
-    const bot = T.apply(node.world, c.x, c.top + c.h);
+    const top = T.apply(node.world, textBox.x + c.x, textBox.y + c.top);
+    const bot = T.apply(node.world, textBox.x + c.x, textBox.y + c.top + c.h);
     const a = worldToScreen(top.x, top.y), b = worldToScreen(bot.x, bot.y);
     return { x: a.x, y: a.y, x2: b.x, y2: b.y };
   }
   function selectionScreenRects() {
     if (!layout) return [];
     return layout.selectionRects(selStart, selEnd).map((r) => {
-      const p = T.apply(node.world, r.x, r.y);
+      const p = T.apply(node.world, textBox.x + r.x, textBox.y + r.y);
       const s = worldToScreen(p.x, p.y);
       return { x: s.x, y: s.y, w: r.w * box.scale, h: r.h * box.scale };
     });

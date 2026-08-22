@@ -44,7 +44,7 @@
  * highlight is how a UI ends up inviting a drop it then refuses.
  */
 
-import { EXEC_KEY, EXEC_TYPE, PORT_BEAD_R, connectionRefusal, disconnectPairs, execDisconnectPairs, isNodeRef, wirePairsFor } from "./nodeflow.js";
+import { EXEC_KEY, EXEC_TYPE, PORT_BEAD_R, connectionRefusal, detachPairs, execDisconnectPairs, inputRefs, isNodeRef, wirePairsFor } from "./nodeflow.js";
 import { nodePortAnchors } from "./derive.js";
 
 /**
@@ -150,7 +150,9 @@ export function beadAt(beads, wx, wy, tol = 0) {
  * @example // pressing an UNCONNECTED input starts a new wire that will END there:
  * @example wireDragStart({n: {}}, {item: "n", key: "i", side: "input", type: "number"}) // {anchor: {item: "n", port: "i", type: "number", isInput: true}, detach: null}
  * @example // pressing a CONNECTED input picks that wire's end up: the anchor becomes its SOURCE
- * @example wireDragStart({n: {inputs: {i: {item: "s", port: "o"}}}, s: {}}, {item: "n", key: "i", side: "input", type: "number"}) // {anchor: {item: "s", port: "o", type: "number"}, detach: {item: "n", port: "i"}}
+ * @example wireDragStart({n: {inputs: {i: {item: "s", port: "o"}}}, s: {}}, {item: "n", key: "i", side: "input", type: "number"}) // {anchor: {item: "s", port: "o", type: "number"}, detach: {item: "n", port: "i", ref: {item: "s", port: "o"}}}
+ * @example // a `multiple` input holding two wires gives up its LAST-ADDED one
+ * @example wireDragStart({n: {inputs: {mix: [{item: "s", port: "o"}, {item: "t", port: "o"}]}}}, {item: "n", key: "mix", side: "input", type: "visual"}).anchor.item // "t"
  * @example // AN EXEC OUT holds its own wire, so pressing a WIRED one picks that wire up
  * @example wireDragStart({n: {exec: {then: {item: "t", port: "run"}}}}, {item: "n", key: "then", side: "output", type: "exec"}) // {anchor: {item: "n", port: "then", type: "exec"}, detach: {item: "n", port: "then", exec: true}}
  */
@@ -169,12 +171,21 @@ export function wireDragStart(items, bead) {
       detach: isNodeRef(held) ? { item: bead.item, port: bead.key, exec: true } : null,
     };
   }
-  const existing = items?.[bead.item]?.inputs?.[bead.key];
-  if (existing && typeof existing === "object" && typeof existing.item === "string")
+  const held = inputRefs(items?.[bead.item], bead.key);
+  if (held.length) {
     // GESTURE 3/4: this input already holds a wire, so the press GRABS ITS END.
     // The anchor moves to the wire's SOURCE, which is what makes "drag it off into
     // the outer space" delete the same wire the user is looking at.
-    return { anchor: { item: existing.item, port: existing.port, type: bead.type }, detach: { item: bead.item, port: bead.key } };
+    //
+    // A `multiple` INPUT HOLDS SEVERAL, and the press takes the LAST-ADDED one (the
+    // end of the stored array). That is a stated rule, not a guess: "nearest" or
+    // "newest-looking" would make the same press pick up different wires on
+    // different frames, and an output's "which one?" has no answer at all (above).
+    // Repeated drags peel the wires off newest-first, and `detach.ref` names the
+    // exact wire so the clear removes that one and leaves the rest.
+    const existing = held[held.length - 1];
+    return { anchor: { item: existing.item, port: existing.port, type: bead.type }, detach: { item: bead.item, port: bead.key, ref: existing } };
+  }
   // An UNCONNECTED input starts a BACKWARD drag: the wire will end here and its
   // source is whatever output the drop lands on. Symmetric with dragging from an
   // output, because a user reaching for a socket should not have to know which end
@@ -252,7 +263,7 @@ export function wireTargets(items, registry, beads, drag) {
 export function wireDrop(items, registry, drag, target) {
   if (!drag) return { pairs: [], kind: "cancel", refusal: null };
   if (!target) {
-    if (drag.detach) return { pairs: clearPairs(drag.detach), kind: "disconnect", refusal: null };
+    if (drag.detach) return { pairs: clearPairs(items, drag.detach), kind: "disconnect", refusal: null };
     return { pairs: [], kind: "cancel", refusal: null };
   }
   const [from, to] = drag.anchor.isInput
@@ -268,15 +279,30 @@ export function wireDrop(items, registry, drag, target) {
   // from rather than always against `to`.
   const held = drag.detach?.exec ? from : to;
   const clear = drag.detach && !(drag.detach.item === held.item && drag.detach.port === held.port)
-    ? clearPairs(drag.detach) : [];
-  return { pairs: [...clear, ...wirePairsFor(items, registry, from, to)], kind: drag.detach ? "reroute" : "connect", refusal: null };
+    ? clearPairs(items, drag.detach) : [];
+  // A REROUTE ONTO THE SAME `multiple` INPUT (picked up wire A, dropped back on the
+  // socket it came from) must not be an APPEND on top of the still-stored A: the
+  // append reads the items as they are, so the picked-up wire is removed from the
+  // view it reads first. Every other case reads the unchanged items.
+  const base = drag.detach?.ref && !drag.detach.exec ? withDetached(items, drag.detach) : items;
+  return { pairs: [...clear, ...wirePairsFor(base, registry, from, to)], kind: drag.detach ? "reroute" : "connect", refusal: null };
 }
 
 /** Pure function. The pairs that clear whichever end a detach names. One dispatcher
  *  so the two maps are never confused for each other — `disconnectPairs` writing an
- *  exec detach would null out a DATA input that happens to share the port key. */
-function clearPairs(detach) {
-  return detach.exec ? execDisconnectPairs(detach) : disconnectPairs(detach);
+ *  exec detach would null out a DATA input that happens to share the port key. A
+ *  data detach names its exact wire (`ref`), so a `multiple` input loses that one
+ *  wire and keeps the rest (core/nodeflow.detachPairs). */
+function clearPairs(items, detach) {
+  return detach.exec ? execDisconnectPairs(detach) : detachPairs(items, detach, detach.ref ?? null);
+}
+
+/** Pure function. The item map as it reads once `detach`'s wire is gone — the
+ *  input's slot replaced by what detachPairs would write there. */
+function withDetached(items, detach) {
+  const [[, value]] = detachPairs(items, detach, detach.ref);
+  const state = items[detach.item];
+  return { ...items, [detach.item]: { ...state, inputs: { ...state.inputs, [detach.port]: value } } };
 }
 
 /**

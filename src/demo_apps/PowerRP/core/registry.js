@@ -163,7 +163,34 @@
  *     computeOutputs?(state, inputs)        // what this node PUBLISHES on its
  *       → {<outPortKey>: value}             // outputs, given its resolved inputs.
  *                                           // Absent = a pure SINK (a display).
+ *     placePorts?(state, rows) → rows       // THE SILHOUETTE HOOK: re-place the
+ *                                           // standard card column's bead rows
+ *                                           // (same records, own x/y) onto a
+ *                                           // non-rectangular outline, so a bead
+ *                                           // sits on the ink of a diamond rather
+ *                                           // than in its bbox corner. Applied
+ *                                           // INSIDE core/nodeflow.portLayout, so
+ *                                           // painter, hit test and wire endpoints
+ *                                           // all still read one geometry. Absent
+ *                                           // = the card column, unchanged.
+ *     dynamicInspector?(state) → rows       // Inspector rows whose EXISTENCE is a
+ *                                           // function of state — a node whose
+ *                                           // port LIST is itself a property needs
+ *                                           // one wiring row per port it currently
+ *                                           // has. Read beside `inspector` by the
+ *                                           // single- and creation-state panels;
+ *                                           // NOT by the multi-selection
+ *                                           // intersection, which only unifies
+ *                                           // declared rows. Prefer `inspector`
+ *                                           // for anything whose presence is fixed.
  *   }
+ *
+ * A PORT DECLARATION may additionally carry `color` (a hex literal the bead and
+ * the wire leaving it are drawn in — core/nodeflow.portColorOf — instead of the
+ * type's colour) and, on an INPUT, `multiple: true` (the input accepts SEVERAL
+ * wires, stored as an array in its `inputs.<port>` slot and resolved to an ARRAY of
+ * values; core/nodeflow.inputRefs is the one reader of both slot shapes). Both are
+ * OFF by default on every shipped port.
  *
  * No plugin may import another plugin. Composition happens through
  * capabilities, shared core modules (e.g. core/endpoints.js), and document

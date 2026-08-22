@@ -628,6 +628,8 @@ export const REF_PATH_WILDCARD = "*";
  * @example expandRefPaths({target: "x"}, [["target"]]) // [["target"]]
  * @example expandRefPaths({inputs: {a: {item: "s"}, b: {item: "t"}}}, [["inputs", "*", "item"]]) // [["inputs", "a", "item"], ["inputs", "b", "item"]]
  * @example expandRefPaths({}, [["inputs", "*", "item"]]) // [] (nothing wired: nothing to remap)
+ * @example // a `multiple` input's array of wires fans out per index:
+ * @example expandRefPaths({inputs: {mix: [{item: "s"}, {item: "t"}]}}, [["inputs", "*", "item"]]) // [["inputs", "mix", "0", "item"], ["inputs", "mix", "1", "item"]]
  */
 export function expandRefPaths(state, refPaths) {
   const out = [];
@@ -636,7 +638,21 @@ export function expandRefPaths(state, refPaths) {
     if (at === -1) { out.push(path); continue; }
     const container = getPath(state, path.slice(0, at));
     if (!container || typeof container !== "object") continue;
-    for (const key of Object.keys(container)) out.push([...path.slice(0, at), key, ...path.slice(at + 1)]);
+    const rest = path.slice(at + 1);
+    for (const key of Object.keys(container)) {
+      const slot = container[key];
+      // A WILDCARD SLOT HOLDING AN ARRAY OF RECORDS FANS OUT PER INDEX. This is
+      // the `multiple` input (core/nodeflow.inputRefs): `inputs.mix` may hold
+      // `[{item, port}, {item, port}]`, and `["inputs", "*", "item"]` must reach
+      // EVERY wire in it — `inputs.mix.0.item`, `inputs.mix.1.item` — or a cloned
+      // patch keeps its extra wires on the originals, silently, which is the exact
+      // failure itemRefs exists to prevent. Still one meaning ("every key here"),
+      // applied to the array's keys as well; an array at the END of a path is
+      // untouched, because that is the id-LIST shape clonedItemStates maps itself.
+      if (Array.isArray(slot) && rest.length > 0)
+        for (let i = 0; i < slot.length; i++) out.push([...path.slice(0, at), key, String(i), ...rest]);
+      else out.push([...path.slice(0, at), key, ...rest]);
+    }
   }
   return out;
 }

@@ -99,8 +99,9 @@ export function subpathsPathD(subpaths) {
  * @example roundedPolygonPathD([[0, 0], [20, 0], [20, 20], [0, 20]], 4).startsWith("M0 4") // true (corner 0 trimmed 4 up the left edge)
  * @example roundedPolygonPathD([[0, 0], [20, 0], [20, 20], [0, 20]], 4).includes("Q20 0") // true (control = the true corner)
  */
-export function roundedPolygonPathD(points, r) {
+export function roundedPolygonPathD(points, r, cornerStyle = "round") {
   if (!Array.isArray(points) || points.length < 3) throw new Error(`roundedPolygonPathD: need >= 3 points, got ${JSON.stringify(points)}`);
+  if (!CORNER_STYLES.includes(cornerStyle)) throw new Error(`roundedPolygonPathD: unknown cornerStyle ${JSON.stringify(cornerStyle)} (known: ${CORNER_STYLES.join(", ")})`);
   if (!(r > 0)) return polygonPathD(points);
   const n = points.length;
   // Clamp r to half the shortest edge (both trims of an edge must fit inside it).
@@ -124,10 +125,47 @@ export function roundedPolygonPathD(points, r) {
   let d = `M${num(segs[0].entry[0])} ${num(segs[0].entry[1])}`;
   for (let i = 0; i < n; i++) {
     const s = segs[i];
-    d += ` Q${num(s.vertex[0])} ${num(s.vertex[1])} ${num(s.exit[0])} ${num(s.exit[1])}`;
+    // ROUND bridges the two trim points through the true corner (a quadratic);
+    // CHAMFER cuts straight between them — the same trim, a line instead of a curve,
+    // which is exactly what a chamfer is. Same `r`, same clamp, same vertices.
+    d += cornerStyle === "chamfer"
+      ? ` L${num(s.exit[0])} ${num(s.exit[1])}`
+      : ` Q${num(s.vertex[0])} ${num(s.vertex[1])} ${num(s.exit[0])} ${num(s.exit[1])}`;
     if (i < n - 1) d += ` L${num(segs[i + 1].entry[0])} ${num(segs[i + 1].entry[1])}`;
   }
   return d + " Z"; // closing edge = exit(last) → entry(first), the final straight side
+}
+
+/** The two ways a polygon's corner may be cut back by `r` (roundedPolygonPathD):
+ *  bridged by a curve, or by a straight line. */
+export const CORNER_STYLES = ["round", "chamfer"];
+
+/** The cubic-bezier control distance that best approximates a quarter circle:
+ *  4·(√2 − 1)/3. The standard figure every vector tool draws its circles with. */
+const ELLIPSE_KAPPA = 0.5522847498;
+
+/**
+ * Pure function. An ellipse filling the bbox as FOUR CUBIC BEZIERS (the kappa
+ * construction), starting at the right-hand extreme and going clockwise — a cubic
+ * rather than an arc command because of this module's backend contract (the PDF
+ * exporter throws on `A`).
+ *
+ * @param {number} w - the box width
+ * @param {number} h - the box height
+ * @returns {string} SVG path data in bbox-local (0..w, 0..h, y-down) space
+ *
+ * @example ellipsePathD(100, 50).startsWith("M100 25 C100 38.807") // true
+ * @example (ellipsePathD(100, 100).match(/C/g) || []).length // 4
+ * @example ellipsePathD(100, 100).includes("A") // false (never an arc command)
+ */
+export function ellipsePathD(w, h) {
+  const cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
+  const kx = rx * ELLIPSE_KAPPA, ky = ry * ELLIPSE_KAPPA;
+  return `M${num(cx + rx)} ${num(cy)}`
+    + ` C${num(cx + rx)} ${num(cy + ky)} ${num(cx + kx)} ${num(cy + ry)} ${num(cx)} ${num(cy + ry)}`
+    + ` C${num(cx - kx)} ${num(cy + ry)} ${num(cx - rx)} ${num(cy + ky)} ${num(cx - rx)} ${num(cy)}`
+    + ` C${num(cx - rx)} ${num(cy - ky)} ${num(cx - kx)} ${num(cy - ry)} ${num(cx)} ${num(cy - ry)}`
+    + ` C${num(cx + kx)} ${num(cy - ry)} ${num(cx + rx)} ${num(cy - ky)} ${num(cx + rx)} ${num(cy)} Z`;
 }
 
 /**

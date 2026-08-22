@@ -64,6 +64,7 @@
   --a-port-midi: #f7768e;
   --a-port-node: #bb9af7;
   --a-port-exec: #c0caf5;
+  --a-port-visual: #a9b1d6;
   /* GHOST-wire chrome. Screen-space (the overlay is an SVG in screen coordinates)
      and GHOST-ONLY: the committed wires are painted into the SCENE now (WORKSTREAM
      BN), so their width lives in core/node_chrome.WIRE_WIDTH in WORLD units, where
@@ -8593,6 +8594,50 @@ audio.ae-preview-media {
 .listfield .list-field-unsupported {
   color: var(--a-guide);
   font-size: var(--a-font-sm);
+}
+
+/* A STRING field inside a list element (a visual node's port label): the
+   Inspector's text-input chrome, sized to the list cell's value track. The same
+   box as `.inspector input[type="text"]` — stated here because the list control
+   mounts outside that selector's grid and must not inherit the UA default. */
+.listfield .list-field-text {
+  width: 100%;
+  min-width: 0;
+  height: var(--a-control-h);
+  box-sizing: border-box;
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--a-radius-control);
+  font-size: var(--a-font-md);
+}
+
+/* A `multiple` NODE INPUT (web/Inspector.svelte, the NODE_INPUT_ROW_KIND branch for
+   a port declaring `multiple`): its current wires stacked as one line each — the
+   source's label and a remove button — with the add-a-source picker beneath.
+   Stacked, not inline, because each wire is an independent thing to remove and a
+   row of chips would wrap unpredictably in a narrow panel. */
+.inspector .nodeinput-multi {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  min-width: 0;
+}
+.inspector .nodeinput-wire {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  min-width: 0;
+}
+.inspector .nodeinput-wire-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--a-font-sm);
+  color: var(--fg);
 }
 
 /* PURGE is the destructive half of the pair and must not read as a stronger

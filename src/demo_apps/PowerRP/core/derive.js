@@ -49,7 +49,7 @@ import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 // THE NODE-GRAPH SEAM (see deriveRenderTree). One-way: nodeflow.js imports nothing
 // from this module, so the port/type/connection layer stays independently testable
 // in bare node with no derivation in the picture.
-import { EXEC_KEY, evaluateNodeGraph, portLayout } from "./nodeflow.js";
+import { EXEC_KEY, evaluateNodeGraph, inputRefs, portLayout } from "./nodeflow.js";
 
 /**
  * Query (reads the registry; reports once on a refused pair). THE MORPH
@@ -1652,7 +1652,13 @@ export function nodePortAnchors(node) {
   if (typeof node?.plugin?.ports !== "function") return [];
   return portLayout(node.plugin, node.state).map((p) => {
     const w = T.apply(node.world, p.x, p.y);
-    return { key: p.key, type: p.type, label: p.label, side: p.side, x: w.x, y: w.y };
+    // `color` and `multiple` ride along ONLY when declared, so every bead record
+    // for an ordinary port is byte-identical to before they existed.
+    return {
+      key: p.key, type: p.type, label: p.label, side: p.side, x: w.x, y: w.y,
+      ...(p.color !== undefined ? { color: p.color } : {}),
+      ...(p.multiple ? { multiple: true } : {}),
+    };
   });
 }
 
@@ -1688,20 +1694,29 @@ export function deriveWires(nodes) {
   const wires = [];
   const push = (src, dst, from, to) => {
     if (!src || !dst) return;
-    wires.push({ from: { ...from, x: src.x, y: src.y }, to: { ...to, x: dst.x, y: dst.y }, type: src.type });
+    // The wire is the colour of its SOURCE bead: the type's, or the port's own
+    // `color` when it declared one (carried here so core/node_chrome.wireOps and
+    // the exporters paint the cable the colour of the socket it leaves).
+    wires.push({
+      from: { ...from, x: src.x, y: src.y }, to: { ...to, x: dst.x, y: dst.y }, type: src.type,
+      ...(src.color !== undefined ? { color: src.color } : {}),
+    });
   };
   for (const n of nodes ?? []) {
     const myAnchors = anchorsByItem.get(n.itemId) ?? [];
     const inputs = n.state?.inputs;
     if (inputs && typeof inputs === "object") {
+      // ONE WIRE PER STORED REFERENCE — a `multiple` input's slot holds several
+      // (core/nodeflow.inputRefs is the one reader of both slot shapes), and each
+      // of them is a cable into the same bead.
       for (const port of Object.keys(inputs).sort()) {
-        const c = inputs[port];
-        if (!c || typeof c !== "object" || typeof c.item !== "string") continue;
-        push(
-          (anchorsByItem.get(c.item) ?? []).find((a) => a.side === "output" && a.key === c.port),
-          myAnchors.find((a) => a.side === "input" && a.key === port),
-          { item: c.item, port: c.port }, { item: n.itemId, port }
-        );
+        for (const c of inputRefs(n.state, port)) {
+          push(
+            (anchorsByItem.get(c.item) ?? []).find((a) => a.side === "output" && a.key === c.port),
+            myAnchors.find((a) => a.side === "input" && a.key === port),
+            { item: c.item, port: c.port }, { item: n.itemId, port }
+          );
+        }
       }
     }
     // THE EXEC MAP IS THE SAME PICTURE READ FROM THE OTHER END. An exec wire is

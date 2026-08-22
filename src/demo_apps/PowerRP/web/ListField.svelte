@@ -761,6 +761,22 @@
                 <AngleField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} value={elementFieldValue(decl.element, el, f.name)} {disabled} />
               {:else if f.kind === "boolean"}
                 <BooleanField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} value={Boolean(elementFieldValue(decl.element, el, f.name))} {disabled} />
+              {:else if f.kind === "text"}
+                <!-- A STRING field (a visual node's port label). The Inspector's
+                     own text-row contract, one level down: oninput previews the
+                     whole string live, onchange commits it as one undo unit, and
+                     Escape reverts — `fieldPath` is the element field's real
+                     storage path, so the write lands on the leaf the painter reads. -->
+                <input
+                  type="text"
+                  class="list-field-text"
+                  data-hint-scope="revert"
+                  aria-label={`${label} ${index + 1} ${f.name}`}
+                  value={String(elementFieldValue(decl.element, el, f.name) ?? "")}
+                  oninput={(e) => app.setPreview([[fieldPath, e.target.value]])}
+                  onchange={(e) => { app.setPreview([[fieldPath, e.target.value]]); app.commitPreview(); }}
+                  onkeydown={(e) => { if (e.key === "Escape") { app.cancelPreview(); e.target.blur(); e.stopPropagation(); } }}
+                />
               {:else}
                 <!-- A declared kind this control has no editor for. Reported in
                      place rather than falling through to a text box that would

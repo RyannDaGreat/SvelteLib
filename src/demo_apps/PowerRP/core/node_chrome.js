@@ -43,7 +43,7 @@
 
 import { ellipse, path, rect, text } from "../render_gpu/ir.js";
 import { NATURAL_LINE_HEIGHT } from "./richtext.js";
-import { NODE_CORNER_R, PORT_BEAD_R, portColor, portLayout, wireBezierPath } from "./nodeflow.js";
+import { NODE_CORNER_R, PORT_BEAD_R, portColor, portColorOf, portLayout, wireBezierPath } from "./nodeflow.js";
 import {
   bandFitScale, KNOB_BAND_MIN_SCALE,
   KNOB_LABEL_GAP, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_R, KNOB_TRACK_WIDTH, knobRadius,
@@ -823,7 +823,9 @@ export function portBeads(plugin, s) {
   const perSide = { input: 0, output: 0 };
   for (const p of rows) perSide[p.side] += 1;
   for (const p of rows) {
-    const color = portColor(p.type);
+    // The port's OWN colour when it declares one (a visual node's recolourable
+    // sockets), else its type's — core/nodeflow.portColorOf, the one lookup.
+    const color = portColorOf(p);
     const isInput = p.side === "input";
     ops.push(ellipse({ cx: p.x, cy: p.y, rx: PORT_BEAD_R, ry: PORT_BEAD_R, fill: color }));
     // THE CORE says whether anything is plugged in: dark (a socket standing open)
@@ -839,6 +841,11 @@ export function portBeads(plugin, s) {
       fill: isInput && portIsWired(s, p.key) ? color : NODE_BODY,
     }));
     if (perSide[p.side] < 2) continue;
+    // AN EMPTY LABEL IS "THE JACK ALONE", BY CHOICE. A visual node's port may be
+    // declared with no name (user, 2026-08-21: a blank label still "explains where
+    // the node entrance and exit will come out of"), so a blank draws nothing
+    // rather than an empty text op that the exporters would still emit.
+    if (String(p.label ?? "").trim() === "") continue;
     // The label reads INWARD from its own edge, and its BOX is inside the card on
     // both sides — an input's runs right from the bead, an output's ENDS at the
     // bead (a right-aligned run must be given the box it aligns against, not the
@@ -1203,7 +1210,10 @@ export function wireOps(wire) {
   const caps = { strokeCapStart: "round", strokeCapEnd: "round" };
   return [
     path({ d, fill: null, stroke: WIRE_HALO_INK, strokeWidth: WIRE_WIDTH + WIRE_HALO_EXTRA, opacity: WIRE_HALO_OPACITY, ...caps }),
-    path({ d, fill: null, stroke: portColor(wire.type), strokeWidth: WIRE_WIDTH, ...caps }),
+    // The SOURCE port's own colour when it declared one (core/derive.deriveWires
+    // carries it as `color`), else the type's — the same portColorOf rule the bead
+    // at that end was painted by, so a recoloured socket's cable matches it.
+    path({ d, fill: null, stroke: portColorOf(wire), strokeWidth: WIRE_WIDTH, ...caps }),
   ];
 }
 

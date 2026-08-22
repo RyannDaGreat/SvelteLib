@@ -2257,6 +2257,48 @@ export const PROPS = {
   // malformed list. And the element may GROW a fifth field (channel, bend) with no
   // migration — core/lists.js appends it at index 4, where every stored 4-tuple
   // already reads `undefined` and `noteRecord` already defaults.
+  // ── THE VISUAL NODE'S PORT LISTS (core/visual_node.js) ───────────────────────
+  // Two SEQUENCE lists of RECORDS: element i of `inPorts` is the input port `in<i>`,
+  // element i of `outPorts` the output `out<i>`. A sequence, because the order IS
+  // the column the beads are drawn in; a record, because the fields are a string, a
+  // colour and (inputs only) a boolean — nothing here is the numeric tuple the
+  // tweenline int rule was designed around. HIDE keeps a port's number (and its
+  // wires); PURGE renumbers later ports exactly as it renumbers a polygon's
+  // corners, and the header of core/visual_node.js states that trade.
+  //
+  // `multiple` is the per-INPUT "accept several wires" permission (user,
+  // 2026-08-21: "that should probably be a Boolean … by default turned off"). It
+  // is declared on the element so it keyframes and unifies like any other field;
+  // the protocol it switches on is core/nodeflow.js's `multiple` port flag.
+  // No `default` here — the plugin seeds one port a side.
+  inPorts: {
+    label: "Inputs", kind: LIST_ROW_KIND, category: "ports",
+    element: {
+      storage: "record",
+      fields: [
+        { name: "label", kind: "text", label: "Label", help: "The name drawn beside this input's bead. Leave it blank for the jack alone — a bare socket still says where a wire comes in." },
+        { name: "color", kind: "color", label: "Colour", help: "The bead's colour, and the colour of every wire drawn into it. A visual port carries no value, so its colour means whatever you say it means." },
+        { name: "multiple", kind: "boolean", label: "Accept several", help: "Let this one input take wires from SEVERAL outputs at once, in no particular order. Off, it holds one wire and a new drop replaces it." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "inPortsActive",
+    help: "The node's inputs, top to bottom. Insert to add a socket; hide one to take it off the card without renumbering the others (its wires come back when it does); purge to remove it for good.",
+  },
+  outPorts: {
+    label: "Outputs", kind: LIST_ROW_KIND, category: "ports",
+    element: {
+      storage: "record",
+      fields: [
+        { name: "label", kind: "text", label: "Label", help: "The name drawn beside this output's bead. Leave it blank for the jack alone." },
+        { name: "color", kind: "color", label: "Colour", help: "The bead's colour, and the colour of every wire drawn out of it." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "outPortsActive",
+    help: "The node's outputs, top to bottom. Insert to add a socket; hide one to take it off the card without renumbering the others; purge to remove it for good.",
+  },
+
   clip: {
     label: "Clip", kind: LIST_ROW_KIND, category: "control",
     element: {

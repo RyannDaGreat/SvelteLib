@@ -34,6 +34,14 @@
  * targets on the output) would make "two sources drive one input" spellable, and
  * then every reader would have to decide what that means.
  *
+ * THE ONE DECLARED EXCEPTION IS `multiple` (user, 2026-08-21): an input port whose
+ * declaration says `multiple: true` — OFF on every shipped port, opted into per
+ * port — holds an ARRAY of references in the same slot, and "what that means" is
+ * answered once, in `resolveNode`: the input resolves to the array of its wires'
+ * values, in no particular order, and the receiving plugin decides how they
+ * combine. `inputRefs` is the one reader of both slot shapes; the storage is still
+ * on the input side, so fan-in stays a fact about the DESTINATION's declaration.
+ *
  * It also makes connections KEYFRAMABLE FOR FREE, which is the property that keeps
  * the core invariant intact. `inputs.gain` is a state leaf like any other, so a
  * patch can differ per slide, be deleted on a slide, and be undone in one unit. It
@@ -309,7 +317,34 @@ export const PORT_TYPES = Object.freeze({
   // "this is a KIND of value"; exec is not one of them, and Unreal reached the same
   // answer (its exec pins are white among coloured data pins). A fifth hue would put
   // control flow in the same visual vocabulary as the values it sequences.
-  exec: Object.freeze({ label: "Exec", color: "#c0caf5", zero: null, readable: false }),
+  exec: Object.freeze({ label: "Exec", color: "#c0caf5", zero: null, readable: false, valueless: true }),
+  // THE VISUAL TYPE (user, 2026-08-21: a "visual node widget" whose nodes "won't
+  // actually do anything" but must "share the same structure, the same data type as
+  // the audio ones" — and whose ports have no types: "there would be no types").
+  //
+  // A `visual` port carries NOTHING. It exists so a DIAGRAM's nodes — a flowchart,
+  // a block diagram, a sketch of a patch — can be wired with the same beads, the
+  // same ghost wire, the same `inputs.<port>` leaf, the same clone remap and the
+  // same painted wire layer a real patch uses, with no value flowing and no engine
+  // behind it. That is why it is a TYPE rather than "no type": the whole wiring
+  // machinery dispatches on the type table, and a port outside it is a bead nothing
+  // can land on.
+  //
+  // `zero: null` — there is no value, so there is no identity (the `node`/`exec`
+  // reading). `readable: false` AND `valueless: true` — the exec treatment, for the
+  // exec reason: a row saying "the document cannot read this" would be a true
+  // sentence about a value that does not exist, so core/output_properties.js lists
+  // no output row for it at all. NO COERCIONS in either direction: a picture of a
+  // connection cannot become a number, and a number wired into a drawing would
+  // claim the drawing computes.
+  //
+  // THE COLOUR IS A DEFAULT THE PORT OVERRIDES. Every other type's colour IS its
+  // meaning ("bead colour means TYPE" — ADDENDUM 7). A visual port's colour means
+  // whatever the author says it means, which is why a port DECLARATION may carry
+  // its own `color` (declaredPorts) and why this default is deliberately quiet: a
+  // desaturated lavender-grey, so an un-recoloured visual bead reads as "a socket"
+  // rather than as one of the value hues.
+  visual: Object.freeze({ label: "Visual", color: "#a9b1d6", zero: null, readable: false, valueless: true }),
 });
 
 /** Every declared port type name, for validation messages and test sweeps. */
@@ -342,6 +377,35 @@ export function portColor(type) {
   if (!t) throw new Error(`nodeflow: unknown port type ${JSON.stringify(type)} — declare it in PORT_TYPES (have: ${PORT_TYPE_NAMES.join(", ")})`);
   return t.color;
 }
+
+/**
+ * Pure function. The colour ONE DECLARED PORT is drawn in: its own `color` when
+ * the declaration carries one, else its TYPE's colour. THE one lookup for a port
+ * that is in hand (a `declaredPorts` record, a `portLayout` row, a bead, a wire's
+ * source end) — `portColor` answers for a bare type name, this answers for a port.
+ *
+ * A per-port colour exists for the VISUAL node (user, 2026-08-21: "customize the
+ * list of inputs and outputs it has, and the colors of those inputs and outputs as
+ * well"), and it is read here rather than at each consumer so the painted bead,
+ * the SVG hit bead, the ghost wire and the committed wire cannot disagree about
+ * what colour a socket is.
+ *
+ * @param {{type: string, color?: string}} port - a declared port
+ * @returns {string} a hex colour
+ *
+ * @example portColorOf({type: "number"}) // "#7aa2f7"
+ * @example portColorOf({type: "visual", color: "#ff8800"}) // "#ff8800"
+ * @example // an override is not type-gated — any port may state its own colour
+ * @example portColorOf({type: "audio", color: "#123456"}) // "#123456"
+ */
+export function portColorOf(port) {
+  return typeof port?.color === "string" ? port.color : portColor(port?.type);
+}
+
+/** The spelling a per-port `color` must take: a hex literal, with or without alpha.
+ *  The painter parses it at op construction and a CSS name would throw there, far
+ *  from the declaration that wrote it — so it is refused at the declaration. */
+const PORT_COLOR_RE = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
 
 /**
  * Pure function. The value an UNCONNECTED input of this type reads.
@@ -537,7 +601,20 @@ export function declaredPorts(plugin, state) {
   const norm = (list, side) => (list ?? []).map((p) => {
     if (!p?.key) throw new Error(`nodeflow: a ${side} port declared by "${plugin?.type}" has no key`);
     if (!PORT_TYPES[p.type]) throw new Error(`nodeflow: ${side} port "${p.key}" on "${plugin?.type}" declares unknown type ${JSON.stringify(p.type)} (have: ${PORT_TYPE_NAMES.join(", ")})`);
-    return { key: p.key, type: p.type, label: p.label ?? p.key, side, ...(p.feedbackSafe ? { feedbackSafe: true } : {}) };
+    if (p.color !== undefined && !(typeof p.color === "string" && PORT_COLOR_RE.test(p.color)))
+      throw new Error(`nodeflow: ${side} port "${p.key}" on "${plugin?.type}" declares color ${JSON.stringify(p.color)} — a port colour is a hex literal like "#ff8800" (the painter cannot resolve a name)`);
+    // `multiple` IS AN INPUT FACT. An output already fans out to any number of
+    // inputs, so the flag on an output would be a claim about something that is
+    // true of every output; refusing it keeps the declaration from asserting a
+    // distinction it cannot make.
+    if (p.multiple && side === "output")
+      throw new Error(`nodeflow: output port "${p.key}" on "${plugin?.type}" declares multiple — every output already fans out; \`multiple\` is an INPUT's permission to take several wires`);
+    return {
+      key: p.key, type: p.type, label: p.label ?? p.key, side,
+      ...(p.feedbackSafe ? { feedbackSafe: true } : {}),
+      ...(p.color !== undefined ? { color: p.color } : {}),
+      ...(p.multiple ? { multiple: true } : {}),
+    };
   });
   return { inputs: norm(raw.inputs, "input"), outputs: norm(raw.outputs, "output") };
 }
@@ -639,7 +716,14 @@ export function nodeInputRows(plugin, state) {
     kind: NODE_INPUT_ROW_KIND,
     portType: p.type,
     category: INPUTS_CAT,
-    help: `Which node output feeds this ${PORT_TYPES[p.type].label} input. Pick any compatible output on this slide, or clear it to disconnect. It is ordinary keyframable state, so a patch can be rewired from one slide to the next — and you can bind it with "=" to compute the source (e.g. "= osc1").`,
+    // A `multiple` input's row is the SAME control with an ADD semantics: picking a
+    // source appends a wire instead of replacing the one there (web/Inspector.svelte
+    // reads this flag). Only present when true, so every existing row is byte-
+    // identical and the multi-selection intersection sees no new aspect on them.
+    ...(p.multiple ? { multiple: true } : {}),
+    help: p.multiple
+      ? `Which node outputs feed this ${PORT_TYPES[p.type].label} input — it accepts SEVERAL, in no particular order. Pick an output to add a wire; clear one to remove it. Ordinary keyframable state, so the wiring can differ from slide to slide.`
+      : `Which node output feeds this ${PORT_TYPES[p.type].label} input. Pick any compatible output on this slide, or clear it to disconnect. It is ordinary keyframable state, so a patch can be rewired from one slide to the next — and you can bind it with "=" to compute the source (e.g. "= osc1").`,
   }));
 }
 
@@ -700,14 +784,75 @@ export function connectionsOf(items) {
     const inputs = state.inputs;
     if (!inputs || typeof inputs !== "object") continue;
     for (const port of Object.keys(inputs).sort()) {
-      const c = inputs[port];
-      if (!c || typeof c !== "object" || typeof c.item !== "string" || typeof c.port !== "string") continue;
-      const src = items[c.item];
-      if (!src || src.active === false) continue;
-      out.push({ from: { item: c.item, port: c.port }, to: { item: id, port } });
+      for (const c of inputRefs(state, port)) {
+        const src = items[c.item];
+        if (!src || src.active === false) continue;
+        out.push({ from: { item: c.item, port: c.port }, to: { item: id, port } });
+      }
     }
   }
   return out;
+}
+
+/**
+ * Pure function. EVERY WIRE landing on one input, as a list — THE one reader of
+ * the slot's two shapes, so the storage is stated exactly once:
+ *
+ *     inputs.<port> = {item, port}               one wire   (every ordinary input)
+ *     inputs.<port> = [{item, port}, {item, port}] N wires   (an input declaring `multiple`)
+ *
+ * ── WHY A SECOND SHAPE AND NOT AN ARRAY ALWAYS ──────────────────────────────
+ * User, 2026-08-21: "we may even make it allowed to accept multiple as an option
+ * for the inputs … by default turned off … which lets one node input accept
+ * multiple node outputs. This is typically reserved for if the ordering doesn't
+ * matter." Fan-in-1 is STRUCTURAL for an ordinary input (the module header: a
+ * second wire to the same key overwrites the first), and every existing document
+ * stores the single record. Rewriting all of them to one-element arrays would be a
+ * migration for a feature that is OFF by default on every shipped port, so the
+ * single record stays the single record and a `multiple` input — the one that
+ * asked for it — holds the array. Both spellings read through this one function;
+ * a reader that indexes `inputs[port].item` directly is the reader this exists to
+ * retire.
+ *
+ * `null` (the disconnect value), a non-record, and a hole in the array all read as
+ * NO WIRE, in the order stored. An array on an input that does NOT declare
+ * `multiple` still reads all of its wires here — which wire is honoured is the
+ * resolver's decision (resolveNode takes the first), not a storage question.
+ *
+ * @param {object} state - one item's folded state
+ * @param {string} key - the input port key
+ * @returns {Array<{item: string, port: string}>} the wires, possibly empty
+ *
+ * @example inputRefs({inputs: {in: {item: "a", port: "out"}}}, "in") // [{item: "a", port: "out"}]
+ * @example inputRefs({inputs: {mix: [{item: "a", port: "out"}, {item: "b", port: "out"}]}}, "mix").length // 2
+ * @example inputRefs({inputs: {in: null}}, "in") // [] (disconnected — the null override)
+ * @example inputRefs({inputs: {mix: [{item: "a", port: "out"}, null]}}, "mix").length // 1 (a hole is not a wire)
+ * @example inputRefs({}, "in") // []
+ */
+export function inputRefs(state, key) {
+  const slot = state?.inputs?.[key];
+  const list = Array.isArray(slot) ? slot : [slot];
+  return list.filter(isNodeRef).map((c) => ({ item: c.item, port: c.port }));
+}
+
+/**
+ * Pure function. EVERY wire landing on one item, as `[inputPortKey, ref]` pairs in
+ * port-key order — `inputRefs` over the whole connection map, for the readers that
+ * walk a node's inputs looking for a given source (the live-control and clip
+ * routers, the audio mirror's connection list). A `multiple` input contributes one
+ * pair per wire.
+ *
+ * @param {object} state - one item's folded state
+ * @returns {Array<[string, {item: string, port: string}]>}
+ *
+ * @example inputWires({inputs: {gate: {item: "k", port: "gate"}, in: null}}) // [["gate", {item: "k", port: "gate"}]]
+ * @example inputWires({inputs: {mix: [{item: "a", port: "o"}, {item: "b", port: "o"}]}}).map(([k, r]) => `${k}<${r.item}`) // ["mix<a", "mix<b"]
+ * @example inputWires({}) // []
+ */
+export function inputWires(state) {
+  const inputs = state?.inputs;
+  if (!inputs || typeof inputs !== "object") return [];
+  return Object.keys(inputs).flatMap((key) => inputRefs(state, key).map((ref) => [key, ref]));
 }
 
 /**
@@ -974,6 +1119,12 @@ export function connectionRefusal(items, registry, from, to) {
   }
   if (wouldCycle(items, registry, from, to))
     return "that would make a loop — this node already feeds the one you are dragging from, and a value cannot depend on itself";
+  // A `multiple` input takes several wires but not the SAME wire twice: a second
+  // copy would draw one cable over another and count one source twice, which is
+  // not a connection the author could see. An ordinary input never reaches this —
+  // re-dropping its own wire on it is a plain overwrite with the same value.
+  if (inPort.multiple && inputRefs(dstState, to.port).some((c) => c.item === from.item && c.port === from.port))
+    return "that output is already wired into this input";
   return null;
 }
 
@@ -1289,7 +1440,40 @@ export function isExecWire(items, registry, from) {
  * @example wirePairsFor({a: {type: "e"}}, ereg, {item: "a", port: "then"}, {item: "b", port: "run"}) // [[["items", "a", "exec", "then"], {item: "b", port: "run"}]]
  */
 export function wirePairsFor(items, registry, from, to) {
-  return isExecWire(items, registry, from) ? execConnectPairs(from, to) : connectPairs(from, to);
+  if (isExecWire(items, registry, from)) return execConnectPairs(from, to);
+  // A `multiple` input APPENDS: the slot becomes (or grows) the array shape
+  // inputRefs documents. connectionRefusal has already refused a duplicate, so the
+  // append cannot double a wire. An ordinary input keeps connectPairs' overwrite.
+  const inPort = findPort(pluginFor(items, registry, to.item), items?.[to.item], "input", to.port);
+  if (inPort?.multiple)
+    return [[["items", to.item, "inputs", to.port], [...inputRefs(items?.[to.item], to.port), { item: from.item, port: from.port }]]];
+  return connectPairs(from, to);
+}
+
+/**
+ * Pure function. The pairs that remove ONE wire from an input — the `multiple`
+ * sibling of disconnectPairs. On a slot holding several wires it writes the array
+ * WITHOUT `ref`; once the last wire is gone it writes `null`, the same override
+ * disconnectPairs writes and for the same reason (an absent key would be inherited
+ * from an earlier slide). On a single-wire slot — or with no `ref` to name — it IS
+ * disconnectPairs.
+ *
+ * @param {object} items - folded items
+ * @param {{item: string, port: string}} to - the input
+ * @param {{item: string, port: string}|null} [ref] - the wire to remove; absent = all of them
+ * @returns {Array} [[path, value]] pairs
+ *
+ * @example detachPairs({b: {inputs: {mix: [{item: "a", port: "o"}, {item: "c", port: "o"}]}}}, {item: "b", port: "mix"}, {item: "a", port: "o"}) // [[["items", "b", "inputs", "mix"], [{item: "c", port: "o"}]]]
+ * @example // the last wire out leaves the null override, not an empty array
+ * @example detachPairs({b: {inputs: {mix: [{item: "a", port: "o"}]}}}, {item: "b", port: "mix"}, {item: "a", port: "o"}) // [[["items", "b", "inputs", "mix"], null]]
+ * @example // a single-wire slot, or no ref named: disconnectPairs exactly
+ * @example detachPairs({b: {inputs: {in: {item: "a", port: "o"}}}}, {item: "b", port: "in"}) // [[["items", "b", "inputs", "in"], null]]
+ */
+export function detachPairs(items, to, ref = null) {
+  const slot = items?.[to.item]?.inputs?.[to.port];
+  if (!ref || !Array.isArray(slot)) return disconnectPairs(to);
+  const kept = inputRefs(items[to.item], to.port).filter((c) => !(c.item === ref.item && c.port === ref.port));
+  return [[["items", to.item, "inputs", to.port], kept.length ? kept : null]];
 }
 
 /**
@@ -1511,18 +1695,30 @@ export function resolveNode(items, registry, id, outputsOf) {
     // value evaluator's terms), so the cut costs the graph nothing and the SOUND still
     // flows, because the engine wires that edge for real.
     if (p.feedbackSafe) { inputs[p.key] = portZero(p.type); continue; }
-    const srcOut = c && typeof c === "object" ? outputsOf(c.item)?.[c.port] : undefined;
-    if (srcOut === undefined) {
-      inputs[p.key] = portZero(p.type);
-      continue;
-    }
-    const srcState = items[c.item];
-    const srcPlugin = srcState ? pluginFor(items, registry, c.item) : null;
-    const srcPort = srcPlugin ? findPort(srcPlugin, srcState, "output", c.port) : null;
-    // A source port that vanished (its plugin's port list changed with state)
-    // reads as the zero rather than throwing: the document is still valid, the
-    // wire simply has nothing behind it this frame.
-    inputs[p.key] = srcPort && typesCompatible(srcPort.type, p.type) ? coerce(srcOut, srcPort.type, p.type) : portZero(p.type);
+    // ONE wire's value, coerced to this port's type, or undefined when the wire has
+    // nothing behind it this frame. A source port that vanished (its plugin's port
+    // list changed with state) reads as nothing rather than throwing: the document
+    // is still valid, the wire simply has nothing behind it.
+    const valueOf = (ref) => {
+      const srcOut = outputsOf(ref.item)?.[ref.port];
+      if (srcOut === undefined) return undefined;
+      const srcState = items[ref.item];
+      const srcPlugin = srcState ? pluginFor(items, registry, ref.item) : null;
+      const srcPort = srcPlugin ? findPort(srcPlugin, srcState, "output", ref.port) : null;
+      return srcPort && typesCompatible(srcPort.type, p.type) ? coerce(srcOut, srcPort.type, p.type) : undefined;
+    };
+    const refs = inputRefs(state, p.key);
+    // A `multiple` INPUT RESOLVES TO AN ARRAY, always — empty when nothing is wired,
+    // one value per live wire otherwise, in stored order. Not a sum, not a merge:
+    // "ordering doesn't matter" (the user's framing) says what the array MEANS, and
+    // how several values combine is the receiving plugin's business (a mixer sums,
+    // a gate ORs, a sink ignores). The resolver giving it a shape and nothing more
+    // is what keeps this one function correct for every type in the table.
+    if (p.multiple) { inputs[p.key] = refs.map(valueOf).filter((v) => v !== undefined); continue; }
+    // An ordinary input honours its FIRST wire (the only one a well-formed document
+    // stores there); the slot's zero when that wire carries nothing.
+    const v = refs.length ? valueOf(refs[0]) : undefined;
+    inputs[p.key] = v === undefined ? portZero(p.type) : v;
   }
   return { inputs, outputs: plugin.computeOutputs?.(state, inputs) ?? {} };
 }
@@ -1679,7 +1875,18 @@ export function portLayout(plugin, state) {
   const w = state?.w ?? 0;
   const pitch = portPitchFor(Math.max(inputs.length, outputs.length), unsignedH(state));
   const place = (list, x) => list.map((p, i) => ({ ...p, x, y: PORT_TOP_INSET + i * pitch }));
-  return [...place(inputs, 0), ...place(outputs, w)];
+  const rows = [...place(inputs, 0), ...place(outputs, w)];
+  // ── THE SILHOUETTE HOOK (`placePorts`) ──────────────────────────────────────
+  // The column above is a CARD's geometry: beads astride the box's left and right
+  // edges, from under the title bar down. A node that is not a card — the visual
+  // node's diamond, ellipse or triangle (core/visual_node.js) — has no box edge
+  // where its ink is, and a bead at (0, 34) on a diamond floats in empty space
+  // beside the shape. So a plugin MAY re-place the rows it is handed: same records,
+  // same count, same keys, its own x/y. It stays THE ONE GEOMETRY because every
+  // consumer still reads it HERE — the painter, the hit test, the wire endpoints —
+  // and the hook is applied before any of them see a row. A plugin that declares
+  // none gets the card column, byte-identical to before the hook existed.
+  return typeof plugin?.placePorts === "function" ? plugin.placePorts(state, rows) : rows;
 }
 
 /**

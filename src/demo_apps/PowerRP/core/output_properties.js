@@ -73,7 +73,7 @@
  * a previous widget's data.
  */
 
-import { declaredPorts, EXEC_TYPE, PORT_TYPES, portReadable } from "./nodeflow.js";
+import { declaredPorts, PORT_TYPES, portReadable } from "./nodeflow.js";
 
 /** The Inspector category an item's output rows file under — the read-only mirror
  *  of nodeflow's INPUTS_CAT, so a patch's two halves sit in two adjacent groups. */
@@ -121,7 +121,13 @@ export function outputPropertyDescriptors(plugin, state) {
   // read that merely failed rather than a category error. Exec outputs get their
   // OWN editable row instead (core/nodeflow.execOutputRows), which is where the
   // author actually wants to be.
-  const fromPorts = declaredPorts(plugin, s).outputs.filter((p) => p.type !== EXEC_TYPE).map((p) => ({
+  //
+  // THE FILTER READS THE TYPE TABLE'S `valueless` COLUMN rather than naming exec:
+  // a `visual` port (the visual node's do-nothing sockets) has no value in any
+  // domain either, and listing it with the audio sentence would point an author
+  // at a value that does not exist. Declaring "valueless" on the type is what lets
+  // the next such type be excluded without this file learning its name.
+  const fromPorts = declaredPorts(plugin, s).outputs.filter((p) => !PORT_TYPES[p.type].valueless).map((p) => ({
     name: p.key,
     label: p.label,
     kind: PORT_KIND[p.type] ?? "text",

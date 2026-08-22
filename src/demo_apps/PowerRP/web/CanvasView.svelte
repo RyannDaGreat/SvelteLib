@@ -3809,6 +3809,9 @@
     wireDrag = {
       ...started,
       anchorXY: anchorBead ? { x: anchorBead.x, y: anchorBead.y } : { x: w.x, y: w.y },
+      // The anchor bead's declared colour, if its port has one, so the ghost wire
+      // is the colour the committed wire will be (wireOps reads the same override).
+      anchorColor: anchorBead?.color ?? null,
       cursor: { x: w.x, y: w.y },
       targets: wireTargets(items, app.registry, beads, started),
       hovered: null,
@@ -5340,7 +5343,10 @@
       const id = beadKey(b);
       const verdict = wireDrag?.targets.get(id);
       return {
-        id, ...pt(b.x, b.y), color: portColor(b.type), label: b.label, type: b.type,
+        // The bead's OWN colour when its port declared one (a visual node's
+        // recolourable socket — core/derive.nodePortAnchors carries it), else the
+        // type's: the same rule the painted bead underneath it used.
+        id, ...pt(b.x, b.y), color: b.color ?? portColor(b.type), label: b.label, type: b.type,
         // Three states, and only while a wire is in flight: a legal target
         // (highlight), an illegal one (dim), or not a candidate at all. With no
         // drag running every bead is neutral — an always-on highlight would make
@@ -5366,7 +5372,7 @@
         // an input leftward. Without this the ghost would curl the wrong way for
         // exactly half of all wire gestures.
         d: wireDrag.anchor.isInput ? wireBezierPath(end, a) : wireBezierPath(a, end),
-        color: overRefused ? null : portColor(wireDrag.anchor.type),
+        color: overRefused ? null : (wireDrag.anchorColor ?? portColor(wireDrag.anchor.type)),
       };
     }
     // ── THE KNOB FOCUS RING (wave 3) ─────────────────────────────────────────

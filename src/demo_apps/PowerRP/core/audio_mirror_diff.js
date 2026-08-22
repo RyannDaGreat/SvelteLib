@@ -46,6 +46,7 @@
  */
 
 import { audioKnobValues } from "./audio_nodes.js";
+import { inputWires } from "./nodeflow.js";
 // THE CLAMP AND ITS CEILING ARE BORROWED, NOT RE-DERIVED. A ramp that spans the
 // frame it bridges asks the same question the simulation's timestep does — "how
 // much time may one displayed frame claim to cover?" — and answers a lag spike the
@@ -158,9 +159,10 @@ export function readAudioScene(items, registry) {
 
   const connections = [];
   for (const [targetId, target] of Object.entries(modules)) {
-    const wires = items[targetId]?.inputs ?? {};
-    for (const [targetPort, wire] of Object.entries(wires)) {
-      if (!wire || typeof wire !== "object" || typeof wire.item !== "string") continue;
+    // ONE ENTRY PER WIRE, through the one reader of the slot's shape — so an
+    // audio input that ever declares `multiple` connects every source it holds
+    // (Web Audio sums fan-in natively), with no change here.
+    for (const [targetPort, wire] of inputWires(items[targetId])) {
       const source = modules[wire.item];
       // Not an audio module (a number node, a deleted item, a rect): NOT A WIRE the
       // engine can make. The canvas still draws it — a number node CAN legitimately

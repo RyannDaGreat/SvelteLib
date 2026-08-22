@@ -295,6 +295,50 @@ Flip H/V exists and a stored w/h MAY BE NEGATIVE (see the contract below).
 `plugins/magnifier.js` still exists alongside `plugins/demo/magnify.js` — that
 migration is partial, not done.
 
+THE VISUAL NODE IS A NODE THAT DOES NOTHING (user, 2026-08-21: "I just want one
+so that I can do visuals … the nodes won't actually do anything, but it should
+share the same structure, the same data type as the audio ones"). `plugins/visual_node.js`
+is the declaration; `core/visual_node.js` is every piece of its geometry, in bare
+node. It declares `ports(state)` like every node, spreads `NODE_ITEM_REFS`, paints
+its beads through `core/node_chrome.portBeads`, and has NO `computeOutputs` and
+no engine binding. Its ports are the `visual` PORT TYPE — the type that carries
+NOTHING (`zero: null`, `readable: false`, `valueless: true`, the exec treatment),
+so a visual node wires to visual nodes only and can never make a real node compute
+something false. Three protocol additions arrived with it and are OFF on every
+other shipped port (pinned by `tests/visual_node_test.js`):
+  A PORT MAY DECLARE ITS OWN `color` (`core/nodeflow.portColorOf` is the one
+    lookup), and that colour reaches the painted bead, the overlay bead, the ghost
+    wire and the committed wire (`deriveWires` carries it as `wire.color`).
+  AN INPUT MAY DECLARE `multiple: true` (user: "accept multiple … should probably
+    be a Boolean … by default turned off … typically reserved for if the ordering
+    doesn't matter"). Its `inputs.<port>` slot then holds an ARRAY of `{item, port}`;
+    `inputRefs`/`inputWires` are the ONE reader of both slot shapes and every
+    consumer (connectionsOf, deriveWires, resolveNode, the audio mirror, the live
+    routers, clone remap via `expandRefPaths`' per-index fan-out) goes through
+    them. Connect APPENDS (`wirePairsFor`), a duplicate is REFUSED with a sentence,
+    `detachPairs` removes ONE wire and the last one out leaves the `null` override,
+    a press on the bead picks up the NEWEST wire, and the resolver hands the plugin
+    an ARRAY of values (empty when unwired) — how several combine is the receiving
+    plugin's business. The Inspector renders a `multiple` row as a wire list plus an
+    add picker (`web/Inspector.svelte`, the `row.multiple` branch).
+  `placePorts(state, rows)` re-places the standard card column onto a silhouette
+    (a diamond's beads on its slopes, an ellipse's on its curve), applied INSIDE
+    `portLayout` so painter, hit test and wire endpoints still read one geometry.
+THE PORT LISTS ARE LIST PROPERTIES (`PROPS.inPorts`/`outPorts`, record elements:
+label, colour, and on inputs `multiple`): element i IS port `in<i>`/`out<i>`, so
+HIDE keeps a port's number and its wires while PURGE renumbers — the polygon's
+vertex trade, stated in `core/visual_node.js`'s header. Because the port list is a
+property, the wiring rows cannot be declared once: `dynamicInspector(state)` is the
+registry hook the Inspector reads beside `inspector` for rows whose existence is a
+function of state. A blank port label draws the jack alone. THE TEXT IS PLAINTEXT'S
+CONTRACT INSIDE A SHAPE: `activate: "inline_text_edit"` with two descriptor fields
+plaintext never needed — `ink: "textFill"` (because `fill` is the shape's material)
+and `box(state)` (the rect inscribed in the silhouette, which the in-place editor
+now reads so its caret lands on the glyphs). A blank `label` is an UNLABELED node:
+on the card it removes the title strip; on any other shape the label is a caption
+above the text rather than a strip stuck to a rhombus. Presets are whole looks that
+write every knob INCLUDING the port lists and never `text`.
+
 GRADIENT SPREAD MODES are LINEAR-ONLY, and that is a real boundary, not an
 oversight. A linear gradient carries `spread` — mirror (the default, so absent is
 byte-identical legacy), loop, pad — mapping to the backends' native tile modes

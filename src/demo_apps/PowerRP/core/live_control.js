@@ -34,6 +34,8 @@
  * by the caller (the engine's audio clock), never read here.
  */
 
+import { inputWires } from "./nodeflow.js";
+
 /**
  * Pure function. The engine calls one live TRIGGER event produces, given the
  * document's wires.
@@ -72,8 +74,8 @@ export function triggerRoutes(items, registry, sourceId, sourcePort = "out") {
     // Only an ENGINE MODULE can be struck. A control node or a rect wired here is
     // legal on the canvas and simply has nothing to fire.
     if (!plugin?.audioModule) continue;
-    for (const [targetPort, wire] of Object.entries(target?.inputs ?? {})) {
-      if (wire?.item !== sourceId) continue;
+    for (const [targetPort, wire] of inputWires(target)) {
+      if (wire.item !== sourceId) continue;
       if ((wire.port ?? "out") !== sourcePort) continue;
       const port = (plugin.audioSpec?.inputs ?? []).find((p) => p.key === targetPort);
       // A METHOD port is the module's "do it now" input (the ding's gate). An
@@ -155,8 +157,8 @@ export function noteRoutes(items, registry, sourceId, phase, note, frequency) {
     // Hoisted out of the port loop because it is a fact about this receiver, not
     // about whichever method port we happen to be looking at.
     const played = keyboardDrivesPitch(plugin, target, sourceId) ? frequency : undefined;
-    for (const [targetPort, wire] of Object.entries(target?.inputs ?? {})) {
-      if (wire?.item !== sourceId) continue;
+    for (const [targetPort, wire] of inputWires(target)) {
+      if (wire.item !== sourceId) continue;
       const port = (plugin.audioSpec?.inputs ?? []).find((p) => p.key === targetPort);
       if (!port?.method) continue;
       // A wire from the keyboard's PITCH output is not a note event — it is an

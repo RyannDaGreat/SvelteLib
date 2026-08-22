@@ -67,7 +67,7 @@
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_DEFAULT, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
-  import { EXEC_CAT, NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleExecTargets, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
+  import { EXEC_CAT, NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleExecTargets, compatibleSources, detachPairs, inputRefs, isNodeRef, nodeInputLabel, wirePairsFor } from "../core/nodeflow.js";
   import { OUTPUTS_CAT, outputPropertyRows } from "../core/output_properties.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
   import { sectionKeyPaths, sectionBubbleApplies } from "../core/section_keyframes.js";
@@ -432,6 +432,9 @@
     // wired to is how an author reads a patch, so it sits directly under Transform
     // and above the module's own knobs.
     inputs: "Inputs",
+    // A VISUAL NODE'S OWN SOCKETS (core/properties.js PROPS.inPorts/outPorts) — the
+    // two lists that DECLARE its ports, beside the rows that WIRE them.
+    ports: "Ports",
     // WHAT THIS NODE FIRES (core/nodeflow.execOutputRows) — the control-flow half of
     // a patch, directly after the value half. Named "Events" rather than "Exec"
     // because the author's word for it is the thing that happens, not the pin's
@@ -462,7 +465,7 @@
   // UNIVERSAL LEADS, for the reason the single-selection panel renders its
   // Universal section first: these are the properties every widget has, and a
   // plugin's sections are what it adds to them.
-  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "inputs", OUTPUTS_CAT, EXEC_CAT, "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "inputs", "ports", OUTPUTS_CAT, EXEC_CAT, "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /**
    * Pure function. The display title for the CUSTOM_CATEGORY bucket — a widget's
@@ -623,11 +626,16 @@
   // nothing to spread, nothing to forget, no per-plugin copy to drift.
   // `sel.state` is the EVALUATED state, which is where core/expressions.js injected
   // the values, so the panel shows the very numbers the equations read.
+  // `dynamicInspector(state)` (core/registry.js) is the rows whose EXISTENCE
+  // depends on the state — a visual node's per-port input rows, where the port
+  // list is itself a list property the author grows. Read beside the static rows
+  // at the same two seams, so a dynamic row is grouped, gated and rendered exactly
+  // like a declared one.
   let itemCategories = $derived(
-    sel ? groupRows([...(sel.plugin.inspector ?? []), ...outputPropertyRows(sel.plugin, sel.state)], sel.state, sel.plugin.title ?? null) : []
+    sel ? groupRows([...(sel.plugin.inspector ?? []), ...(sel.plugin.dynamicInspector?.(sel.state) ?? []), ...outputPropertyRows(sel.plugin, sel.state)], sel.state, sel.plugin.title ?? null) : []
   );
   let creationCategories = $derived(
-    creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? [], creationState, app.registry.get(creationState.type)?.title ?? null) : []
+    creationState ? groupRows([...(app.registry.get(creationState.type)?.inspector ?? []), ...(app.registry.get(creationState.type)?.dynamicInspector?.(creationState) ?? [])], creationState, app.registry.get(creationState.type)?.title ?? null) : []
   );
 
   // Collapsed categories persist as a BROWSER setting (viewer-local; manifest
@@ -870,6 +878,16 @@
       return;
     }
     app.setPreview([[["items", pickedItemId, ...key.split(".")], value]]);
+    app.commitPreview();
+  }
+
+  /** Command. Commits ready-made `[path, value]` pairs as ONE undo unit — the
+   *  seam for a control whose write is computed by core (a `multiple` input's
+   *  append/remove, core/nodeflow.wirePairsFor / detachPairs) rather than coerced
+   *  from one raw field value. */
+  function commitPairs(pairs) {
+    if (!pairs.length) return;
+    app.setPreview(pairs);
     app.commitPreview();
   }
 
@@ -2644,6 +2662,50 @@
       value={valueAt(state, row.key)}
       disabled={disabled}
     />
+  {:else if kind === NODE_INPUT_ROW_KIND && row.multiple}
+    <!-- A `multiple` INPUT (core/nodeflow.js: the `multiple` port flag; the visual
+         node's "accept several"). Its slot holds an ARRAY of references, read by
+         inputRefs — so the single-value dropdown in the next branch would be the
+         wrong control: picking a source must ADD a wire, not replace the one
+         there, and each wire needs its own remove. The options are the SAME
+         compatibleSources list (connectionRefusal already refuses a duplicate) and
+         the writes are the SAME pairs a canvas drop makes — wirePairsFor appends,
+         detachPairs removes one — so the panel and the bead cannot disagree about
+         what is wired. -->
+    <span class="nodeinput-multi">
+      {#each inputRefs(state, row.key.split(".")[1]) as ref (nodeRefOptionValue(ref))}
+        <span class="nodeinput-wire">
+          <span class="nodeinput-wire-label">{nodeInputLabel(app.displayName(ref.item), ref)}</span>
+          <button
+            type="button"
+            class="btn-icon"
+            aria-label={`Disconnect ${row.label} from ${app.displayName(ref.item)}`}
+            {disabled}
+            onclick={() => commitPairs(detachPairs(app.state().items ?? {}, { item: pickedItemId, port: row.key.split(".")[1] }, ref))}
+          >
+            <iconify-icon icon="mdi:close" width="12" height="12"></iconify-icon>
+          </button>
+        </span>
+      {/each}
+      <SearchableDropdown
+        rankFn={appRankItems}
+        minItemsForSearch={ALWAYS_SEARCHABLE}
+        items={[
+          { value: "", label: "— add a source —" },
+          ...compatibleSources(app.state().items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
+            .map((o) => ({
+              value: nodeRefOptionValue({ item: o.item, port: o.port }),
+              label: nodeInputLabel(app.displayName(o.item), { item: o.item, port: o.port }),
+            })),
+        ]}
+        value=""
+        onchange={(v) => {
+          const ref = parseNodeRefOption(v);
+          if (ref) commitPairs(wirePairsFor(app.state().items ?? {}, app.registry, ref, { item: pickedItemId, port: row.key.split(".")[1] }));
+        }}
+        {disabled}
+      />
+    </span>
   {:else if kind === NODE_INPUT_ROW_KIND}
     <!-- A NODE WIDGET'S INPUT PORT (core/nodeflow.js): which output of which item
          is wired into it. The user's ruling, 2026-08-03: "none of these nodes seem
