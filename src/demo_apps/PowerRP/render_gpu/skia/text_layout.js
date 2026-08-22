@@ -91,8 +91,13 @@ const _cache = new Map(); // key → TextLayout (LRU by Map insertion order)
  * victim past CACHE_MAX. Both the render and the editor call this with the same
  * op ⇒ the SAME cached TextLayout, so their geometry is identical by construction.
  *
- * The caller MUST NOT dispose the returned layout (the cache owns it). Fetch fresh
- * each time geometry is needed — cache hits keep it O(1) while the value is stable.
+ * THE CACHE OWNS THE RETURNED LAYOUT, AND THAT IS A CONTRACT WITH TEETH. The
+ * caller must not dispose it, and — the half that shipped a crash — must not STORE
+ * it either: eviction is driven by OTHER callers building OTHER layouts (a
+ * node-graph slide lays out far more than CACHE_MAX distinct text ops per frame),
+ * so a held layout is freed under you with nothing to observe. Fetch fresh at each
+ * geometry query; a hit is O(1) while the value is stable. A reader that ignores
+ * this now gets `TextLayout.live()`'s sentence instead of an anonymous TypeError.
  *
  * Args:
  *   CanvasKit: the initialized CanvasKit module
@@ -651,6 +656,47 @@ export class TextLayout {
     this.vOffset = vOffset;  // local y the whole stack is shifted by (valign)
     this.totalH = totalH;    // total laid-out height (pre-valign)
     this.opacity = opacity;  // folded into the stroke/gradient glyph-pass alpha (Paragraph fill already folds it at build)
+    this.disposed = false;   // true once the cache has evicted + freed this layout (see live())
+  }
+
+  /**
+   * Query. Throws unless this layout is still LIVE — i.e. the cache has not
+   * evicted and freed it out from under the caller. Every public reader below
+   * calls it first.
+   *
+   * ── WHY THIS EXISTS (the `undefined.charCount` crash, 2026-08-21) ────────────
+   * `getTextLayout`'s LRU calls `dispose()` on the victim past CACHE_MAX, which
+   * DELETES the WASM Paragraphs and empties `built`. Its docblock therefore says
+   * the caller must "fetch fresh each time geometry is needed" and never store
+   * the object. A caller that stored one anyway — `web/TextEditController.svelte`
+   * held it in a memoized Svelte `$derived`, which only recomputes when the
+   * DOCUMENT changes, while eviction is driven by OTHER text ops the renderer
+   * lays out — was left reading a freed layout. It failed as:
+   *
+   *     TypeError: Cannot read properties of undefined (reading 'charCount')
+   *       at paraAndLocal   ← built[built.length - 1] on an EMPTY built
+   *       at caretRect / wordAt
+   *
+   * An anonymous TypeError naming neither text, nor a layout, nor the contract it
+   * broke — and it repeated ~100 times, once per caret recompute, on a real deck.
+   *
+   * THE EMPTY-TEXT CASE IS NOT THIS AND NEVER WAS: `splitParagraphs` returns
+   * `[[]]` for no runs and `paragraphRanges` returns `[{start:0,end:0}]`, so a
+   * built layout ALWAYS has at least one paragraph (an empty box is one empty
+   * line, and its caret/word queries are answered honestly below). An empty
+   * `built` therefore means exactly one thing — this layout was freed — which is
+   * why the guard names that and nothing else. It is also why `paraAndLocal`'s
+   * trailing `built[built.length - 1]` needs no length check of its own.
+   */
+  live() {
+    if (this.disposed)
+      throw new Error(
+        "text_layout: this TextLayout was DISPOSED by getTextLayout's LRU cache and its CanvasKit Paragraphs are freed — " +
+        "a caller stored the object instead of re-fetching it. The cache OWNS every layout it returns (see getTextLayout's " +
+        "docblock): call getTextLayout(…) again at each geometry query — a hit is O(1) while the value is stable — rather " +
+        "than holding the returned layout across other layouts being built.",
+      );
+    return this;
   }
 
   /** Command (draws each paragraph at its local yTop). Origin (ox,oy) is the op's
@@ -669,6 +715,7 @@ export class TextLayout {
    * per-draw coverage flag in CanvasKit, so solid un-outlined text keeps its
    * internal AA regardless — the toggle bites on outlines and shader-filled text. */
   draw(canvas, ox, oy, aa = true) {
+    this.live();
     const CK = this.CanvasKit;
     for (const b of this.built) {
       const y = oy + b.yTop;
@@ -729,6 +776,7 @@ export class TextLayout {
    * @example // layout.shapedGlyphs() // [{glyphId: 21, x: 0, baselineY: 93, size: 96, font: "inter", bold: false}, …]
    */
   shapedGlyphs() {
+    this.live();
     const out = [];
     for (const b of this.built) {
       const ranges = pieceCharRanges(b.pieces);
@@ -755,11 +803,13 @@ export class TextLayout {
   dispose() {
     for (const b of this.built) b.para.delete();
     this.built = [];
+    this.disposed = true; // every reader below now throws a NAMED sentence — see live()
   }
 
   /** Query. The local y just below the last line (stack bottom incl. valign) —
    * how far down the text actually reaches. */
   get contentBottom() {
+    this.live();
     return this.vOffset + this.totalH;
   }
 
@@ -767,6 +817,7 @@ export class TextLayout {
    * boxW) op this is the real ink width; for a fixed box it is ≤ boxW. Used to
    * size the editor's pointer hit-surface for unbounded text. */
   contentWidth() {
+    this.live();
     let w = 0;
     for (const b of this.built) w = Math.max(w, b.para.getMaxIntrinsicWidth());
     return w;
@@ -775,9 +826,15 @@ export class TextLayout {
   /** Query. Map a global MODEL code-point offset → {b, i, localCp}: the paragraph
    * it sits in and the local code-point offset within it. A caret at a paragraph's
    * end (before its "\n") stays in that paragraph; the next paragraph's start is
-   * the offset AFTER the "\n". Past the end → the last paragraph's end. */
+   * the offset AFTER the "\n". Past the end → the last paragraph's end; a negative
+   * offset → the first paragraph's start (Math.max clamps localCp).
+   *
+   * The trailing `built[built.length - 1]` is TOTAL, not a hopeful read: a BUILT
+   * layout always has ≥ 1 paragraph (splitParagraphs returns `[[]]` for no runs —
+   * an empty box is one empty line), so the only empty `built` is a FREED layout,
+   * and `live()` has already refused that above with a sentence naming it. */
   paraAndLocal(offset) {
-    const built = this.built;
+    const built = this.live().built;
     for (let i = 0; i < built.length; i++) {
       const b = built[i];
       if (offset <= b.textStart + b.charCount) return { b, i, localCp: Math.max(0, offset - b.textStart) };
@@ -791,7 +848,7 @@ export class TextLayout {
    * (Skia can crash on out-of-range), and maps the UTF-16 result back to a code
    * point. */
   offsetAtPoint(localX, localY) {
-    const built = this.built;
+    const built = this.live().built;
     if (built.length === 0) return 0;
     let b = built.find((p) => localY >= p.yTop && localY < p.yTop + p.height);
     if (!b) b = localY < built[0].yTop ? built[0] : built[built.length - 1];
@@ -837,6 +894,7 @@ export class TextLayout {
    * across mixed run sizes). Each paragraph the range intersects contributes its
    * own rects. Returns [{x, y, w, h}]. */
   selectionRects(lo, hi) {
+    this.live();
     if (hi <= lo) return [];
     const CK = this.CanvasKit;
     const out = [];

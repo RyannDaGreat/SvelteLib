@@ -102,10 +102,44 @@
   // has no descriptor and keeps its own keys.
   let edit = $derived(plain ? (node.plugin?.inlineTextEdit ?? {}) : {});
   let inkKey = $derived(plain ? (edit.ink ?? "fill") : "color");
-  let inherited = $derived({
-    font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? DEFAULT_PARA_SIZE,
-    color: node.state[inkKey] ?? "#000000", bold: node.state.bold ?? false,
-  });
+
+  /**
+   * Pure function. THE TYPE STYLE the plain widget lays its text out in — the ONE
+   * place the editor's layout and the widget's own emit() must agree, and the
+   * descriptor is what makes them.
+   *
+   * ── WHY THE DESCRIPTOR CARRIES IT (found by the charCount audit, 2026-08-22) ─
+   * This used to hardcode PLAINTEXT's fallbacks — `align "left"`, `valign "top"`,
+   * size 36, ink `#000000` — for every plain widget. plugins/visual_node.js emits
+   * with `center`/`middle`/18/NODE_VALUE_INK, so the two agreed only because that
+   * widget's `defaults` happen to store all four keys: an item reaching the editor
+   * with ANY of them absent would have had its caret laid out against a different
+   * alignment than its glyphs, silently — and would have keyed a SECOND cache entry
+   * for the same text. A widget now declares `inlineTextEdit.style(state)` and the
+   * editor asks it, so the two cannot drift apart at all. A widget that declares
+   * none is plaintext-shaped and gets plaintext's fallbacks, which is what every
+   * caller before this got.
+   *
+   * @param {object} s - the folded item state
+   * @returns {{size: number, color: string, bold: boolean, font: string, boxStyle: object}}
+   */
+  function plainStyle(s) {
+    if (typeof edit.style === "function") return edit.style(s);
+    return {
+      size: s.size ?? DEFAULT_PARA_SIZE,
+      color: s[inkKey] ?? "#000000",
+      bold: s.bold ?? false,
+      font: s.font ?? DEFAULT_FONT,
+      boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
+    };
+  }
+
+  let inherited = $derived(plain
+    ? (({ font, size, color, bold }) => ({ font, size, color, bold }))(plainStyle(node.state))
+    : {
+        font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? DEFAULT_PARA_SIZE,
+        color: node.state.color ?? "#000000", bold: node.state.bold ?? false,
+      });
   // THE TEXT BOX, LOCAL: where the glyphs are laid out. Every LOCAL coordinate
   // below (caret, selection, hit-surface, pointer) is relative to ITS origin, and
   // the overlay root is placed at that origin — so the editor lands on the glyphs
@@ -136,7 +170,24 @@
   // ── geometry: the CACHED CanvasKit Paragraph stack the RENDER also draws ──────
   // Built through the ONE getTextLayout path with the SAME cmd the text plugin
   // emits, so caret/selection come from the identical shaped layout as the glyphs.
-  let layout = $derived.by(() => {
+  //
+  // THE **CMD** IS DERIVED; THE **LAYOUT** IS FETCHED FRESH AT EVERY READ. That
+  // split is the fix for a shipped crash (2026-08-21) and not a style choice.
+  // getTextLayout's cache OWNS what it returns and frees the LRU victim past
+  // CACHE_MAX — and eviction is driven by OTHER text ops, not by us: a node-graph
+  // slide lays out far more than CACHE_MAX distinct text ops per frame (each
+  // visual_node contributes a label, a body and a port label per bead), so the
+  // whole cache turns over between one of our reads and the next. This used to be
+  // `let layout = $derived.by(() => getTextLayout(…))`, which MEMOIZES the object:
+  // it only recomputes when the DOCUMENT changes, so `caret` — recomputed on every
+  // caret move, with the document untouched — kept reading a layout whose
+  // Paragraphs had been deleted and whose paragraph list was empty. It threw
+  // `Cannot read properties of undefined (reading 'charCount')` from paraAndLocal,
+  // once per recompute, ~100 times. Deriving the plain-data CMD keeps all the
+  // reactivity (the cmd changes exactly when the layout must be rebuilt) while
+  // `textLayout()` re-enters the cache each read — a hit is O(1), and a miss is a
+  // rebuild we owed anyway.
+  let layoutCmd = $derived.by(() => {
     if (!gpu) return null;
     const s = node.state;
     // PLAIN mode builds the SAME LEGACY single-run op the plaintext plugin emits
@@ -148,13 +199,9 @@
     const cmd = plain
       ? {
           text: richTextToPlain(resolved),
-          size: s.size ?? DEFAULT_PARA_SIZE,
-          color: s[inkKey] ?? "#000000",
-          bold: s.bold ?? false,
-          font: s.font ?? DEFAULT_FONT,
+          ...plainStyle(s),
           boxW: textBox.w > 0 ? textBox.w : Infinity,
           boxH: textBox.h > 0 ? textBox.h : Infinity,
-          boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
         }
       : {
           rich: resolved,
@@ -162,8 +209,23 @@
           boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
           boxStyle: { align: s.align ?? "left", lineSpacing: s.lineSpacing ?? 1, charSpacing: s.charSpacing ?? 0, wordSpacing: s.wordSpacing ?? 0, valign: s.valign ?? "top" },
         };
-    return getTextLayout(gpu.CanvasKit, gpu.fontCollection, cmd, s.opacity ?? 1);
+    return { cmd, opacity: s.opacity ?? 1 };
   });
+
+  /**
+   * Query (hits or builds the shared text-layout cache). THE laid-out Paragraph
+   * stack for the item being edited, or null before the GPU is up.
+   *
+   * NEVER memoize the returned object — see the note above `layoutCmd`. Call this
+   * at each geometry query instead; that is exactly what getTextLayout's docblock
+   * asks of every caller, and holding the result across other layouts being built
+   * is what produced the paraAndLocal crash.
+   *
+   * @returns {object|null} a live TextLayout, or null when there is no GPU yet
+   */
+  function textLayout() {
+    return layoutCmd ? getTextLayout(gpu.CanvasKit, gpu.fontCollection, layoutCmd.cmd, layoutCmd.opacity) : null;
+  }
 
   // Root box: the item's world top-left in the render-area frame, plus the
   // local→screen scale (zoom·world.scale) + rotation. The caret/selection are
@@ -180,11 +242,14 @@
     };
   });
 
-  let caret = $derived(layout ? layout.caretRect(focus) : null);      // LOCAL {x, top, h}
-  let selRects = $derived(layout && selEnd > selStart ? layout.selectionRects(selStart, selEnd) : []);
+  // Each of these re-enters the cache through textLayout() rather than closing
+  // over one layout object, so a recompute driven by the CARET (with the document
+  // unchanged) can never read a layout the cache freed in the meantime.
+  let caret = $derived.by(() => { const l = textLayout(); return l ? l.caretRect(focus) : null; });  // LOCAL {x, top, h}
+  let selRects = $derived.by(() => { const l = textLayout(); return l && selEnd > selStart ? l.selectionRects(selStart, selEnd) : []; });
   // Pointer hit-surface size (LOCAL): cover the box AND all laid-out content.
-  let hitW = $derived(layout ? Math.max(box.w, box.w > 0 ? 0 : layout.contentWidth()) : box.w);
-  let hitH = $derived(layout ? Math.max(box.h, layout.contentBottom) : box.h);
+  let hitW = $derived.by(() => { const l = textLayout(); return l ? Math.max(box.w, box.w > 0 ? 0 : l.contentWidth()) : box.w; });
+  let hitH = $derived.by(() => { const l = textLayout(); return l ? Math.max(box.h, l.contentBottom) : box.h; });
 
   const textLen = () => runsLength(rich.runs);
   const clampOff = (o) => Math.max(0, Math.min(o, textLen()));
@@ -289,12 +354,13 @@
   }
 
   // ── navigation (all geometry from the shared layout) ──────────────────────────
-  function lineStart(o) { const c = layout.caretRect(o); return layout.offsetAtPoint(-1, c.top + c.h / 2); }
-  function lineEnd(o) { const c = layout.caretRect(o); return layout.offsetAtPoint(1e7, c.top + c.h / 2); }
+  function lineStart(o) { const l = textLayout(); const c = l.caretRect(o); return l.offsetAtPoint(-1, c.top + c.h / 2); }
+  function lineEnd(o) { const l = textLayout(); const c = l.caretRect(o); return l.offsetAtPoint(1e7, c.top + c.h / 2); }
   function moveVertical(dir, shift) {
-    if (!layout) return;
-    if (goalX == null) goalX = layout.caretRect(focus).x;
-    const nf = layout.lineMove(focus, dir, goalX);
+    const l = textLayout();
+    if (!l) return;
+    if (goalX == null) goalX = l.caretRect(focus).x;
+    const nf = l.lineMove(focus, dir, goalX);
     focus = nf; if (!shift) anchor = nf; // preserve goalX across consecutive vertical moves
   }
   // macOS word semantics: whitespace between the caret and the word travels
@@ -304,17 +370,19 @@
   function wordStartBefore(o) {
     const s = richTextToPlain(rich);
     while (o > 0 && /\s/.test(s[o - 1]) && s[o - 1] !== "\n") o--;
-    return layout ? layout.wordAt(clampOff(o - 1)).start : o - 1;
+    const l = textLayout();
+    return l ? l.wordAt(clampOff(o - 1)).start : o - 1;
   }
   function wordEndAfter(o) {
     const s = richTextToPlain(rich);
     while (o < s.length && /\s/.test(s[o]) && s[o] !== "\n") o++;
-    if (!layout) return o + 1;
-    const w = layout.wordAt(clampOff(o));
-    return w.end > o ? w.end : layout.wordAt(clampOff(o + 1)).end;
+    const l = textLayout();
+    if (!l) return o + 1;
+    const w = l.wordAt(clampOff(o));
+    return w.end > o ? w.end : l.wordAt(clampOff(o + 1)).end;
   }
   function moveWord(dir, shift) {
-    if (!layout) return moveTo(focus + dir, shift);
+    if (!textLayout()) return moveTo(focus + dir, shift);
     moveTo(dir > 0 ? wordEndAfter(focus) : wordStartBefore(focus), shift);
   }
 
@@ -642,19 +710,21 @@
   }
   function focusSink() { if (sinkEl) sinkEl.focus({ preventScroll: true }); }
   function onHitPointerDown(e) {
-    if (!layout || e.button !== 0) return;
+    const l = textLayout();
+    if (!l || e.button !== 0) return;
     e.preventDefault(); // keep focus in the sink (don't let the div steal it)
     hitEl.setPointerCapture(e.pointerId);
     const lp = localFromEvent(e);
-    const off = layout.offsetAtPoint(lp.x, lp.y);
+    const off = l.offsetAtPoint(lp.x, lp.y);
     collapse(off);
     pdrag = { anchor: off };
     focusSink();
   }
   function onHitPointerMove(e) {
-    if (!pdrag || !layout) return;
+    const l = textLayout();
+    if (!pdrag || !l) return;
     const lp = localFromEvent(e);
-    setSel(pdrag.anchor, layout.offsetAtPoint(lp.x, lp.y));
+    setSel(pdrag.anchor, l.offsetAtPoint(lp.x, lp.y));
   }
   function onHitPointerUp(e) {
     pdrag = null;
@@ -662,10 +732,11 @@
     focusSink();
   }
   function onHitDblClick(e) {
-    if (!layout) return;
+    const l = textLayout();
+    if (!l) return;
     e.preventDefault();
     const lp = localFromEvent(e);
-    const w = layout.wordAt(layout.offsetAtPoint(lp.x, lp.y));
+    const w = l.wordAt(l.offsetAtPoint(lp.x, lp.y));
     setSel(w.start, w.end);
     pdrag = null;
     focusSink();
@@ -681,22 +752,25 @@
   // so a probe can assert caret-on-glyph accuracy across mixed runs. Cleared on
   // unmount so it never dangles.
   function offsetAtScreen(sx, sy) {
-    if (!layout) return 0;
+    const l = textLayout();
+    if (!l) return 0;
     const w = screenToWorld(sx, sy);
     const lp = toBoxLocal(T.apply(T.invert(node.world), w.x, w.y));
-    return layout.offsetAtPoint(lp.x, lp.y);
+    return l.offsetAtPoint(lp.x, lp.y);
   }
   function caretScreen(off = focus) {
-    if (!layout) return null;
-    const c = layout.caretRect(off);
+    const l = textLayout();
+    if (!l) return null;
+    const c = l.caretRect(off);
     const top = T.apply(node.world, textBox.x + c.x, textBox.y + c.top);
     const bot = T.apply(node.world, textBox.x + c.x, textBox.y + c.top + c.h);
     const a = worldToScreen(top.x, top.y), b = worldToScreen(bot.x, bot.y);
     return { x: a.x, y: a.y, x2: b.x, y2: b.y };
   }
   function selectionScreenRects() {
-    if (!layout) return [];
-    return layout.selectionRects(selStart, selEnd).map((r) => {
+    const l = textLayout();
+    if (!l) return [];
+    return l.selectionRects(selStart, selEnd).map((r) => {
       const p = T.apply(node.world, textBox.x + r.x, textBox.y + r.y);
       const s = worldToScreen(p.x, p.y);
       return { x: s.x, y: s.y, w: r.w * box.scale, h: r.h * box.scale };
