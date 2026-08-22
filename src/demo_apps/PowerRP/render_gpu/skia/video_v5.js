@@ -752,10 +752,21 @@ function noteV5ScrubFailure(key, ref, seekTime, err) {
   const attempts = (scrubFailed.get(key)?.attempts ?? 0) + 1;
   const message = String(err?.message ?? err);
   scrubFailed.set(key, { message, attempts });
-  const verdict = attempts >= V5_SCRUB_MAX_ATTEMPTS
+  // THE LEVEL FOLLOWS THE VERDICT, AND THAT IS NOT COSMETIC. A retry that then
+  // succeeds is a hiccup the system HEALED — the picture is correct and nothing
+  // was lost — so reporting it at error level is the cry-wolf defect this round
+  // has been fixing everywhere else: an error channel that fires on a
+  // self-healing condition stops being read, and the next real one is ignored
+  // with it. (It is not hypothetical here: tests/image_stack_live_probe.js
+  // reddened on exactly this while all fourteen of its picture assertions
+  // passed.) Only the GIVE-UP is an error, because only then is a frame actually
+  // missing. Both are still LOUD — this trades no silence for the distinction.
+  const givenUp = attempts >= V5_SCRUB_MAX_ATTEMPTS;
+  const verdict = givenUp
     ? `giving up after ${attempts} attempt(s)`
     : `attempt ${attempts} of ${V5_SCRUB_MAX_ATTEMPTS}, will retry`;
-  console.error(`PowerRP video_v5 (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${message} (${verdict})`);
+  const say = givenUp ? console.error : console.warn;
+  say(`PowerRP video_v5 (scrub): frame at ${seekTime}s of "${truncate(ref)}" failed — ${message} (${verdict})`);
 }
 
 /**

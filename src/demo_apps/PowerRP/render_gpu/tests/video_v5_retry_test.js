@@ -105,7 +105,15 @@ check("the reported sentence distinguishes a pending retry from a give-up", () =
   const fn = /function noteV5ScrubFailure[\s\S]*?\n}/.exec(SOURCE)?.[0];
   assert.match(fn, /will retry/, "a recoverable failure must say so");
   assert.match(fn, /giving up/, "an exhausted failure must say so");
-  assert.match(fn, /console\.error/, "every failure is still reported LOUDLY");
+});
+
+check("only the GIVE-UP is console.error; a pending retry is console.warn", () => {
+  // A healed hiccup at error level is the cry-wolf defect: image_stack_live_probe
+  // reddened on it with all fourteen picture assertions passing. Both are still
+  // loud — this pins the DISTINCTION, not any silence.
+  const fn = /function noteV5ScrubFailure[\s\S]*?\n}/.exec(SOURCE)?.[0];
+  assert.match(fn, /givenUp\s*\?\s*console\.error\s*:\s*console\.warn/,
+    "the level must follow the verdict — an unconditional console.error is the defect");
 });
 
 check("the stats split given-up from retrying rather than reporting one number", () => {

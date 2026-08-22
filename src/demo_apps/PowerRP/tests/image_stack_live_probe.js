@@ -23,22 +23,40 @@
  * the sibling widget's probe and shares this one's whole media path. No project server
  * is started; the clip rides in as a data URI.
  *
- * ── A STANDING RED THIS PROBE CATCHES, WHICH IS NOT ITS OWN FAULT ───────────
- * INTERMITTENT, and the trigger is NOT known — read the next paragraph before you
- * believe any theory of it, including one written here. `render_gpu/skia/video_v5.js:613`
- * (`createImageBitmap(el)` in decodeV5ScrubFrame) throws
- * `InvalidStateError: … The image source is not usable.` on an element that is ready
- * by every observable — readyState 4, videoWidth/Height 96x72, error null, seeking
- * false, parked at the requested time by a resolved `seeked`.
- * `noteV5ScrubFailure` (video_v5.js:717) then writes the key into `scrubFailed`, and
- * `getVideoV5ScrubFrame` (video_v5.js:758) gives a failed key "no hold and no retry"
- * — so a TRANSIENT browser state is recorded as a PERMANENT one and those cards stay
- * blank for the life of the page. That permanence is the DEFECT, and it is certain
- * from the source regardless of what provokes the throw; note video_v5.js:709-712
- * calls this branch UNTESTED because "a seek/decode failure on an ALREADY-LOADED
- * element could not be induced from a probe" — it can, this is it. That is why this
- * probe reads `none,none,blue` when it reddens. The defect is in product code, not
- * here; do not silence the console check to hide it.
+ * ── THE STANDING RED THIS PROBE CAUGHT, AND WHAT WAS DONE ABOUT IT ──────────
+ * FIXED 2026-08-22; kept in full because the reasoning is what makes the current
+ * console check trustworthy, and because the throw itself still happens.
+ *
+ * INTERMITTENT, and the trigger is STILL NOT KNOWN — read the next paragraph before
+ * you believe any theory of it, including one written here.
+ * `render_gpu/skia/video_v5.js` (`createImageBitmap(el)` in decodeV5ScrubFrame)
+ * throws `InvalidStateError: … The image source is not usable.` on an element that
+ * is ready by every observable — readyState 4, videoWidth/Height 96x72, error null,
+ * seeking false, parked at the requested time by a resolved `seeked`.
+ * `noteV5ScrubFailure` then wrote the key into `scrubFailed`, and
+ * `getVideoV5ScrubFrame` gave a failed key "no hold and no retry" — so a TRANSIENT
+ * browser state was recorded as a PERMANENT one and those cards stayed blank for the
+ * life of the page. **That permanence was the DEFECT** — certain from the source
+ * regardless of what provokes the throw — and this probe reading `none,none,blue`
+ * was the only thing in the repo saying so. It is now three attempts before a key is
+ * given up on (V5_SCRUB_MAX_ATTEMPTS), which is why all fourteen picture assertions
+ * below pass on a run where the throw still occurs.
+ *
+ * THE SECOND HALF OF THE FIX IS THE LOG LEVEL, and it is why this probe can be green
+ * without silencing anything. A retry that then succeeds is a hiccup the system
+ * HEALED: the picture is correct and no frame is missing, so `console.error` was the
+ * wrong channel for it — and this probe's own strictness proved the point by
+ * reddening on a self-healing message while every assertion passed. A pending retry
+ * is now `console.warn`; only the give-up is an error. **Do not soften the console
+ * check to accommodate a future message** — that was the temptation here, and it
+ * would have discarded the one signal that found the permanence bug. Fix the level
+ * of the message, or fix the thing it reports.
+ *
+ * (Note video_v5's old docblock called that branch UNTESTED because "a seek/decode
+ * failure on an ALREADY-LOADED element could not be induced from a probe" — it can;
+ * this is it. What still cannot be induced ON DEMAND is the throw itself, which is
+ * why render_gpu/tests/video_v5_retry_test.js pins the retry RULE structurally
+ * rather than waiting for the weather.)
  *
  * WHAT IS AND IS NOT ESTABLISHED ABOUT THE TRIGGER (verifier, 2026-08-22), because a
  * confident wrong mechanism here is worse than an admitted gap — the last version of
