@@ -6781,6 +6781,14 @@ widget builds its card from the same chrome constants rather than a third copy.
 The census's source-level backstop scans `plugins/node_*.js` by filename, so
 `visual_node.js` was never in it; that is the same exemption, stated there too.
 
+### Inspector scroll memory (same day)
+
+The Property Panel keeps its scroll position across deselect → reselect and
+across switching items. `web/Inspector.svelte` remembers `.panel-body`'s
+scrollTop while an item is selected and restores it after the next selection's
+rows mount (`tick()`); view state only, session-local, never stored.
+`tests/inspector_scroll_probe.js` pins it.
+
 ### Known bounds / follow-ups
 
 - PURGING a port renumbers later ports' keys and therefore their wires (hide instead).

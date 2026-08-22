@@ -746,3 +746,12 @@ never source we author.
   `.inspector .row.row-list > .list-cell`, which also nests the polygon's points
   and every other top-level list row the same way. Lesson: a reused header look
   carries the reused header's RANK; nesting has to be drawn, not implied.
+- **Inspector scroll reset on reselect** (user: "the properties need to stop
+  scrolling back to the top each time I deselect and reselect a widget"). Cause:
+  `.panel-body` is the scroller; deselecting unmounts `.rows`, the content
+  collapses and the browser clamps scrollTop to 0, so the next selection mounts
+  at the top. Fix: SCROLL MEMORY in `web/Inspector.svelte` — record the scroller's
+  position on every scroll while an item is selected (the clamp fires with none
+  selected, so it is not recorded), restore it after `tick()` when a selection
+  lands. `tests/inspector_scroll_probe.js` pins deselect→reselect, A→B, and that
+  a new position is the one remembered.
