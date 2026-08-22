@@ -52,6 +52,36 @@ const HMR = process.env.POWERRP_NO_REFRESH
 export default defineConfig({
   root,
   base: BASE,
+  // ── THE DEP CACHE IS RELOCATABLE, AND THAT IS WHAT MAKES THE BROWSER GATE
+  //    SURVIVE ITS OWN CONCURRENCY ────────────────────────────────────────────
+  // 213 browser probes each boot their OWN Vite dev server, and the gate runs
+  // three at once. All three used to share ONE dep cache at `node_modules/.vite`,
+  // and Vite's optimizer REWRITES that directory whenever it discovers a dep,
+  // stamping a fresh `?v=<hash>` on every pre-bundled chunk. Every page already
+  // served by a NEIGHBOURING server still holds the old hash, so its next import
+  // gets `504 (Outdated Optimize Dep)` and the dynamic import of Skia dies with
+  // `Failed to fetch dynamically imported module: …/@pdf-lib_fontkit.js?v=…`.
+  // The app never boots and the probe fails in 5-12 s with no assertion text.
+  //
+  // MEASURED, not theorised: one canonical gate run produced 15 browser reds, 11
+  // of them carrying that exact signature, across THREE different `?v=` hashes on
+  // ports 5173/5175 — three re-optimizations in one run. Every one of those probes
+  // passes standalone. The `optimizeDeps.include` list below exists to stop
+  // discovery, and it does its job for a SINGLE server; it cannot help when a
+  // SIBLING server writes the directory out from under a live page.
+  //
+  // So `run_all.mjs` hands each concurrent browser slot its own cache directory
+  // through this variable. Unset (a probe run by hand, the real dev server, any
+  // build) it is `undefined` and Vite uses its default — byte-identical behaviour
+  // to before, no test-only branch in the served output. A per-SLOT rather than
+  // per-PROBE directory keeps the cache warm across the probes that share a slot;
+  // measured cost of a cold one is ~0.4 s, inside the run-to-run noise.
+  //
+  // (Five probes — equation_lock and the four scene3d ones — already pass their
+  // own `cacheDir` inline, having each hit this independently. Their inline value
+  // wins over this one, and none of them appeared in those 15 reds: the natural
+  // experiment that pointed at the cause.)
+  cacheDir: process.env.POWERRP_VITE_CACHE_DIR || undefined,
   // powerrpServiceWorker is `apply: "build"`, so the dev server never emits a
   // worker at all — the static-mode-only rule is a build-graph fact here, not a
   // runtime check that could be wrong (see web/sw.js and registerServiceWorker.js).

@@ -57,8 +57,9 @@
  *   BACKEND_URL=… node tests/run_all.mjs   use a backend you already have
  * Run it from anywhere: paths resolve off this file, never process.cwd().
  */
-import { readdirSync, existsSync, readFileSync } from "node:fs";
-import { dirname, resolve, relative, basename } from "node:path";
+import { readdirSync, existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { dirname, resolve, relative, basename, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { withFreePort } from "./free_port.js";
@@ -205,10 +206,24 @@ async function startBackend(port) {
   let exited = null;
   child.on("close", (code) => { exited = code; });
 
-  /** Command. Kills the whole group. Tolerates an already-dead group (ESRCH) and
-   *  ONLY that — any other errno is a real problem and re-throws. */
+  /** Command. Kills the whole group, ONCE. Tolerates an already-dead group (ESRCH)
+   *  and ONLY that — any other errno is a real problem and re-throws.
+   *
+   *  IT IS IDEMPOTENT BY A FLAG, NOT BY `exited`, AND THE DIFFERENCE CRASHED THE
+   *  GATE. `stop()` runs twice by design: once from the `finally` and once from the
+   *  `exit` hook below. The `exited !== null` guard cannot catch the second one,
+   *  because `close` is delivered on the event loop and the `exit` hook runs when
+   *  the loop is already done — so `exited` is still null and the second call
+   *  re-signals a group whose leader is now a zombie. macOS answers that with
+   *  EPERM, not ESRCH, which this rethrew: the gate printed its full verdict and
+   *  then died on `Error: kill EPERM` with a stack, exiting non-zero. A green run
+   *  that ends in a stack trace reads as a broken gate. Sending the signal once is
+   *  the fix; widening the errno allow-list would have hidden a real permission
+   *  failure on the FIRST call, which is the one that matters. */
+  let signalled = false;
   const stop = () => {
-    if (exited !== null) return;
+    if (signalled || exited !== null) return;
+    signalled = true;
     try { process.kill(-child.pid, "SIGTERM"); }
     catch (e) { if (e.code !== "ESRCH") throw e; }
   };
@@ -273,7 +288,41 @@ const SKIP_LINE = /^SKIP — .*/m;
 /** Command (spawns a child). Runs one test file; resolves {ok, skip, ms, tail}. Never
  *  throws — a crashed child is a FAILING TEST, not an error in the runner, and its
  *  output is kept so the report can show why rather than just that. */
-function runOne(kind, file) {
+/** The gate's own dep-cache root for this run, or "" when it could not be made.
+ *  One directory per concurrent BROWSER slot lives under it; see viteCacheDir. */
+const viteCacheRoot = (() => {
+  try { return mkdtempSync(join(tmpdir(), "powerrp-gate-vite-")); }
+  catch (e) {
+    // Not fatal: without it the probes share node_modules/.vite exactly as they
+    // always did. But SAY SO — the flakiness it prevents is the kind that reads
+    // like a product defect, and a silent fallback here would send the next
+    // operator hunting for a bug in the app.
+    console.error(`run_all: could not create a private Vite cache root (${e.message}); browser probes will SHARE node_modules/.vite and may flake with "504 Outdated Optimize Dep".`);
+    return "";
+  }
+})();
+
+/**
+ * Pure function. The dep-cache directory for one concurrent browser slot, or ""
+ * for any other kind (and when the root could not be made).
+ *
+ * PER SLOT, NOT PER PROBE: probes in a slot run one after another, never at once,
+ * so they can share a cache safely and the second one onward finds it warm. Two
+ * DIFFERENT slots must never share, which is the whole point — see the long note
+ * on `cacheDir` in web/vite.config.js for the failure this prevents.
+ *
+ * @param {string} kind test kind
+ * @param {number} slot worker index within that kind
+ * @returns {string} an absolute directory, or "" to leave Vite's default alone
+ *
+ * @example // viteCacheDir("browser", 0) // "/var/folders/…/powerrp-gate-vite-Xy12/slot-0"
+ * @example // viteCacheDir("node", 0)    // ""  — a node suite boots no Vite server
+ */
+function viteCacheDir(kind, slot) {
+  return kind === "browser" && viteCacheRoot ? join(viteCacheRoot, `slot-${slot}`) : "";
+}
+
+function runOne(kind, file, slot = 0) {
   // `uv run <file>` — NOT `uv run python <file>`. Only the former reads the file's
   // PEP 723 inline `# /// script` dependency block; adding an explicit `python`
   // interpreter argument makes uv run the script in the AMBIENT environment and
@@ -291,7 +340,16 @@ function runOne(kind, file) {
   // BACKEND_URL is the one seam: each probe boots its own Vite server, and
   // vite.config.js reads this to aim the /api + /asset + /render proxies. Setting it
   // here is what makes 93 probes reach a live backend without touching any of them.
-  const env = { ...process.env, ...(backendUrl ? { BACKEND_URL: backendUrl } : {}) };
+  // POWERRP_VITE_CACHE_DIR is the second such seam, and it is what keeps three
+  // concurrent probes from rewriting one another's pre-bundled deps mid-page.
+  // web/vite.config.js reads it; unset, Vite's default applies. Same shape as
+  // BACKEND_URL: set here, and 213 probes need no edit.
+  const cacheDir = viteCacheDir(kind, slot);
+  const env = {
+    ...process.env,
+    ...(backendUrl ? { BACKEND_URL: backendUrl } : {}),
+    ...(cacheDir ? { POWERRP_VITE_CACHE_DIR: cacheDir } : {}),
+  };
   return new Promise((done) => {
     const started = Date.now();
     const child = spawn(cmd[0], cmd[1], { cwd, stdio: ["ignore", "pipe", "pipe"], env });
@@ -325,9 +383,9 @@ async function runKind(kind, files) {
   const failures = [];
   const skips = [];
   let pass = 0;
-  const worker = async () => {
+  const worker = async (slot) => {
     for (let f = queue.shift(); f !== undefined; f = queue.shift()) {
-      const r = await runOne(kind, f);
+      const r = await runOne(kind, f, slot);
       const name = basename(f);
       if (r.skip) { skips.push({ name, reason: r.skip }); process.stdout.write("s"); }
       else if (r.ok) { pass++; process.stdout.write("."); }
@@ -337,7 +395,11 @@ async function runKind(kind, files) {
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY[kind], files.length) }, worker));
+  // `Array.from`'s map fn is called (element, index) — the slot is the SECOND
+  // argument, so `worker` cannot be passed bare here: it would take the (empty)
+  // element as its slot and every worker would share slot `undefined`, which is
+  // one cache directory again and the whole fix undone, silently.
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY[kind], files.length) }, (_, slot) => worker(slot)));
   return { pass, fail: failures.length, failures, skips };
 }
 
@@ -391,6 +453,14 @@ try {
   }
 } finally {
   backend?.stop();
+  // The per-slot dep caches are scratch: a few hundred MB of pre-bundled chunks
+  // that mean nothing after the run. Removing them is best-effort BUT REPORTED —
+  // a tmpdir quietly filling up over many gate runs is exactly the kind of thing
+  // that surfaces months later as an unrelated mystery.
+  if (viteCacheRoot) {
+    try { rmSync(viteCacheRoot, { recursive: true, force: true }); }
+    catch (e) { console.error(`run_all: could not remove the Vite cache root ${viteCacheRoot} (${e.message}) — delete it by hand.`); }
+  }
 }
 
 console.log(`\n${"=".repeat(64)}`);
