@@ -16,6 +16,7 @@
   import PresentDock from "./PresentDock.svelte";
   import SlideNav from "./SlideNav.svelte";
   import { isStatic } from "./storageMode.js";
+  import { Html2ImageAutoRender } from "./html2imageAutoRender.js";
   import { offlineRequirement } from "./connectivity.js";
   import { searchIconifyCells } from "../plugins/iconify.js"; // the offline probe's hook (see __powerrp_searchIconify)
   import { commandUnavailableReason, PLURAL_SCOPE } from "../core/commands.js";
@@ -57,6 +58,7 @@
   import { humanReadableFileSize } from "./fileSize.js";
   import { PowerRPApp, THEME_FAMILIES, groupedThemeFamilies } from "./app.svelte.js";
   import { LABEL_DIVIDER_PROPERTY } from "./labelFrac.js";
+  import { keyframeEverythingHelp } from "../core/section_keyframes.js"; // the bake tool's help — see it for why a bake is a tool and not a behaviour
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
   import { withSimulationFrozen } from "../core/simulation_history.js"; // documentState is a HYPOTHETICAL — see it
@@ -91,7 +93,7 @@
     canvasModeStepAxis,
     unsatisfiableEntries,
   } from "../core/shortcut_entries.js";
-  import { DRAG_KIND_MODIFIERS, DRAG_KINDS, MODAL_TRANSFORM_KINDS, MODAL_KINDS } from "./canvas/dragKinds.js";
+  import { DRAG_KIND_MODIFIERS, DRAG_KINDS, MODAL_TRANSFORM_KINDS, MODAL_KINDS, MODAL_TOGGLES } from "./canvas/dragKinds.js";
   // Widget-owned editor behaviour (see web/widget_handlers.js): every handler that
   // declares a sustained canvas mode — an activation's interior explore, a
   // creation's multi-step placement — contributes its own registry entries.
@@ -625,6 +627,31 @@
   if (zipParam) openBootZip(zipParam);
   else app.restoreDraft().catch((e) => console.error(`PowerRP boot: restoring the unsaved draft failed — ${e?.message ?? e}`));
 
+  // ── THE HTML TO IMAGE AUTO-RENDERER (R7-43a) ────────────────────────────────
+  // User: "i don't want to have to press capture. it should be automatic in every
+  // way, when the html property changes so shohuld that."
+  //
+  // The service watches for widgets whose stored picture no longer matches their
+  // stored HTML and re-renders them. It is started HERE, in the shell, because it is
+  // strictly an EDITOR behaviour: playback, video export and cli/render.js read the
+  // captured asset and never the source, so nothing in a render path may import it
+  // (core/html2image_staleness.js's determinism note).
+  //
+  // WOKEN BY `onDocumentChanged` AND NOT BY AN `$effect`. A render WRITES the document
+  // this watcher READS, and an effect doing both is the effect_update_depth_exceeded
+  // failure this file's other comments record. The callback runs after the commit has
+  // landed, so there is no reactive edge to close.
+  //
+  // THE FIRST CALL IS THE ARRIVAL CASE, and it is the half R7-43a added: a deck whose
+  // widgets carry no picture (or a picture with no provenance) renders on OPEN, with
+  // no gesture at all. It runs after the boot load paths above so the document it
+  // scans is the one that was actually restored.
+  const autoRender = new Html2ImageAutoRender(app);
+  const stopAutoRender = app.onDocumentChanged(() => autoRender.notify());
+  window.__powerrp_html2imageAutoRender = autoRender; // probe hook (renderCount, isRendering, lastError)
+  autoRender.notify();
+  $effect(() => () => { stopAutoRender(); autoRender.dispose(); });
+
   /**
    * Command (async). The `?zip=<url>` boot path: download the archive with REAL
    * byte progress ON THE BOOT SPLASH, then open it as a draft.
@@ -1142,42 +1169,59 @@
     });
   }
 
-  /** THE TWO BY-TYPE SUBMENUS. Registered ONCE with an empty child list and
-   *  refilled per palette open — the command registry has no `remove` (commands
-   *  are process-lifetime, which is what fixed the duplicate-id crash on a second
-   *  project open), so anything per-document must be a submenu CHILD. */
-  // NO ALIAS MAY CONTAIN "select all" — IT SHADOWS THE COMMAND OF THAT NAME.
-  // These read "select all of kind" / "deselect all of kind", and the palette
-  // matches on substrings, so typing the exact words "select all" ranked THIS
-  // submenu above `select-all` itself and the plainest command in the app stopped
-  // being the first hit for its own name. Caught by palette_probe, which types
-  // "select all" and asserts the top row is Select All — it was right and the
-  // alias was wrong. "kind" carries the meaning here without borrowing another
-  // command's name.
-  const SELECT_BY_TYPE_SUBMENU = { id: "select-by-type", title: "Select by Widget Type", icon: "mdi:shape-outline", aliases: ["select by kind", "every widget of a kind"], children: [] };
-  const DESELECT_BY_TYPE_SUBMENU = { id: "deselect-by-type", title: "Deselect by Widget Type", icon: "mdi:shape-outline", aliases: ["deselect by kind", "remove a kind from the selection"], children: [] };
-
   /**
-   * Command. Rebuilds both by-type submenus from THIS SLIDE's widgets.
+   * THE TWO BY-TYPE COMMANDS (R7-42). ONE command each, whose TYPE ARGUMENT is
+   * gathered in the palette's SECOND STAGE — not N commands minted per widget
+   * type on the slide.
    *
-   * SPLICED IN PLACE, never reassigned — the registry holds these exact arrays.
-   * Each child PREVIEWS on hover (the user's "as you scroll up and down it would
-   * preview what it would look like"): `preview` stages the selection the entry
-   * would make and returns the undo, which is the same hook the camera-bind
-   * command uses, so no new affordance was invented for this.
+   * USER RULING (2026-08-13, on a screenshot of the palette showing "PowerPoint
+   * Shape (1) — Select by Widget Type" rows under the search "add"): "I don't
+   * know why this command exists. Like, how is this a command? I thought select
+   * by widget type is a command and that would be a sub command."
+   *
+   * WHY THE MINTED ROWS SURFACED UNDER "add" AT ALL: since R7-18 a TOP-LEVEL
+   * query pools one level of submenu children beside their parents
+   * (core/commands.js search), so every per-type child was a searchable
+   * top-level row. "PowerPoint Shape (1)" fuzzy-matches "add". The palette holds
+   * ACTIONS; a per-document parameter is not one, so no amount of ranking work
+   * fixes a row that should not have been a command.
+   *
+   * WHAT THIS DELETES: refreshTypeSelectCommands, the empty-children submenus it
+   * spliced, and the $effect that called it on every palette open. That effect
+   * is the write-inside-a-tracked-read hazard f4b11012 had to `untrack` (it read
+   * typesOnSlide() -> nodes(), which registers previewDelta unconditionally,
+   * while splicing the very arrays the palette's `results` derived walks). With
+   * the roster static again for this family, the hazard CLASS is gone rather
+   * than suppressed — there is nothing left to untrack.
+   *
+   * NO ALIAS MAY CONTAIN "select all" — IT SHADOWS THE COMMAND OF THAT NAME.
+   * These read "select all of kind" / "deselect all of kind", and the palette
+   * matches on substrings, so typing the exact words "select all" ranked THESE
+   * above `select-all` itself and the plainest command in the app stopped being
+   * the first hit for its own name. Caught by palette_probe, which types
+   * "select all" and asserts the top row is Select All — it was right and the
+   * alias was wrong. "kind" carries the meaning here without borrowing another
+   * command's name.
+   *
+   * THE PICKER PREVIEWS ON HIGHLIGHT (the user's earlier "as you scroll up and
+   * down it would preview what it would look like"): `onPreview` stages the
+   * selection the option would make and returns the undo — the same protocol the
+   * minted children used, moved intact to the picker stage.
    */
-  function refreshTypeSelectCommands(a) {
-    const types = a.typesOnSlide();
-    const build = (add) => types.map((t) => ({
-      id: `${add ? "select" : "deselect"}-type-${t.type}`,
-      title: `${t.title} (${t.count})`,
-      icon: "mdi:shape-outline",
-      preview: (app) => { const before = [...app.selectedIds()]; app.selectByType(t.type, add); return () => app.selectMany(before); },
-      run: (app) => app.selectByType(t.type, add),
-    }));
-    SELECT_BY_TYPE_SUBMENU.children.splice(0, SELECT_BY_TYPE_SUBMENU.children.length, ...build(true));
-    DESELECT_BY_TYPE_SUBMENU.children.splice(0, DESELECT_BY_TYPE_SUBMENU.children.length, ...build(false));
-  }
+  const byTypeGate = (a) => a.typesOnSlide().length > 0;
+  const REQUIRES_TYPES_ON_SLIDE = "at least one selectable widget on this slide — the picker lists the types actually present, and on an empty slide there is nothing to pick";
+  const byTypeCommand = (add) => ({
+    id: add ? "select-by-type" : "deselect-by-type",
+    title: add ? "Select by Widget Type…" : "Deselect by Widget Type…",
+    icon: "mdi:shape-outline",
+    aliases: add ? ["select by kind", "every widget of a kind"] : ["deselect by kind", "remove a kind from the selection"],
+    when: byTypeGate,
+    requires: REQUIRES_TYPES_ON_SLIDE,
+    help: add
+      ? "Adds every widget of one kind on this slide to the selection. Picking the kind is the second step: the palette lists the types actually present, with counts, and filters as you type."
+      : "Subtracts every widget of one kind from the selection. Picking the kind is the second step: the palette lists the types actually present, with counts, and filters as you type.",
+    run: (a) => a.openTypePicker(add),
+  });
   const coreCommands = [
     // ALIASES CARRY THE BARE WORD "delete", which the title cannot: the title has
     // to say WHICH delete this is (deactivate here, vs purge-item's remove
@@ -1249,6 +1293,40 @@
     // someone who wants the sweep, and leaving it unclaimed would land them on the
     // local tool and quietly do a fraction of what they asked.
     { id: "make-static", title: "Make Static from Current Slide (every slide from where it appears until it is hidden)", icon: "mdi:motion-pause-outline", aliases: ["remove keyframes everywhere", "remove all keyframes", "clear keyframes on every slide", "freeze", "stop animating", "unanimate", "flatten animation"], when: (a) => a.makeStaticTargets().length > 0, requires: MAKE_STATIC_REQUIRES, help: MAKE_STATIC_HELP, plural: PLURAL_EACH, run: (a) => a.makeSelectionStatic() },
+    // ── THE SLIDE-WIDE BAKE (WORKSTREAM KEYFR; user: "A \'Keyframe Everything In
+    // Slide\' tool"). It sits HERE, between the two SUBTRACTIVE keyframe tools
+    // above and the z-order block, because it is their exact inverse and the
+    // three should be read together: those two remove keyframes (this slide /
+    // the whole stretch), this one adds every keyframe there is.
+    //
+    // IT IS THE ADDITIVE PRIMITIVE'S MISSING SCOPE. "Keyframe all of it" already
+    // exists as the Inspector SECTION bubble's click — per section, per item.
+    // The tool is that same act with the widest scope, built by calling the same
+    // core path collector (core/section_keyframes.js `itemBakePaths`), so the
+    // bubble and the tool cannot key different sets.
+    //
+    // THE HELP OWNS THE WORD "BAKE" and states the sparse-delta cost, because the
+    // Aug-4 feature review ruled exactly that boundary: a bake is fine as an
+    // EXPLICIT action and a bug as implicit behaviour, so the explicitness has to
+    // be carried in the sentence the user reads before clicking. It is a plain
+    // STRING naming both scopes — `help` may not be a function (core/commands.js:
+    // "A PLAIN STRING deliberately"; every surfacing renders it directly, so a
+    // function would print its own source into a tooltip). `requires` below IS a
+    // function, which is the difference `commandUnavailableReason` exists for.
+    //
+    // THE GATE IS A FUNCTION because two different things disqualify it and each
+    // has its own true sentence — the `save-project` precedent, and the reason
+    // `commandUnavailableReason` exists. Read through that helper, never off
+    // `cmd.requires`, or the surfacing renders this arrow function's source text.
+    //
+    // THE ALIASES ARE SUPERSTRINGS, not synonyms (the lesson `remove-slide-keyframes`
+    // records twenty lines above): rpFuzzyScore needs the query's letters as a
+    // SUBSEQUENCE, so "bake slide" must appear with the words a user threads
+    // through it. "keyframe all" / "keyframe everything" / "bake this slide" /
+    // "bake every widget on this slide" cover the phrasings that actually get
+    // typed, and "pin all values to this slide" catches the one that describes the
+    // EFFECT rather than the tool.
+    { id: "keyframe-everything-in-slide", title: "Keyframe Everything In Slide", icon: "mdi:vector-point-plus", aliases: ["bake slide", "bake this slide", "bake every widget on this slide", "keyframe all", "keyframe everything", "keyframe every property", "pin all values to this slide", "add keyframes for everything"], when: (a) => a.bakeSlideTargets().ids.length > 0, requires: (a) => (a.selectedIds().length > 0 ? "at least one selected widget that is actually on this slide — everything selected here is hidden or not yet created, and a widget that is not on the slide has no values to pin to it" : "at least one widget on this slide — there is nothing here to keyframe"), help: keyframeEverythingHelp, plural: PLURAL_EACH, run: (a) => a.keyframeEverythingInSlide() },
     { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.reorderSelection(+1) },
     { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.reorderSelection(-1) },
     { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.sendToExtreme(+1) },
@@ -1831,16 +1909,12 @@
       help: "Selects the members of the group you are in that are NOT selected, leaving everything outside that group untouched. The partner of Select Inside Group: go in, then flip which members you have. A selection spanning two groups inverts within each of them.",
       run: (a) => a.invertSelectionInGroup(),
     },
-    // BY TYPE: a submenu, because web/App.svelte bans PARAMETERISED palette
-    // commands — the type has to be a CHILD ENTRY rather than an argument. The
-    // children are rebuilt from the live slide each time the palette opens (see
-    // refreshTypeSelectCommands), so a type nobody has placed is never offered and
-    // a new widget needs no edit here. The array is SPLICED, never reassigned: the
-    // registry holds this exact reference, and reassigning it would leave the
-    // palette reading the original forever — the plugin-widget submenu's own
-    // hard-won rule (tests/builtin_asset_library_test.js pins it there).
-    SELECT_BY_TYPE_SUBMENU,
-    DESELECT_BY_TYPE_SUBMENU,
+    // BY TYPE: ONE command each, gathering the type in the palette's SECOND
+    // STAGE (R7-42 — see byTypeCommand above for the ruling and for what the
+    // per-type minting cost). Static entries: nothing per-document ever enters
+    // the registry, so the roster is fixed at construction for this family.
+    byTypeCommand(true),
+    byTypeCommand(false),
     { id: "toggle-palette", title: "Toggle Command Palette", icon: "mdi:chevron-down-box-outline", run: (a) => (a.paletteOpen = !a.paletteOpen) },
     // Evaluated state: the camera's own properties may be equations.
     { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRectAt(a.doc, a.slideIndex, 1, a.registry)) },
@@ -2563,10 +2637,19 @@
    * // "Grab · X · 2"
    * @example modalAnnouncement({ kind: "scale", axis: "y", buffer: "" })
    * // "Scale · Y"
+   * @example modalAnnouncement({ kind: "scale", axis: null, buffer: "2", toggles: { wholistic: true } })
+   * // "Scale · Wholistic · 2"
+   * @example modalAnnouncement({ kind: "rotate", axis: null, buffer: "", toggles: { individual: true } })
+   * // "Rotate · Individual · type an angle in degrees"
    */
   function modalAnnouncement(m) {
     const kind = MODAL_TRANSFORM_KINDS[m.kind];
     const parts = [kind.label];
+    // ACTIVE TOGGLES ANNOUNCE THEMSELVES, in the table's own order so two active
+    // toggles always read the same way round. A toggle that changes what the
+    // gesture MEANS and says nothing would be a mode the user cannot see they are
+    // in — the same reason the axis gets a segment.
+    for (const [id, t] of Object.entries(MODAL_TOGGLES)) if (m.toggles?.[id]) parts.push(t.mark);
     if (m.axis) parts.push(m.axis.toUpperCase());
     if (m.buffer) parts.push(m.buffer);
     else if (!m.axis) parts.push(kind.numericPrompt);
@@ -2608,6 +2691,8 @@
     // The G/S/R entries are GENERATED from this table, not typed out here — see
     // MODAL_TRANSFORM_KINDS (web/canvas/dragKinds.js) for why.
     modalTransformKinds: MODAL_TRANSFORM_KINDS,
+    // The I/W toggle chips are likewise GENERATED from their table, not typed here.
+    modalToggles: MODAL_TOGGLES,
     activations: activations(),
   });
 
@@ -2754,16 +2839,18 @@
   // instant it opens (and drops it when it closes) while activeElement.closest still
   // gives innermost-wins for the autofocus popovers (a search box's own scope beats
   // the enclosing menu's). Runes-only lifecycle: one observer for the component's life.
-  // THE BY-TYPE SUBMENUS ARE REBUILT WHEN THE PALETTE OPENS (#301). They list the
-  // widget types actually PRESENT on this slide, which changes as the deck is
-  // edited — so a stale list would offer a type nobody has any more, or omit one
-  // just added. Keyed on paletteOpen and slideIndex, the two things that decide
-  // what the next opening should show.
-  $effect(() => {
-    if (!app.paletteOpen) return;
-    app.slideIndex; // tracked: a different slide has a different population
-    refreshTypeSelectCommands(app);
-  });
+  // THE BY-TYPE REBUILD EFFECT IS GONE, AND WITH IT ITS HAZARD CLASS (R7-42).
+  // It used to run refreshTypeSelectCommands on every palette open, splicing one
+  // command per widget type on the slide into two submenus' `children`. f4b11012
+  // had to wrap that call in `untrack` because the rebuild reads typesOnSlide()
+  // -> nodes(), which registers `previewDelta` UNCONDITIONALLY BY DESIGN
+  // (app.svelte.js:1421) — so a tracked rebuild subscribed to the very state a
+  // hovered row's `preview` writes, while its body handed the palette's `results`
+  // derived brand-new child objects. The user's ruling deleted the minting
+  // outright (see byTypeCommand above), so the roster is static for this family
+  // and there is no effect left to untrack: the cycle is now UNEXPRESSIBLE here
+  // rather than suppressed. tests/palette_hover_probe.js still stands guard over
+  // the hover path, now over the two-stage flow.
 
   $effect(() => {
     const obs = new MutationObserver(() => { focus = focusContext(document.activeElement); });
@@ -2843,6 +2930,12 @@
       // it is what lets a chip be scoped to the kinds it is true for, which is how
       // rotate withholds the X/Y axis keys that have no meaning in the plane.
       modalKind: app.modalXform?.kind ?? null,
+      // WHETHER THE SELECTION HOLDS MORE THAN ONE ITEM. Its own axis rather than a
+      // reading of `hasSelection`, because the I toggle is the one input whose
+      // meaning depends on the COUNT: with a single item, "each about its own
+      // centre" and "all about the collective centre" are the same transform, so
+      // the chip is withheld rather than offered as a no-op.
+      multiSelection: app.selectedIds().length > 1,
       snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: a drag has an active snap CORRECTION (what the guides and the toolbar tint read)
       // ...and whether that correction is one the A release can actually BIND. The two
       // are not the same, which is the defect: applyResizeSnap raises snapEngaged from

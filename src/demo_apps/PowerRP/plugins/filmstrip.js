@@ -239,7 +239,7 @@ export const DEFAULT_LEADER_GAPS = 1;
  * edge text yet — so brand presets wait for that feature rather than shipping as
  * look-alikes.
  *
- * @example filmstripPlugin.presets.length // 9
+ * @example filmstripPlugin.presets.length // 10
  * @example filmstripPlugin.presets[0].props.perfFamily // "BH"
  */
 const PRESETS = [
@@ -282,6 +282,11 @@ const PRESETS = [
     name: "16 mm single-perf (1R)",
     description: "16 mm perforated on ONE edge only — the other edge is blank film, which is the most distinctive silhouette of any stock here.",
     props: { perfFamily: "R16S", filmColor: FILM_BASE_COLORS.bwNegative },
+  },
+  {
+    name: "Digital intermediate — 35 mm, 4-perf",
+    description: "A DI recording stock (5254): BH/\"N\" perforations at the standard four-per-picture pulldown, on its own measured salmon-pink base — visibly warmer than the 2242 intermediate above, its own D-min rather than a shared guess.",
+    props: { perfFamily: "BH", filmColor: FILM_BASE_COLORS.digitalIntermediate },
   },
   {
     name: "Dots — the stylised figure look",

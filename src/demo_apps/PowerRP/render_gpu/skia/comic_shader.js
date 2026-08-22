@@ -74,6 +74,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { schemaAngleRadians } from "../../core/properties.js";
 
 // ── named constants (WHY each exists — no magic numbers) ─────────────────────
 export const COMIC_SKSL = `
@@ -477,6 +478,10 @@ export const COMIC_FILL_PARAMS = [
   { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the screening: 1 = screen resolution, 2 = supersample (crisper cell-centre tone, slower). The 0.25..2 bounds are a PERFORMANCE guard, not a look choice — below 0.25 the backdrop is uselessly coarse and above 2 the re-render cost balloons." },
 ];
 
+/** Stored angle → radians, reading each row's DECLARED storage unit from the
+ *  schema above rather than restating it here (core/properties.schemaAngleRadians). */
+const toRadians = schemaAngleRadians(COMIC_FILL_PARAMS);
+
 /**
  * Pure function. SCHEMA params (COMIC_FILL_PARAMS names/kinds — strings,
  * booleans, degrees) → the PACKER's numeric params (mode/shape codes, 0/1
@@ -493,16 +498,15 @@ export const COMIC_FILL_PARAMS = [
 export function comicUniformParams(p) {
   const MODE_CODE = { cmyk: 0, rgb: 1, duotone: 2, mono: 3 };
   const SHAPE_CODE = { round: 0, square: 1, ellipse: 2 };
-  const DEG2RAD = Math.PI / 180;
   return {
     mode: MODE_CODE[p.mode] ?? 0,
     pitch: p.pitch,
     worldLocked: p.worldLocked ? 1 : 0,
     dotShape: SHAPE_CODE[p.dotShape] ?? 0,
-    angleC: p.angleC * DEG2RAD,
-    angleM: p.angleM * DEG2RAD,
-    angleY: p.angleY * DEG2RAD,
-    angleK: p.angleK * DEG2RAD,
+    angleC: toRadians("angleC", p.angleC),
+    angleM: toRadians("angleM", p.angleM),
+    angleY: toRadians("angleY", p.angleY),
+    angleK: toRadians("angleK", p.angleK),
     reg: p.registration,
     dotGain: p.dotGain,
     gamma: p.gamma,

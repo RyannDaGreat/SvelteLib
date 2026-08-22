@@ -8,13 +8,22 @@
  * and never a data: URI — the CLI writes the actual bytes to
  * `<outDir>/assets/<assetName>` separately (translate.js's `assets` output).
  *
- * POSTER: `plugins/video.js` has NO poster-image field (measured directly —
- * grepped the plugin's own state/docblock; the mapping spec's open question
- * #10 is confirmed unresolved in code as of this translator). A video's
- * poster PNG is still copied into `assets/` (so nothing is silently
- * dropped — a future poster feature can wire it with no re-import) but the
- * item state carries no reference to it; this is reported as a gap, not a
- * silent omission.
+ * POSTER: RESOLVED — mapping spec open question #10 is CLOSED. `plugins/video.js`
+ * now carries an optional `thumbnail` (an image asset) plus a `showThumbnail`
+ * toggle, added for exactly this translation (user: "for powerpoint, they have
+ * thumbnail files for their videos to be shown before playing … to faithfully
+ * translate videos from pptx to ours"). The paragraph that used to sit here
+ * recorded the gap and the fact that the poster PNG was copied into `assets/`
+ * with nothing referencing it; `videoState` now sets `thumbnail` to that same
+ * asset, so the bytes that were already being carried finally have a reader.
+ *
+ * `showThumbnail` IS LEFT FALSE, DELIBERATELY. PowerPoint shows the poster until
+ * the clip is played, but OUR players are click-to-play and draw the video
+ * themselves, so forcing the still on would replace a working video with a
+ * picture on every imported slide. The poster is made AVAILABLE, not imposed: the
+ * author flips one toggle (or a headless still renderer benefits from it — see
+ * plugins/video.js's THUMBNAIL section). An imported deck therefore looks exactly
+ * as it did before this feature, only with the poster now attached.
  *
  * TRIM: `plugins/video.js` also has no trim-in/trim-out state (measured the
  * same way). A `p14:trim` on a translated video is reported, not applied.
@@ -100,18 +109,32 @@ export function imageState(projectName, assetName) {
  * — the click-to-play TIMING semantics are handled by translate.js's
  * click-step expansion, not here, per the mapping spec's own split).
  *
- * @param {string} projectName
- * @param {string} assetName
- * @param {{loop:boolean, mute:boolean, autoplay:boolean}} mediaIR
- * @returns {{src: string, loop: boolean, muted: boolean, autoplay: boolean}}
+ * THE POSTER lands on `thumbnail` when the caller resolved one (see this file's
+ * header for why `showThumbnail` is deliberately NOT set). `posterAssetName` is
+ * OPTIONAL and its absence is spelled by OMITTING the key entirely rather than
+ * writing `null`: an absent key and a null both fold to "no thumbnail", but only
+ * the omission leaves an imported deck byte-identical to one translated before
+ * this parameter existed.
+ *
+ * Args:
+ *   projectName (string): the PowerRP project the assets land in
+ *   assetName (string): the DE-COLLIDED name the video landed on in assets/
+ *   mediaIR (object): {loop, mute, autoplay} from the DeckIR media record
+ *   posterAssetName (string|null): the DE-COLLIDED name the POSTER landed on, or null
+ *
+ * Returns:
+ *   object — video widget state (`thumbnail` present only when a poster was given)
  *
  * @example videoState("Deck", "clip.mp4", {loop:true, mute:false, autoplay:false}) // {src: "/asset/Deck/clip.mp4", loop: true, muted: false, autoplay: false}
+ * @example videoState("Deck", "clip.mp4", {loop:false, mute:true, autoplay:true}, "image3.png").thumbnail // "/asset/Deck/image3.png"
+ * @example "thumbnail" in videoState("Deck", "clip.mp4", {loop:false, mute:false, autoplay:false}) // false
  */
-export function videoState(projectName, assetName, mediaIR) {
+export function videoState(projectName, assetName, mediaIR, posterAssetName = null) {
   return {
     src: assetSrc(projectName, assetName),
     loop: !!mediaIR.loop,
     muted: !!mediaIR.mute,
     autoplay: !!mediaIR.autoplay,
+    ...(posterAssetName ? { thumbnail: assetSrc(projectName, posterAssetName) } : {}),
   };
 }

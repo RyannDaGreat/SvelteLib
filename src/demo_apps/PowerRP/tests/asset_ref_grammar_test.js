@@ -181,7 +181,10 @@ test("pluginAssetRefProps reads a plugin's kind:\"asset\" inspector rows", () =>
   // a widget that renamed its ref property must break this test rather than render
   // blank.
   assert.deepEqual(pluginAssetRefProps(registry.get("image")), ["src"]);
-  assert.deepEqual(pluginAssetRefProps(registry.get("video")), ["src"]);
+  // video carries TWO refs since the poster feature (R7-32): the clip and its
+  // optional thumbnail image — both must resolve or a shared deck renders a
+  // broken poster.
+  assert.deepEqual(pluginAssetRefProps(registry.get("video")), ["src", "thumbnail"]);
   assert.deepEqual(pluginAssetRefProps(registry.get("filmstrip")), ["src"]);
   assert.deepEqual(pluginAssetRefProps(registry.get("svg")), ["svgUrl"], "svg's ref does NOT live in `src`");
   // A widget with no asset row costs nothing and returns the shared empty array.

@@ -73,9 +73,32 @@ const view = fitRectView(CAM, WIDTH, HEIGHT, 1);
 // degradation the hybrid-vector rule exists to prevent.
 const noRaster = () => { throw new Error("a wire must export as VECTOR — nothing here may route to the raster fallback"); };
 
+/**
+ * Pure function. The WIRE path ops in a scene display list.
+ *
+ * A wire is identified by POSITION, not by shape: `sceneIR` emits the wire layer at
+ * SCENE level, before the first node's `pushTransform`. This used to filter every
+ * `path` op whose `d` starts with "M ", which was true only while NO NODE EMITTED A
+ * PATH — an accident of the roster, and one workstream NODECHROME_ ended by giving
+ * every card a vector FAMILY MARK. That mark is a path starting with "M ", so the
+ * old filter counted node emblems as cables and read 10 wires in a three-wire trio.
+ *
+ * @param {object[]} ir - a scene display list
+ * @returns {object[]} the wire ops, in order (two per wire: halo then wire)
+ *
+ * @example wirePathOps([]) // []
+ * @example // a node's family mark is a path too, but it sits inside a transform
+ * @example wirePathOps([{op: "pushTransform"}, {op: "path", d: "M 0 0 L 1 1"}]) // []
+ */
+function wirePathOps(list) {
+  const firstNode = list.findIndex((o) => o.op === "pushTransform");
+  const sceneLevel = firstNode === -1 ? list : list.slice(0, firstNode);
+  return sceneLevel.filter((o) => o.op === "path" && String(o.d).startsWith("M "));
+}
+
 await test("the trio's wires are in the IR at all (the precondition every assertion below rests on)", () => {
   assert.equal(wires.length, 3, "the fixture must actually be a connected patch");
-  const paths = ir.filter((o) => o.op === "path" && String(o.d).startsWith("M "));
+  const paths = wirePathOps(ir);
   assert.equal(paths.length, 6, "three wires × (halo + wire)");
 });
 

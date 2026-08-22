@@ -731,6 +731,161 @@ export function pdfRasterCacheBytes() {
 }
 
 /**
+ * Pure function. Picks the best already-landed scale out of `cachedScales` for a
+ * request at `wantScale` — the INTERACTION-LOD choice, factored out of the two
+ * lookups below so the policy is stated once, testable in bare node, and identical
+ * for whole pages and regions.
+ *
+ * THE RULE IS "NEAREST, PREFERRING SHARPER". A drag is a continuous zoom sweep, so
+ * the wanted bucket is usually one or two steps off something resident. Ties and
+ * near-ties go to the LARGER scale because upsampling a too-small raster is visibly
+ * soft while downsampling a too-large one is not — the same asymmetry mipmapping
+ * relies on. Distance is measured in log space so "half the resolution" and "twice
+ * the resolution" are equally far: on a linear metric, 0.5x (off by 0.5) would beat
+ * 4x (off by 3) even though 0.5x is the blurry one.
+ *
+ * @param {number} wantScale - the scale the frame would have requested
+ * @param {number[]} cachedScales - scales already resident for this page
+ * @returns {number|null} the scale to draw, or null when nothing is cached
+ *
+ * @example bestCachedScale(2.0, [1.0, 3.0]) // 3 (equidistant in log space → the sharper one)
+ * @example bestCachedScale(2.0, [1.9, 4.0]) // 1.9 (much closer than 4)
+ * @example bestCachedScale(2.0, []) // null (nothing resident — caller draws a placeholder)
+ *
+ * (Declared above its two callers; see pdfPageRasterRefForDisplay at the end of
+ * this section for THE seam the widgets actually call.)
+ */
+export function bestCachedScale(wantScale, cachedScales) {
+  if (!(wantScale > 0) || cachedScales.length === 0) return null;
+  let best = null;
+  let bestDistance = Infinity;
+  for (const scale of cachedScales) {
+    if (!(scale > 0)) continue;
+    const distance = Math.abs(Math.log(scale / wantScale));
+    // `<=` is the tie-break: equal distance keeps the LARGER scale, because the
+    // loop meets scales in ascending order only by accident and a later equal
+    // candidate is the bigger one whenever the list is sorted that way. Sorting is
+    // done by the callers, which own the map iteration order.
+    if (distance <= bestDistance) { bestDistance = distance; best = scale; }
+  }
+  return best;
+}
+
+/**
+ * Query (reads the cache; near-pure — it touches LRU stamps and the keep-set).
+ * The best ALREADY-RASTERIZED whole-page ref for (src, page), or null when the page
+ * has no raster at any scale. Requests NOTHING: this is the read half of the
+ * interaction LOD, so a drag draws what is resident instead of kicking a fresh
+ * rasterization for every zoom bucket it sweeps through.
+ *
+ * The returned ref is added to `requestedSinceTrim` for the same reason
+ * ensurePdfPageRasterized adds its own: the frame about to paint uses this Image
+ * SYNCHRONOUSLY, so the trim must not free it out from under the draw.
+ *
+ * @example pdfBestCachedPageRef("blob:never-rasterized", 1, 2.0) // null (cold cache)
+ * @example // with scales 1.0 and 1.9 resident for page 1:
+ * @example //   pdfBestCachedPageRef(src, 1, 2.0) -> {ref: "pdfpage:<src>:1:1.9", scale: 1.9}
+ */
+export function pdfBestCachedPageRef(src, page, wantScale) {
+  const prefix = `${src}|${page}|`;
+  const scales = [];
+  for (const [key, entry] of pages) {
+    if (!key.startsWith(prefix) || entry.status !== "ready") continue;
+    scales.push(Number(key.slice(prefix.length)));
+  }
+  scales.sort((a, b) => a - b);
+  const scale = bestCachedScale(wantScale, scales);
+  if (scale == null) return null;
+  const entry = pages.get(`${prefix}${scale}`);
+  entry.lastUsed = ++useSeq;
+  const ref = pdfPageRef(src, page, scale);
+  requestedSinceTrim.add(ref);
+  return { ref, scale };
+}
+
+/**
+ * Query (reads the cache; near-pure, same LRU/keep-set touch as above). The best
+ * already-rasterized REGION ref for (src, page) — any sub-rect, any scale.
+ *
+ * SUB-RECT IS NOT MATCHED, AND THAT IS THE POINT: a region raster is keyed by the
+ * visible window, which changes every frame of a pan, so requiring the same window
+ * would miss on essentially every drag frame and make this function useless. The
+ * caller (pdf_display) uses this only as a fallback BEHIND the whole-page raster
+ * and only while a gesture is live, where the alternative is a placeholder box.
+ * Returns the region's own sourceRect so the caller can place it correctly rather
+ * than assuming it covers the page.
+ */
+export function pdfBestCachedRegionRef(src, page, wantScale) {
+  const prefix = `${src}|${page}|`;
+  let best = null;
+  let bestDistance = Infinity;
+  for (const [key, entry] of regions) {
+    if (!key.startsWith(prefix) || entry.status !== "ready") continue;
+    const scale = Number(key.slice(key.lastIndexOf("|") + 1));
+    if (!(scale > 0)) continue;
+    const distance = Math.abs(Math.log(scale / wantScale));
+    if (distance < bestDistance) { bestDistance = distance; best = entry; }
+  }
+  if (!best) return null;
+  best.lastUsed = ++useSeq;
+  requestedSinceTrim.add(best.ref);
+  return { ref: best.ref };
+}
+
+/**
+ * Command (near-pure: idempotent) OR Query, depending on `interactive` — THE ONE
+ * SEAM the three PDF-family widgets ask for a whole-page raster through, so the
+ * interaction-LOD policy is written once instead of three times.
+ *
+ *   interactive (the default, and everything that is not an editor drag):
+ *     exactly the old behaviour — request `wantScale` and return its ref, whether
+ *     or not it has landed yet. Byte-identical, and the reason exports, the CLI,
+ *     thumbnails and the presenter needed no changes at all.
+ *   NOT interactive (a live pointer gesture in the editor):
+ *     request NOTHING and return the best raster already resident. This is the
+ *     whole fix. A drag sweeps continuously through PDF_SCALE_STEP buckets, and
+ *     each new bucket is a cache miss that kicks a fresh pdf.js page render — for
+ *     paper_peacock once per SHEET per frame, which is the case the user reported
+ *     as "laggy to drag around".
+ *
+ * Returns null ONLY when the page has no raster at ANY scale — a genuinely cold
+ * cache, not a miss at this scale — which is the caller's cue to draw a
+ * placeholder. Once anything has landed, a drag always draws real pixels.
+ *
+ * @param {boolean} interactive - false only while an editor pointer gesture is live
+ * @returns {string|null} an image-registry ref, or null when nothing is resident
+ *
+ * @example pdfPageRasterRefForDisplay("blob:never-rasterized", 1, 2.0, false) // null (nothing resident; caller draws the placeholder)
+ * @example // interactive (the default) always returns a ref and REQUESTS that scale:
+ * @example //   pdfPageRasterRefForDisplay(src, 1, 2.0) -> "pdfpage:<src>:1:2"
+ * @example // dragging, with 1.9 already resident:
+ * @example //   pdfPageRasterRefForDisplay(src, 1, 2.0, false) -> "pdfpage:<src>:1:1.9" (requests nothing)
+ */
+/**
+ * THE INTERACTION-LOD PLACEHOLDER — the flat fill a PDF-family widget draws while a
+ * gesture is live and NOTHING is resident for that page.
+ *
+ * The user asked "Why don't we just make them white rectangles?", and this is that
+ * — but PAPER, not white. It is the same value pdf_packet already ships as its
+ * `paper` default, so an un-landed sheet reads as a blank page of the same stock as
+ * its neighbours instead of a bright white hole punched in the fan. A literal
+ * #ffffff would be the one colour guaranteed to flash against every real page,
+ * since a scanned or rendered PDF page is never pure white at its edges.
+ *
+ * It is shared here rather than per-plugin so the three widgets cannot drift into
+ * three different "loading" colours for one gesture.
+ */
+export const PDF_PLACEHOLDER_PAPER = "#fbfaf7";
+
+export function pdfPageRasterRefForDisplay(src, page, wantScale, interactive = true) {
+  if (interactive) {
+    ensurePdfPageRasterized(src, page, wantScale);
+    return pdfPageRef(src, page, wantScale);
+  }
+  return pdfBestCachedPageRef(src, page, wantScale)?.ref ?? null;
+}
+
+/**
  * Command. Brings BOTH raster caches back inside PDF_RASTER_CACHE_BYTES by FREEING
  * the least recently used entries across them — bookkeeping AND pixels
  * (image_registry.releaseImage deletes the CanvasKit Image, which is the copy that

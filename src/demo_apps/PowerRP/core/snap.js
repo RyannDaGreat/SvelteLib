@@ -426,3 +426,75 @@ export function axisLock(dx, dy, prevAxis, bias = AXIS_LOCK_HYSTERESIS) {
   if (prevAxis === "y") return ax > ay * bias ? "x" : "y";
   return ax >= ay ? "x" : "y";
 }
+
+/**
+ * How far past the bind tolerance the pointer must travel before an ALREADY-BOUND
+ * anchor candidate lets go. Same shape and same number as AXIS_LOCK_HYSTERESIS, and
+ * for the same reason it exists: a decision re-derived from raw pointer state on
+ * every move, against ONE hard threshold, flip-flops when the pointer sits on the
+ * threshold — a 1px jitter at exactly 8px from an anchor toggles bound/unbound
+ * every frame. LINKED to that constant's 1.5 rather than invented: it is the house
+ * hysteresis, chosen there as "big enough to kill the per-frame flip-flop without
+ * feeling sluggish", and an endpoint bind is the same kind of held decision.
+ */
+const ANCHOR_STICKINESS = 1.5;
+
+/**
+ * How much CLOSER a rival anchor must be than the incumbent before it steals the
+ * binding, as a fraction of the incumbent's distance. Without it, two anchors a
+ * hair apart trade the binding on sub-pixel pointer noise — the same flicker one
+ * level down, between two candidates rather than between bound and unbound. 0.75 =
+ * the rival must be at least 25% closer; it is the multiplicative reading of
+ * ANCHOR_STICKINESS (1/1.5 ≈ 0.67 rounded to a readable quarter), so the two
+ * margins say the same thing about the same gesture.
+ */
+const ANCHOR_STEAL_RATIO = 0.75;
+
+/**
+ * Pure function. THE anchor-bind decision for a held gesture (an arrow endpoint
+ * drag, and creation placement's release), with the hysteresis that keeps it from
+ * flickering. Given every candidate in range and the candidate currently bound,
+ * returns the one a drop right now would bind — or null for "write plain numbers".
+ *
+ * TWO MARGINS, because the flicker has two shapes and one threshold cannot answer
+ * both (measured on web/CanvasView.svelte endpointDrag, which had neither):
+ *   RELEASE  — the incumbent survives out to `tol * ANCHOR_STICKINESS`, so a
+ *              pointer resting AT the tolerance stays bound instead of toggling
+ *              every move. A candidate not yet bound still needs to be within
+ *              plain `tol` to bind in the first place, so the sticky band is only
+ *              ever reachable by having been inside it.
+ *   STEAL    — a DIFFERENT candidate must beat the incumbent by
+ *              ANCHOR_STEAL_RATIO, not by any epsilon, so two near-coincident
+ *              anchors do not trade the binding on pointer noise.
+ * With no incumbent this degrades to plain nearest-within-tolerance, which is
+ * exactly the behaviour it replaces on the first move of a gesture.
+ *
+ * Args:
+ *   candidates ({id: string, d: number}[]) — every in-range candidate and its
+ *     distance from the pointer in world units. `id` is whatever identity the
+ *     caller compares by (CanvasView uses "<itemId>:<anchorId>").
+ *   incumbentId (string|null) — the candidate id currently bound, or null.
+ *   tol (number) — the bind tolerance in world units (SNAP_PX / zoom).
+ *
+ * Returns: the winning candidate object from `candidates`, or null.
+ *
+ * @example stickyAnchorCandidate([{id: "a", d: 5}], null, 8) // {id: "a", d: 5}
+ * @example stickyAnchorCandidate([{id: "a", d: 9}], null, 8) // null (never bound, and out of tolerance)
+ * @example stickyAnchorCandidate([{id: "a", d: 9}], "a", 8) // {id: "a", d: 9} (bound, still inside 8*1.5)
+ * @example stickyAnchorCandidate([{id: "a", d: 13}], "a", 8) // null (past 12 — genuinely released)
+ * @example stickyAnchorCandidate([{id: "a", d: 6}, {id: "b", d: 5.5}], "a", 8) // {id: "a", d: 6} (b is not 25% closer)
+ * @example stickyAnchorCandidate([{id: "a", d: 6}, {id: "b", d: 2}], "a", 8) // {id: "b", d: 2} (clearly closer — steals)
+ */
+export function stickyAnchorCandidate(candidates, incumbentId, tol) {
+  const incumbent = incumbentId == null ? null : candidates.find((c) => c.id === incumbentId) ?? null;
+  const held = incumbent && incumbent.d <= tol * ANCHOR_STICKINESS ? incumbent : null;
+  let best = null;
+  for (const c of candidates) {
+    if (c.d > tol) continue; // a NEW bind still needs the plain tolerance
+    if (c.id === held?.id) continue; // the incumbent is judged by the steal margin below
+    if (!best || c.d < best.d) best = c;
+  }
+  if (!held) return best;
+  if (best && best.d < held.d * ANCHOR_STEAL_RATIO) return best;
+  return held;
+}

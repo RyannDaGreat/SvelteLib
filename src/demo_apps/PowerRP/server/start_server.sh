@@ -45,9 +45,19 @@ LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/nul
 #   2. Bring your own trusted cert: set POWERRP_TLS_CERT + POWERRP_TLS_KEY +
 #      POWERRP_PUBLIC_HOST together (no browser warning).
 WANT_HTTPS="${POWERRP_HTTPS:-}"
+# --no-refresh: disable HMR so agent commits/file churn never reload a live editing
+# session (the render-job worker's hmr:false precedent, cli/render_job.js:306 — there
+# it protects a render; here it protects the user's open document). The watcher stays
+# on; a manual browser refresh picks up new code when the USER chooses.
+WANT_NO_REFRESH="${POWERRP_NO_REFRESH:-}"
 for arg in "$@"; do
   [ "$arg" = "--https" ] && WANT_HTTPS=1
+  [ "$arg" = "--no-refresh" ] && WANT_NO_REFRESH=1
 done
+if [ -n "$WANT_NO_REFRESH" ]; then
+  export POWERRP_NO_REFRESH=1
+  echo "HMR OFF (--no-refresh): the page will never reload itself; refresh manually to pick up code changes."
+fi
 
 # Command. Mints (once, cached in TLS_DIR) a portable self-signed cert+key whose
 # subjectAltName covers localhost, 127.0.0.1, and — when discoverable — this

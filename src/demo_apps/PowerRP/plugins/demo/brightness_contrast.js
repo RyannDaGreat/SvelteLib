@@ -115,6 +115,36 @@ const PRESETS = [
     description: "The naive slider, for comparison: the same amount of contrast, but shadows crush to black and highlights blow to flat white. This is what the default mode exists to avoid.",
     props: { mode: "srgb", brightness: 0.04, contrast: 1.6, preserveHue: false },
   },
+  {
+    name: "Faded Film",
+    description: "A lifted-black, low-contrast look like a cheap print that has sat in the sun: shadows never reach true black and the whole curve sits a touch bright, the vintage-photo cliché done with two numbers.",
+    props: { mode: "smooth", brightness: 0.18, contrast: 0.7, preserveHue: false },
+  },
+  {
+    name: "Crushed Blacks",
+    description: "sRGB direct pushed hard enough that the shadow end clips flat and stays there — a deliberately harsh grade for a dramatic silhouette, not the gentle S-curve of Punch.",
+    props: { mode: "srgb", brightness: -0.22, contrast: 2.2, preserveHue: false },
+  },
+  {
+    name: "High-Key",
+    description: "Bright and airy with the contrast pulled back — a beauty-lighting or product-shot grade where nothing is meant to read as a hard shadow.",
+    props: { mode: "smooth", brightness: 0.75, contrast: 0.85, preserveHue: false },
+  },
+  {
+    name: "Low-Key",
+    description: "Dark and moody with the contrast pushed up — most of the frame reads near-black with only the brightest parts standing out, a film-noir grade.",
+    props: { mode: "smooth", brightness: -0.85, contrast: 1.9, preserveHue: false },
+  },
+  {
+    name: "Bleach Bypass",
+    description: "The silver-retention lab trick, faked in two numbers: contrast pushed hard while the exposure barely moves, so the image gets harsh and gritty without going dark or bright overall.",
+    props: { mode: "linear", brightness: 0.05, contrast: 2.6, preserveHue: false },
+  },
+  {
+    name: "Silver Gelatin",
+    description: "A darkroom-print contrast grade, hue LOCKED so the boost reads as pure tonal punch rather than added colour saturation — the black-and-white-print feel on a still-colour image.",
+    props: { mode: "smooth", brightness: -0.1, contrast: 1.85, preserveHue: true },
+  },
 ];
 
 /**

@@ -70,7 +70,7 @@
  */
 
 import { EPHEMERAL } from "../core/ephemeral.js";
-import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
+import { BUNDLES, bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { polygon, ellipse, parseColor, rgbaToCss } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { TRAIL_CLOCK_KEY, TRAIL_POINTS_KEY, TRAIL_SAMPLE_CAPACITY } from "../core/trail_history.js";
@@ -388,6 +388,58 @@ export function trailWidthFromDrag(frame, desired) {
   };
 }
 
+// TRAIL MOTION-SIGNATURE PRESETS (R7-39 presets law) — a trail's only look knobs
+// are seconds/width/tailWidth/color/tailColor/tailOpacity/animated/opacity/effects
+// (see the module header's hazard note), so every row here is a PHYSICAL SIGNATURE
+// named for the thing it would draw behind a moving point — a comet, a whip, a
+// contrail — and the numbers are chosen to match that name's own physics: a whip
+// crack is short, a contrail is long, a sparkler is hot and bloomed. NONE of them
+// touches `age`/the clock equation or any placement key (x/y/z) — a preset is an
+// OVERLAY on whatever the author already anchored the trail to (app.applyPreset
+// writes exactly `preset.props`), so writing x/y here would silently relocate an
+// already-anchored trail out from under its equation.
+//
+// THE IDENTITY LAW (rect.js's rule, restated for this widget): EVERY row sets
+// EVERY effects key including the OFF identities, so hovering "Sparkler Arc" after
+// "Ink Drag" cannot leave the bloom lit. The head list is DERIVED from
+// BUNDLES.effects rather than transcribed, so a seventh effect head fails loudly
+// here instead of silently leaking the previous row's value on hover.
+const EFFECT_HEADS = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
+if (EFFECT_HEADS.length !== 6)
+  throw new Error(`trail presets: BUNDLES.effects grew a new head (${EFFECT_HEADS.join(", ")}) — add its OFF identity below and extend every preset row`);
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLUR_OFF = 0; // gaussianBlur's identity: 0 = no blur
+const EFFECTS_OFF = { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF };
+
+const PRESETS = [
+  { name: "Comet Tail", description: "A long, bright head burning down to a faint point: generous history, a hard head-to-tail taper, and a warm-white glow.",
+    props: { seconds: 5, width: 16, tailWidth: 0, color: "#fff4d6", tailColor: "#ff8a3d", tailOpacity: 0, animated: true, opacity: 1, ...EFFECTS_OFF, bloom: { radius: 24, strength: 0.6 } } },
+  { name: "Ribbon Dancer", description: "A wide, even-width band of saturated colour — no taper at all, so it reads as a physical ribbon rather than a fading streak.",
+    props: { seconds: 2.5, width: 22, tailWidth: 22, color: "#ff2ec4", tailColor: "#7c3aed", tailOpacity: 1, animated: true, opacity: 0.9, ...EFFECTS_OFF } },
+  { name: "Jet Contrail", description: "A long, thin, slow-fading white line at high altitude: a wide window so it lingers, a narrow ribbon, and a gentle dissolve at the tail.",
+    props: { seconds: 8, width: 4, tailWidth: 1, color: "#ffffff", tailColor: "#ffffff", tailOpacity: 0, animated: true, opacity: 0.85, ...EFFECTS_OFF } },
+  { name: "Brush Stroke", description: "A short, thick, fully opaque daub — a real brush laying down ink rather than a streamer trailing off into nothing.",
+    props: { seconds: 0.8, width: 30, tailWidth: 24, color: "#1a1a1a", tailColor: "#1a1a1a", tailOpacity: 1, animated: true, opacity: 1, ...EFFECTS_OFF } },
+  { name: "Light-Cycle", description: "A hard-edged neon rail: constant width, an electric cyan that stays lit all the way to the tail, and a tight bloom so it reads as light rather than paint.",
+    props: { seconds: 3, width: 8, tailWidth: 8, color: "#39ff14", tailColor: "#00e5ff", tailOpacity: 1, animated: true, opacity: 1, ...EFFECTS_OFF, bloom: { radius: 16, strength: 0.8 } } },
+  { name: "Smoke Wisp", description: "A grey, translucent plume that WIDENS toward its tail the way smoke diffuses, staying partly visible even at its oldest end.",
+    props: { seconds: 4, width: 6, tailWidth: 26, color: "#c9c9c9", tailColor: "#9a9a9a", tailOpacity: 0.35, animated: true, opacity: 0.5, ...EFFECTS_OFF, softEdges: 14 } },
+  { name: "Sparkler Arc", description: "A short, hot arc that burns out fast: a small window, a bright ember head, and a wide bloom so the tip reads as a light source.",
+    props: { seconds: 1.2, width: 10, tailWidth: 0, color: "#fff7cc", tailColor: "#ff5a1f", tailOpacity: 0, animated: true, opacity: 1, ...EFFECTS_OFF, bloom: { radius: 20, strength: 0.9 } } },
+  { name: "Radar Sweep", description: "A long, thin arc that fades almost immediately behind the sweep point, the way a radar display holds only the faintest ghost of where the beam has been.",
+    props: { seconds: 6, width: 3, tailWidth: 3, color: "#39ff88", tailColor: "#39ff88", tailOpacity: 0.04, animated: true, opacity: 0.7, ...EFFECTS_OFF } },
+  { name: "Ink Drag", description: "A dry brush of black ink tapering hard to a point, with no glow or softness at all — pure line weight doing the work.",
+    props: { seconds: 1.5, width: 12, tailWidth: 0, color: "#000000", tailColor: "#000000", tailOpacity: 1, animated: true, opacity: 1, ...EFFECTS_OFF } },
+  { name: "Whip Crack", description: "A very short, thin flick: the smallest usable window, a hairline width, and a fast taper to nothing — the streamer of something moving too fast to see.",
+    props: { seconds: 0.25, width: 3, tailWidth: 0, color: "#f5f5f5", tailColor: "#f5f5f5", tailOpacity: 0, animated: true, opacity: 1, ...EFFECTS_OFF } },
+  { name: "Meteor", description: "A fast, cold-blue streak burning through the upper atmosphere — a hard-edged, unglowing line (no bloom, unlike Sparkler Arc's hand-held ember) shifting from icy white at the tip to deep blue at the tail, gone almost as soon as it passes.",
+    props: { seconds: 1, width: 14, tailWidth: 2, color: "#eaf6ff", tailColor: "#1230a8", tailOpacity: 0, animated: true, opacity: 1, ...EFFECTS_OFF } },
+  { name: "Slipstream", description: "A cool, wide, mostly-transparent wake — a wind-tunnel streamline rather than a mark, staying faint from tip to tail.",
+    props: { seconds: 3.5, width: 18, tailWidth: 18, color: "#8fd3ff", tailColor: "#8fd3ff", tailOpacity: 0.15, animated: true, opacity: 0.3, ...EFFECTS_OFF } },
+];
+
 /**
  * Pure function. THE STATE A NEW TRAIL IS INSERTED WITH — the plugin defaults plus
  * the running clock equation, plus whatever the caller overrides. Every route that
@@ -414,6 +466,7 @@ export const trailPlugin = {
   type: "trail",
   ephemeral: EPHEMERAL.NONE,
   title: "Trail",
+  presets: PRESETS,
   // NO bbox and NO rotation/scale: a trail's shape is its HISTORY, which is stated
   // in world coordinates, so its node world must stay a pure translation or the
   // recorded path would be transformed twice. `transform` is on so an UNBOUND trail

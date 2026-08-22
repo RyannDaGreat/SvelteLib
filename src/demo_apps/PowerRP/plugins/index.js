@@ -39,13 +39,19 @@ import { cameraPlugin } from "./camera.js";
 import { cropboxPlugin } from "./cropbox.js";
 import { groupPlugin } from "./group.js";
 import { codeblockPlugin } from "./codeblock.js";
-import { anchorPointPlugin } from "./anchor_point.js";
+// EMPTY replaces the retired `anchor_point` widget (user, 2026-08-13). There is
+// deliberately NO alias registration for the old type: core/document.js
+// RETIRED_ITEM_TYPES rewrites it LOUDLY at the load boundary, before the orphan
+// drop can see it, so no document reaches the registry still carrying it — and a
+// registered alias would make that rewrite unnecessary and therefore silent.
+import { emptyPlugin } from "./empty.js";
 import { pdfPagePlugin } from "./pdf_page.js";
 import { paperPeacockPlugin } from "./paper_peacock.js"; // a PDF's pages fanned like a peacock tail (the MotionV2V hero figure)
 import { pdfPacketPlugin } from "./pdf_packet.js"; // a corner-stapled packet with physical page turns (fractional `page`)
 import { particlesPlugin } from "./particles.js";
 import { latexPlugin } from "./latex.js";
 import { mermaidPlugin } from "./mermaid.js";
+import { html2imagePlugin } from "./html2image.js"; // author HTML/CSS, press Capture, render a FROZEN image asset — the html never executes at playback (Amendment 3's "capture at author time, frozen at play"). Retired type `html_capture` migrates here (core/document.js RETIRED_ITEM_TYPES)
 import { qrcodePlugin } from "./qrcode.js";
 import { plaintextPlugin } from "./plaintext.js";
 import { bentoPlugin } from "./bento.js";
@@ -106,6 +112,13 @@ import { nodeDisplayPlugin } from "./node_display.js";
 // shape, label, fill, port lists and port colours — for diagrams and flowcharts,
 // wired through the same port protocol as every working node.
 import { visualNodePlugin } from "./visual_node.js";
+// The two PURE nodes the per-frame trigger family needs (core/exec_frame.js). They
+// sit with the trio rather than in plugins/exec_index.js because neither declares an
+// exec pin: Compare is arithmetic and Time is a card around the ONE presentation
+// clock, so both are ordinary data nodes that a slide-domain patch may use just as
+// happily as a per-frame one.
+import { nodeComparePlugin } from "./node_compare.js";
+import { nodeTimePlugin } from "./node_time.js";
 // The CONTROL nodes — knob, slider, button, keyboard: the widgets a human plays
 // (core/control_nodes.js). A barrel for the same reason audio_index.js is one.
 import { controlPlugins } from "./control_index.js";
@@ -140,7 +153,7 @@ import { scene3dPlugins } from "./demo/scene3d.js"; // THE 3D VIEWPORT FAMILY: s
  */
 export const demoPlugins = [demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins];
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, pptxPresetPlugin, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, visualNodePlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, emptyPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, html2imagePlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, pptxPresetPlugin, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, nodeComparePlugin, nodeTimePlugin, visualNodePlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.

@@ -1,0 +1,355 @@
+POWERRP BACKBURNER — the canonical abbreviated task list. Pick and refer by ID.
+Born 2026-08-12 from the feature-dump triage (user: "this big list, I'd like that to
+be in a file with all these tasks, and we're going to call it backburner.txt").
+One line per item, on purpose. Update lines in place; real items are never deleted,
+but typo-born junk that was never actually requested gets removed (user ruling
+2026-08-13); add new items at the bottom with fresh IDs. Full evidence: APP/claude_instructions.md R7-29..R7-37,
+.claude_todo.md 2026-08-12 verdicts section.
+Status: [ ] open   [~] partial   [x] done   [?] answered/awaiting-ruling   [>] in progress
+
+AA [x] s/r "i" individual-origin toggle DONE — gesture-probe-proven (chips render
+      mid-gesture; I holds a pair's spread at 400 where collective scales it to 800);
+      the "unsatisfiable when" was a FALSE POSITIVE from the boot prober's incomplete
+      state grid, never a real defect (see ES)
+AB [x] "w" wholistic scaling DONE — same gesture-probe evidence as AA
+ES [x] boot-error root cause FIXED c94918a2 — the predicate was CORRECT (I is
+      solo-suppressed by design); the PROBER lacked a multiSelection axis, and the
+      registry test's optional modalToggles={} default silently validated 244 of 246
+      entries (missing-import hazard one layer up) — prober models both axes now,
+      parameter required-with-throw, both fixes red when reverted
+EV [x] ONE node chrome class DONE 00493453+4ffea85e — node_chrome.js itself held TWO
+      card impls; the thin one (11 trigger nodes + 5 standalone) had the title-below-
+      its-strip bug the user photographed; retired via alias-to-the-one (names kept
+      for sandboxed degradation); families trigger/math/display added w/ vector
+      marks; audio op-list byte-identity + pristine-worktree port layouts; structural
+      pin interrogates every registered node's emit() (bite-verified); two suites
+      that counted "M "-paths as wires fixed to assert what they meant
+EU [x] arrow_presets_test FIXED a6fe53e5 (audit-corrected diagnosis: the deepEqual
+      transcript, not the roster derivation) — property assertion + empty-sweep guard
+ET [>] html2image AUTO-RENDERS, property-triggered (R7-43a/b): staleness core landed
+      81f0fb89+1d0c81cc (fingerprint-total = arrival re-renders; failure suppression
+      re-arms by fingerprint; watcher-not-$effect); REMAINING: plugin copy purge +
+      THE CAPTURE MECHANISM ITSELF IS rAF-STARVED (off-viewport iframe gets ONE tick,
+      capture needs two → 15s timeouts even on the shipped default; measured by the
+      preset writer's CDP repro; fix = on-screen-invisible frame) — AUTOCAP owns it.
+      Presets DONE 1d7388dc+e40ac500 (13 designs; probe's pixel checks flip to real
+      proof the moment the frame fix lands, zero changes needed)
+AC [x] per-property scaling table DONE (core/scaling.js in HEAD; plugin declaration
+      is the PRIMARY seam — 1303 number keys, 913 plugin-unique, so a core-only table
+      would lie; dotted-key nested-read bug found+fixed; modal not sticky, by precedent)
+AD [?] group-scale voodoo — ANSWERED: groups are armatures (scale leaf, composed similarity)
+AE [?] skew — refused in core (similarity law); widget-local door open
+AF [x] aspect chain lock DONE 15a7d333 — lives on the Size compound row (a chain is
+      a claim about a ratio); canvas resize = uniform constraint forced persistent
+      (same geometry as Shift, not a second constraint); Inspector pair coupled via
+      NumericField companion so the two writes are one undo unit
+AG [ ] "z" zoom-into-camera shortcut
+AH [?] groups-sizeless — one decision with empties; NEEDS USER RULING
+AI [x] anchor flicker FIXED 94b6218a+435e92e1 — stickyAnchorCandidate: incumbent
+      survives to tol*1.5 AND a rival must be >=25% closer to steal (two flicker
+      shapes, two margins); preset/closest searches merged into one candidate field
+AJ [x] anchor binding while DRAWING DONE 435e92e1 — binds when anchors are visible
+      (no modifier; choice stated+pinned); start end decided at grab; symmetric-mirror
+      drops the stale bind; creationSteps docstring untruth fixed same commit
+AK [~] line-on-line constraint / custom anchors / IK (stage 1 done)
+AL [x] polyline paint FIXED 33793a3a+ac0c73c9 — parsePaint through all 3 backends
+      reusing their existing gradient paths (PDF degrades LOUDLY per its standing
+      stroke rule); arrow head/shaft deepEqual from one gradient leaf; 27-case solid
+      byte-identity; latent per-frame paint leak fixed (withPaint); material ink
+      refuses loudly w/ stated reason; 8 new tests each individually red pre-fix
+FE [ ] parseColor census remainder (from AL's corrected sweep): 5 builders / 6 slots
+      still silently flatten paint:true leaves — cropSubtree fill+stroke (cropbox
+      OFFERS the gradient picker and discards the choice — sharpest), magnifyBackdrop,
+      glassBackdrop, materialBackdrop (8 widgets), materialFill stroke
+AM [x] empty widget DONE 531ce8b8 — full transform (rotation+scale the old ghost
+      lacked), display-size not bbox, pt anchor id PRESERVED + four axis tips,
+      editor-only axis cross; migration runs BEFORE orphan-drop (load-bearing order,
+      pinned counterfactually); no alias, deliberately — the rewrite must be loud
+AN [ ] number widget tweens under Auto (morph denylist fix; same bug as AO)
+AO [~] mandelbrot/param Auto fades + missing repro test (same bug as AN)
+AP [x] per-property morph triggers (placement denylist + capability)
+AQ [~] text entry: manim/blurFade/grow exist; defaults still fade
+AR [ ] twin line transitions (confirm meaning: token-diff text morphs?)
+AS [x] universal delay property
+AT [~] entry/exit suboptions (only blurFade.blur ships)
+AU [~] editor live-anim: add toolbar button + [/] transition preview
+AV [x] "Keyframe Everything In Slide" command DONE 4e9cb625 (a bake: selection- or
+      slide-scoped, one undo unit; excludes type by measured necessity, filters
+      valueless paths loudly — 33/161 on the demo deck hold no value)
+AW [x] prev/next keyframe arrows disable at ends DONE 4e9cb625 (aria-disabled +
+      guard + tooltip reason, house save-button pattern)
+AX [x] multi-select tools union/intersection + preset fan-out
+AY [x] interp editing on multi-select (visibility)
+AZ [~] paste residuals: clipboardData asymmetry, R7-26a, untangle pass
+BA [~] vars panel under multi-select (add-to-all, union/intersection)
+BB [~] checkbox multi-pick of invisible items in object dropdown
+BC [~] interp on not-yet-created items (subsumed by DQ)
+BD [ ] sound-button slash polarity (one-liner + doctrine retraction)
+BE [x] audio wire<->property bijection
+BF [x] "turn audio on?" prompt removed
+BG [x] presentation == editor audio
+BH [x] culled-still-plays / inactive-silent audio law
+BI [ ] audio scrubber (needs design)
+BJ [ ] audio latency: measure first, then maybe config
+BK [x] standardized node/knob layout
+BL [~] node roster: register ~156 written-but-unwired blocks; fidelity passes
+BM [~] demo patches 27/50 (23 short — named shortfall)
+BN [ ] keyboard key-count parameter
+BO [~] keyboard lock/latch button (chords across slides)
+BP [x] piano roll (vendored signal)
+BQ [~] .mid file open/drag-drop ingest (parser exists)
+BR [~] music viz: audio->animation via OfflineAudioContext bake
+BS [~] spectrogram: speed, gradient themes, presets (bins+window exist)
+BT [x] @/dt simulated state machinery
+BU [x] chaotic double pendulum demo (rects+vars+trail)
+BV [x] vars animate (frozen editor clock was the cause; opt-in anim loop)
+BW [?] dt = time-@time — manifest says adopt; @time eval unimplemented
+BX [x] camera max-timestep clamp
+BY [x] trail widget
+BZ [x] on-reveal/on-hide trigger nodes
+CA [~] output properties on every widget (only 2 plugins declare)
+CB [ ] drag node output onto property row to bind
+CC [ ] texture/material nodeflow (port types reserved)
+CD [x] editor culling (real cause fixed; doctrine correction -> DO)
+CE [x] PDF drag LOD DONE c0da700a+aa724d8c — root cause was a RASTER STAMPEDE
+      (0.1-scale buckets re-raster per drag frame); gestures now request nothing and
+      draw nearest-resident raster (log-space distance), paper-tone placeholder;
+      exports structurally cannot degrade (interactive default pinned)
+CF [x] inner shadow x blur DONE 3a6dac26 (blurredSilhouette feeds the coverage
+      blends; sigma-0 byte-identical; calibrated test sits in a measured empty gap)
+CG [x] screen-space stroke DONE 457946cb — TWO halves: no stamper (applyStrokeSpace,
+      one ports.js seam, ~20 widgets) + 4 widgets never showed the row
+      (STROKE_SPACE_KEYS); measured 6→6px at zoom 3; line excluded deliberately+pinned
+CH [x] double-click text-edit crash FIXED 5f2391b3 — triage premise was INVERTED:
+      MODERN PaintField run colors crashed (legacy was the shape that worked); the
+      reader was wrong, not the documents, so no repair migration (deliberate brief
+      deviation); routed through the paintSolidColor funnel + shared runFillNeedsShader
+      predicate; also fixed OFF/solid-object runs reaching the shader path; bite-checked
+      on the user's exact message; browser double-click path still owed a probe pass
+CI [x] liquid glass clips to glyphs (residual: bbox shader frame)
+CJ [ ] linger slides distinct look in panel
+CK [ ] collapsible slides + hover preview
+CL [ ] View-Current-Slide scroll button
+CM [ ] vector-stroke + raster-fill split in PDF/SVG export
+CN [ ] capture regions -> batch diagram PDFs -> LaTeX pipeline
+CO [~] PDF import is raster (SVG import is vector)
+CP [?] HTML-in-canvas — two-lane design on file, unbuilt
+CQ [ ] matplotlib/seaborn widget (native graph family exists)
+CR [x] html2image widget DONE 255f1069 — stores {html source, captured asset}
+      (capture-at-author-time law; deliberately NOT the mermaid lazy-raster pattern,
+      so the bare-node CLI renders it); Monaco via existing code_modal; capture is an
+      EXPLICIT command (palette/Inspector/Tools), not a save side effect — consent +
+      no file-per-keystroke; vector printToPDF route + lib bundling recorded as follow-ups
+CS [~] scene3d: finish glTF loader, promote out of demo/
+CT [ ] mermaid ELK layout + demos
+CU [ ] perlin noise in equation library
+CV [~] telescopic magnifier: one-object-until-shatter + finish migration
+CW [~] text/latex/code conversions preserve content (shared contract)
+CX [x] typed global vars DONE 15a7d333 — kinds in meta.varKinds (absent="number", no
+      migration); FONT kind ships, reusing the existing text Font row's fontOptions();
+      named boundary: a text var holding prose still errors in the equation collector
+      (real fix = thread varKinds into evaluateState; written at the function) → EC
+CY [x] vector values (R7-38/a/b/c) COMPLETE — final slice beeb8378+daf9a2db+4eba920e+
+      7ec53a06: color-component fold seam (R tweens linear, G/B frozen, gradients
+      keep stops, refusing paints lose the triangle not lie behind it), channel-row
+      generator keyed on VECTOR_KINDS axes (fifth-axis plant test), vec2 row control
+      + var kind, dotted-path-split end-to-end pin. EVALUATOR d417fa90 — a.pos=b.pos+c.pos
+      works through real evaluateState (__op AST emission; operator-free equations
+      compile byte-identically; shape mismatch = spoken sentence; 53 tests);
+      VECUI_ agent launched for the last slice (RGBA children rows + vec2 row
+      control unlocking the vec2 var kind). VALUE LAYER ca36e7ba — pos/size derive
+      the vector from component leaves; COLOR derives components FROM the hex leaf
+      (mirror rule; byte-identical, NO migration — and {r,g,b} objects are measured
+      unspellable, isGradientPaint eats any non-array object); fill.color maps to the
+      paint's `solid` slot, off/material/crossfade refuse with sentences; .color.a is
+      paint-local (no opacity double-multiply); NumPy algebra + structural generality
+      pin (a test greps the source for kind/arity branching). NOTE: `= fill.color*0.5`
+      halves alpha too — numpy-consistent, documented. BLOCKED-SEQUENCED: whole-vector
+      equations need toJsExpr → __op() rewrite in core/expressions.js (prototyped,
+      works) but EXECFRAME is live in that file — VEC_ resumes after it lands; then
+      Inspector RGB children + PaintField rows + vec2 var kind (UI on wired evaluator)
+CZ [ ] "Advanced" tab + visible-in-presentation-mode
+DA [ ] plugin filename convention sweep (dual-spelling loader window)
+DB [~] GitHub save BUTTON (engine complete, no UI)
+DC [ ] history viewer modal (git/save + undo, don't conflate)
+DD [x] static hosting (honest 5-gap roster)
+DE [ ] version-pin app per presentation + decentralized players
+DF [ ] phone remote + presenter view (one channel; needs slide.notes)
+DG [ ] Claude visual input / voice+screen capture
+DH [ ] live multi-writer (watch Claude edit)
+DI [~] synth-driven reveal sounds (wire synth to transitions; export story)
+DJ [x] vibecoded plugin drag-drop + measured jail
+DK [x] video render any res/fps
+DL [~] morph engine gaps (closed<->open, trajectories, repeated glyphs)
+DM [x] determinism law holds (one authoring-only iframe)
+DN [?] health question answered (core sound; seam layer + look-blind gate leak)
+DO [x] stale-doctrine fixes DONE 2026-08-13 — the review's refuted culling diagnosis
+      carries a loud dated correction (kept as history, never a briefing source);
+      pages.yml names storageMode.js instead of the phantom StaticModeNotice.svelte
+DP [ ] visual repro-test species (the fade class has none)
+DQ [ ] R7-29: interp controls show when non-default (subsumes BC)
+DR [?] R7-30: doc size from camera — pick A or B (rec: B) — NEEDS USER RULING
+DS [x] pptx preset crash FIXED 472544ec (adj filter + contained modifierPoints +
+      L-after-Z restart; probe retargeted, 187/187 both adj cases, bite-checked;
+      part-3 write-time reset skipped by design — read-time filter is the pinned story)
+DT [x] video thumbnail+toggle DONE (content in 457946cb/531ce8b8 — shared-index sweep,
+      attribution misfiled, bytes verified in HEAD): nullable thumbnail asset +
+      showThumbnail (visibleWhen hasThumbnail, default false = click-to-play); pptx
+      poster was ALREADY parsed+copied unreferenced, now referenced; byte-identity
+      proven through repair fixed-point (null = delete sentinel); video_scrub
+      deliberately excluded (a scrubber's authored frame IS its poster)
+DU [x] GIFs animate DONE 830d4964+ceeddfce+7eca576d — animated gif upload transcodes
+      to mp4 sibling (even dims, h264/yuv420p, loud 500 on undecodable); canvas drop
+      inserts a VIDEO widget (loops like a gif via player defaults); single-frame gifs
+      unchanged; static mode gets named gifTranscode refusal; AssetField still lists
+      both tiles (deliberate). E2E proven against a real backend
+DV [x] per-frame trigger system DONE 02154f32+bf310a87 — exec_frame domain (simulated-
+      with-exec-pin), 7 nodes (time/mod/compare/schmitt/increment/set_var/custom),
+      Axoloti-style custom node compiler in the jail, wire flash via deriveWires
+      (exportable), demo preset = the user's exact chain at 2s cadence, byte-identical
+      24/60/144fps, verified live (tally 0→3); counter-owns-state deviation stated in
+      node_increment.js header; four built-but-never-wired bugs found by its probe;
+      known bound: custom-node data inputs are wireable not typeable (static inspector)
+DW [~] palette-hover crash: NOT REPRODUCIBLE at any reachable commit (400+ hovers,
+      dev+prod, incl. the deployed d8f59104 — whose bundle is CbVeVj51, not the
+      reported CysiSHpk; no reachable tree builds that hash). A REAL adjacent hazard
+      fixed f4b11012 (by-type palette rebuild read doc inside its own tracked $effect
+      — the CF shape; untracked at source) + standing hover probe (disclosed: fence,
+      not red-to-green — nothing reproduced to bite on). NEEDS USER: where was
+      CysiSHpk running (SW-pinned older deploy? local dist?) — hard-refresh and retry
+DX [x] patch/spec drift FIXED d5eb06a3 (41 violations across 5 patches from the
+      knob-harvest sweep missing them; 38 unmappable keys dropped w/ values kept in
+      deviations prose; patch_integrity_test derives from live registries, whole-list
+      reporting, bite-checked; all 221 patch-used node types verified registered)
+DY [ ] toggleSectionKeyframes (section bubble) lacks the undefined-value filter —
+      a section with a valueless row may never reach "all" and insert forever
+      (flagged during AV build, unconfirmed; the bake tool filters, the bubble doesn't)
+DZ [ ] axo-drseq gain1=16 NEVER WORKED — mixer amount() clamps AudioParams to 1, so
+      the drum sequencer walks 1/16 of its pattern (measured during DX; exception
+      pinned by exact coordinate w/ staleness check; needs audio_ax_math or wider param)
+EA [ ] re-render the 4 patches DX corrected — pre-existing PENDING-N mp3 placeholders
+      gate them out of patch_sound_probe (part of the BM shortfall family)
+EB [ ] screen-space stroke x trim/offset gap: drawTrimmedOpStroke/drawOffsetOpStroke
+      take no spaceDivisor, so screen-space + trim window or non-centered offset still
+      renders world-width (named in 457946cb; the base fix deliberately excluded it)
+EC [ ] text-kind global vars holding prose still error (every vars string is collected
+      as a numeric equation by fiat; isVarEquation gates kinds now, but the real fix
+      threads meta.varKinds into evaluateState — written at the function)
+ED [x] small keyframe arrows FIXED ad2ffa81 — user's diagnosis exact: two triads were
+      copied markup + shared CSS class, not shared behavior; hoisted to ONE descriptor
+      (core jumpArrow → {target, disabled, tip}; app.jumpArrowFor is the single call);
+      census test enumerates surfacings BY MARKUP and reds on any unwired variant
+      (falsified with a planted fake); section tooltips byte-identical
+EE [ ] "origins only" toggle for s/r (Blender analog): transform objects' POSITIONS
+      without transforming each object's own content; joins the i/w modal-toggle family
+EF [x] html2image rename DONE 56b4809a — type migrated via RETIRED_ITEM_TYPES (real
+      pipeline-run pin, git mv history, call sites same commit), "HTML to Image"
+      everywhere, "HTML Capture" kept as alias; AUTO-CAPTURE REFUSED on principle
+      (insert is not consent to execute — html arrives via paste/undo/presets too);
+      designed default dashboard card + designed placeholder (renders 0.14s pure
+      vector); fixed the migration-report hardcoded-sentence latent lie; backtick-in-
+      template-literal guard test added
+EG [x] THE PRESETS LAW (R7-39, standing) — PROGRAM COMPLETE 2026-08-13: roster went
+      65 preset-bearing plugins / ~836 presets → 96 plugins / 1238 presets. Waves:
+      P0 (rect/particles/image/pptx/shapeshifter x10), P1 (iconify/codeblock/
+      labeled_circle/trail/materials-pair/corkboard x4/svg/paint_path), P1b top-ups
+      (9 weak rosters incl. an existing C-16 dead row fixed), P2 media batch,
+      html2image 13. Every family pixel- or geometry-gated w/ calibrated floors +
+      the untouched default in comparison; honest exemptions + accommodation flags
+      recorded in-file. STANDING for future widgets: not done without >=10 presets
+EH [x] searchable dropdowns DEFAULT DONE bfba24e1 — the one select-row seam converted
+      (every kind:"select" inherits type-to-filter; authors need know nothing);
+      threshold 12 DERIVED from the measured bimodal roster (772 rows, empty valley);
+      grouped-caption ranker keeps captions only over surviving families; preview-
+      never-writes + one-undo proven by measurement; probe reds with the user's
+      exact complaint on revert; font rows correctly out of scope
+EI [x] pptx shapes VISUAL verification DONE — USER CONFIRMED RIGHT: 69/187 (37%)
+      render wrong. Class 1 (the 69): plugins/pptx_preset.js:273 joins every subpath
+      into ONE d + one fill/stroke + evenodd, DISCARDING the per-subpath fill/stroke
+      flags the evaluator correctly returns (95 fill="none" detail-line subpaths get
+      flood-filled; evenodd punches holes); geometry test asserts the flags are
+      RETURNED, nothing checked they were USED. Class 2 (separate): arcTo center-solve
+      drifts across consecutive arcs (curved arrows; concentric arcs land 77.4 units
+      apart) — convention must be derived, not guessed. chartX trap: naive flag-honor
+      regresses it. PowerPoint reference still PARKED (LO agreement = faithful
+      vendoring only). Composites delivered to user; fix = EL
+EL [x] pptx subpath-paint + arcTo FIXED (content in da6c1387 via a sweep; attribution
+      note a314880e) — 187/187 render correctly, verified vs LibreOffice: per-subpath
+      fill/stroke honored; shade factors ±0.4/±0.2 straight RGB lerp with TRUNCATION
+      not rounding (byte-exact vs LO's PDF, no document states it); paint order =
+      all fills then all strokes (LO's sort, confirmed in the raw content stream);
+      arc angle t=atan2(wR·sin a, hR·cos a) (LO + POI corroborated; the discriminator
+      is where the arc LANDS, not concentricity); chartX matched to LO's f*/S stream
+      not the accidental fill; moon+funnel improved by the arc fix; morphPaths keeps
+      statePaint marks only where ink is truly state's; 19 sabotage-tested new tests
+EP [x] custGeom import flood-fill FIXED c05b34bc — root cause was .some() (one
+      fill="norm" subpath flood-filled all); one element per subpath w/ own flags,
+      fills-then-strokes, shading honoured; chartX end-to-end through flattenSvgTree
+EQ [x] select-by-type DONE 5726e5f0 — two static commands + palette picker stage
+      (options gathered at invoke, never in the registry; one focus model; hover
+      preview preserved); minting machinery DELETED (f4b11012 hazard class removed
+      at root); structural roster checks sabotage-tested (process-lifetime vs
+      per-document minting is the written distinction)
+EM [ ] two BASELINE doctest reds, pre-wave (stash-confirmed by several agents):
+      core/pptx_translate/paint.js:114 (strokeWidth want 1 got 1.333) and
+      web/projectApi.js:406 (pptxDisplayName) — fix or retract the doctests
+EN [ ] four more baseline node reds, pre-wave (also stash-confirmed): asset_ref_
+      grammar_test, plugin_assets_test, stored_ref_split_test ("Unknown variable
+      box_"), gitignored_fixture_test — triage at gate time on the quiet tree
+EO [x] codeblock VS Code themes DONE 685c0013+6f6271c2 — 14 vendored w/ provenance
+      (Material honestly skipped: repo gutted, no license); theme pick applies
+      background too via a DECLARATIVE row-companion hook (one undo unit, hover
+      preview threaded, probe-proven — the hook is invisible to bare-node tests);
+      legacy byte-identity hash-held; manual fill still wins after
+EW [x] DRY AUDIT DONE (R7-44a) — 16 findings, 3 live wrong answers measured by
+      execution, clean bills stated (fuzzy ranker, gradient seam, tooltips, audio
+      factory, arrowheads all single-sourced); full table in the audit report.
+      Fixes: EY/AL/FD/FA launched; FB/FC queued for pick
+EY [x] pathsBounds FIXED 49640626 (+svg_paths content via ec510317) — one tokenizer;
+      109 of 115 shatter rects previously fell OUTSIDE their own viewBox, now 1
+      (legitimately); 0/978 PDF corpus mismatches; independent flattening oracle;
+      EXACT_DECIMALS measurement mode (toFixed can't round-trip doubles — measured);
+      null-vs-zero-rect contracts kept per-caller deliberately; repaired a broken
+      HEAD window (import-without-definition) en route
+FA [x] angle units FIXED 31694d93 — audit premise corrected: display:"degrees" IS
+      the storage declaration (= stores radians); 11/13 rows agreed with packers,
+      TWO were LIVE BUGS (atmosphere dial read -2005°, edits reached the shader
+      57x small; mandelbrot same) — zero-migration fix (their presets proved
+      degrees), schemaAngleRadians makes the unit un-restatable, 7 DEG2RADs → 1,
+      byte-identity x7 families WITH a negative control, derived census test
+FD [x] DRY batch DONE 9/9 (8 commits: ec510317 f1ee6866 c05b34bc 7d549424 908795c4
+      07b65323 a6fe53e5 de11297a) — clamp01 was FOUR contracts, NaN ruled accident by
+      measuring downstream damage; CommandButton + GatedIconButton (SlideNav footer,
+      Surge jogs + a bonus identical defect on Fit); custGeom .some() flood-fill
+      fixed (=EP), chartX end-to-end; seededRandom unified after clearing picture
+      risk; row-kind resolver unified; tangent rows spliced + B-shape's missing =
+      hints found; arrow_presets property-assert + empty-sweep guard (=EU);
+      TRI_ICONS + moonMix3 (renamed copy invisible to grep)
+FB [ ] BUNDLES.textStyle: 6 plugins hand-write the text-style rows (number has 3
+      align options, plaintext 4, same key; VALIGN_OPTIONS x6; text.js names the
+      debt in-file) — structural, awaiting pick
+FC [ ] material-param bundle() facility: cornerRadius x13 hand-written; bounds
+      DRIFT is contract-level (shadowStrength max:1 vs unbounded) — structural,
+      awaiting pick
+EX [ ] row-companion writes don't fan out under multi-select (unifySelection takes
+      one key; a 12-block theme pick writes theme only, fills untouched — coherent,
+      documented at the call site; widen unifySelection to pairs when justified)
+EJ [ ] video autoplay/loop/muted rows are INERT (ensureVideo has one call site
+      passing no flags) — a preset/user writing them changes the document and nothing
+      else; lying knobs (found by the EG audit)
+EK [ ] audioNodePlugin factory has NO presets field — one factory lever unlocks
+      preset support for all 241 audio + 23 flow nodes (EG audit's systemic finding;
+      per-node fan-out would be 264 agents editing generated files — do the lever first)
+-- EG STATUS: audit DONE (371 plugins, 65/17.5% had presets). P0 COMPLETE: pptx 10
+   (48e2b413) + particles 12 (a5be75c0) + image 11 (2b6d33a4) + rect 12 (94816cdf) +
+   shapeshifter 122 (ee3f4ffa) = 167 new; roster 1003. P1 wave launched 2026-08-13:
+   iconify, codeblock, labeled_circle, trail (insert-state hazard), rainy_window+
+   raycast_dither pair (fixes the starved material menus), corkboard x4, svg,
+   paint_path (look-only, points are content). P1b top-ups (paper_peacock, comic,
+   braces, image_stack, brightness/glitch/globe, filmstrip, iris_blades) + P2
+   P1b COMPLETE: A d3afefbd (peacock/comic/stack, +1 existing C-16 dead row fixed) +
+   B 4b5f1cfe (braces/filmstrip/iris) + C cc0d016f (brightness/glitch/globe).
+   P2 batch (video/scrub/pdf_page/tangent_lines) LAUNCHED. html2image writer LAUNCHED
+   2026-08-13 (user asked; file freed by EF's landing; 11-13 ready-to-capture designs,
+   placeholder-distinct first lines, real-capture probe as the honest gate). Exemptions
+   recorded: empty (placement-only), blur, cropbox, retired shape, video_v* cohort.

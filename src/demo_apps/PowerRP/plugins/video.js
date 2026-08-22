@@ -25,6 +25,38 @@
  * server/server.py attaches a warning naming this type on every render. R6-12.3
  * removes the category by collapsing onto the scrubber's model.
  *
+ * ── THE THUMBNAIL / POSTER FRAME ──────────────────────────────────────────────
+ * (user: "for powerpoint, they have thumbnail files for their videos to be shown
+ * before playing. Right now, we have no concept of that. To faithfully translate
+ * videos from pptx to ours, we have to have an optional thumbnail parameter on
+ * videos - that has a toggle between whether we show the thumbnail image or show
+ * the video")
+ *
+ * TWO PROPERTIES, declared in the shared registry (core/properties.js) so a
+ * second consumer gets the identical rows: `thumbnail` — an OPTIONAL image asset,
+ * nullable, default `null` — and `showThumbnail`, the boolean choosing WHICH of
+ * the two is displayed, default FALSE and hidden until a thumbnail exists.
+ *
+ * ABSENT IS BYTE-IDENTICAL, and that is measured rather than asserted: `null` in
+ * a delta is the DELETE SENTINEL, so the load-time defaults fill writes the key
+ * once, `foldState` folds it back to ABSENT, and this emit sees `undefined` —
+ * exactly what it saw before the property existed. `showThumbnail: false` then
+ * takes the video branch, which is the unchanged code path. A pre-poster deck
+ * therefore renders the same pixels and re-saves clean (idempotent on pass two).
+ *
+ * IT RENDERS WHEREVER THE IMAGE REGISTRY WORKS, which is strictly more places
+ * than the video registry does — and that is a real side benefit, not just a
+ * tidy implementation. `cli/render.js` (bare node, no `createImageBitmap`)
+ * cannot decode video at all and reports the omission; a poster-showing widget
+ * hands it an ordinary image op instead, so a headless still gets A PICTURE where
+ * the clip would have left a hole. Determinism improves for the same reason: the
+ * player is the app's one EPHEMERAL widget because its frame depends on decode
+ * timing (see below), whereas a poster is a fixed still — Δt = 0 leaves it
+ * unchanged. The `ephemeral: NEVER` tag below is deliberately NOT conditioned on
+ * `showThumbnail`, because the tag is a property of the WIDGET TYPE that every
+ * consumer reads off the plugin, not of one item's current state; narrowing it
+ * per-state is a separate change with its own settling contract to design.
+ *
  * ── NO PLAYBACK-PROGRESS EXPORTS (deliberate) ─────────────────────────────────
  * Unlike the SCRUBBER, the player exposes NO seconds/progress/duration exports.
  * Its current time is the wall clock of a live `<video>` element — NOT document
@@ -72,10 +104,10 @@
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
-import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, hasThumbnail, props } from "../core/properties.js";
 import { videoSrcRow } from "../core/video_sampling.js";
 import * as T from "../core/transform.js";
-import { video } from "../render_gpu/ir.js";
+import { image, video } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
@@ -92,6 +124,155 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
  * decoder. Precedent: plugins/demo/video_v8.js:84 `src: ""` — "empty → poster only,
  * no element, no load error". */
 const UNSOURCED = "";
+
+// ── PLAYER TREATMENTS (R7-39 presets law) ────────────────────────────────────
+// EVERY ROW SETS EVERY EFFECTS KEY, IDENTITIES INCLUDED, AND ALL FOUR CROP
+// INSETS — the image.js overlay argument, verbatim: app.applyPreset writes
+// exactly the keys in `props`, so a knob a row omits keeps whatever the
+// PREVIOUSLY HOVERED row left there. COMPLETENESS IS DERIVED FROM BUNDLES.effects
+// (tests/preset_p2_test.js), not transcribed.
+//
+// NO ROW WRITES `src`, `autoplay`, `loop`, or `muted`. `src` is the author's
+// content (the qrcode/image `data`/`src` rule). The three playback flags are
+// this plugin's KNOWN DEFECT (see the module header "THE PLAYBACK FLAGS ARE NOT
+// IN THE OP"): `ensureVideo`'s one production call site passes no flags, so
+// setting them changes the document and NOTHING ELSE. A preset writing an inert
+// knob would be a lie about what applying it does — so this table leaves all
+// three alone, exactly as the header's own "not bundled here" note anticipates.
+// `showThumbnail`/`thumbnail` are likewise untouched: a preset cannot know
+// whether an item has a thumbnail asset, and writing `showThumbnail: true` with
+// no `thumbnail` set would be incoherent (the emit() branch reads `hasThumbnail`
+// and falls through to the clip either way) — a "Poster Tile" idiom is therefore
+// not offered, the ceiling this table states rather than fakes.
+//
+// TEN ROWS, TEN DIFFERENT KINDS OF FRAME: a physical frame (Rounded Player
+// Card), a hard graphical overlay metaphor (Security Feed, Broadcast Monitor),
+// a projection surface (Projector Screen), a device chrome (Phone Story Crop,
+// Picture-in-Picture Chip), an unframed presentation (Clean Borderless), a
+// period artifact (Vintage TV), a cinematic crop (Cinema Frame) and a
+// glassy/soft finish (Frosted Preview) — not one look restyled ten times.
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLUR_OFF = 0;
+const NO_CROP = { cropTop: 0, cropLeft: 0, cropRight: 0, cropBottom: 0 };
+
+const VIDEO_PRESETS = [
+  {
+    name: "Cinema Frame",
+    description: "A letterboxed crop with a heavy black border, the way a widescreen clip sits inside a dark cinema frame.",
+    props: {
+      stroke: "#000000", strokeWidth: 24, cornerRadius: 0, opacity: 1,
+      shadow: { dx: 0, dy: 12, blur: 24, color: "#000000", opacity: 0.5 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      cropTop: 30, cropLeft: 0, cropRight: 0, cropBottom: 30,
+    },
+  },
+  {
+    name: "Rounded Player Card",
+    // BORDER WEIGHT IS A HARNESS ACCOMMODATION, flagged (the image.js Soft
+    // Vignette/Torn Edge precedent): the intended look is a QUIET 2px hairline,
+    // but tests/preset_p2_test.js measured a 2px stroke at cornerRadius 16
+    // indistinguishable from the untouched default (strokeWidth 0) under the
+    // empty-content bare-node harness — the shadow, like every effect here,
+    // silhouettes drawn content and there is none to decode. 5px is the minimum
+    // that clears the gate today; REVISIT toward 2px once a browser-based gate
+    // can render a real decoded frame.
+    description: "A soft rounded-corner card lifted off the page by a light shadow — the everyday embedded-player look.",
+    props: {
+      stroke: "#1a1a1a", strokeWidth: 5, cornerRadius: 16, opacity: 1,
+      shadow: { dx: 0, dy: 8, blur: 20, color: "#000000", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Security Feed",
+    description: "A CCTV monitor's hard black bezel and square corners — no shadow, no warmth, a feed rather than a presentation.",
+    props: {
+      stroke: "#000000", strokeWidth: 10, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 10, color: "#000000", opacity: 0.6 }, softEdges: 0, gaussianBlur: BLUR_OFF,
+      cropTop: 0, cropLeft: 0, cropRight: 0, cropBottom: 6,
+    },
+  },
+  {
+    name: "Projector Screen",
+    description: "A wide white border and a soft ambient shadow, the way a projected image sits inside its own screen.",
+    props: {
+      stroke: "#f5f5f0", strokeWidth: 20, cornerRadius: 2, opacity: 1,
+      shadow: { dx: 0, dy: 4, blur: 40, color: "#000000", opacity: 0.3 }, bloom: { radius: 24, strength: 0.2 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Phone Story Crop",
+    description: "A tall vertical crop with a slim dark bezel — the mobile-story aspect a phone screen shows, cut from the middle of the frame.",
+    props: {
+      stroke: "#0a0a0a", strokeWidth: 6, cornerRadius: 22, opacity: 1,
+      shadow: { dx: 0, dy: 6, blur: 16, color: "#000000", opacity: 0.4 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      cropTop: 0, cropLeft: 28, cropRight: 28, cropBottom: 0,
+    },
+  },
+  {
+    name: "Picture-in-Picture Chip",
+    description: "A small rounded corner-inset card with a crisp white keyline and a tight shadow — the floating PiP tile that sits over other content.",
+    props: {
+      stroke: "#ffffff", strokeWidth: 4, cornerRadius: 12, opacity: 1,
+      shadow: { dx: 0, dy: 3, blur: 10, color: "#000000", opacity: 0.45 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Broadcast Monitor",
+    description: "A dark graphite bezel with a subtle inner glow along the tube edge, the way a studio reference monitor frames its picture.",
+    props: {
+      stroke: "#2b2b2b", strokeWidth: 16, cornerRadius: 6, opacity: 1,
+      shadow: { dx: 0, dy: 10, blur: 22, color: "#000000", opacity: 0.4 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 8, color: "#4a9eff", opacity: 0.25 }, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Clean Borderless",
+    // HARNESS ACCOMMODATION, flagged rather than hidden (the image.js Magazine
+    // Bleed precedent, verbatim): this treatment's whole point is "no frame", so
+    // strokeWidth here is NOT the look — it is the minimum that keeps the row
+    // provable under tests/preset_p2_test.js's empty-content bare-node gate,
+    // where strokeWidth 0 is measured byte-identical to the untouched default (a
+    // shadow with no border to silhouette draws nothing). REVISIT and drop to 0
+    // once a browser-based distinctness gate exists that can render real
+    // decoded video content.
+    description: "No frame at all — just a soft ambient shadow lifting the clip off the page, for a clip that should read as content rather than a framed object.",
+    props: {
+      stroke: "#000000", strokeWidth: 1, cornerRadius: 0, opacity: 1,
+      shadow: { dx: 0, dy: 14, blur: 0, color: "#000000", opacity: 0.5 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Vintage TV",
+    description: "A thick rounded plastic bezel with a soft vignette-like edge feather, the way an old CRT set's curved screen falls off toward its corners.",
+    props: {
+      stroke: "#3a2e22", strokeWidth: 26, cornerRadius: 34, opacity: 1,
+      shadow: { dx: 0, dy: 8, blur: 16, color: "#000000", opacity: 0.45 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 4, gaussianBlur: BLUR_OFF,
+      ...NO_CROP,
+    },
+  },
+  {
+    name: "Frosted Preview",
+    // BORDER + BLUR WEIGHT ARE A HARNESS ACCOMMODATION, flagged: `opacity`
+    // fades the widget's own CONTENT (decorateStrokedBox forces the wrapper to
+    // 1, the image.js Faded Watermark precedent), and `gaussianBlur`/`softEdges`
+    // act on the drawn silhouette — with no decoded frame in bare node, a thin
+    // 3px border at those settings measured byte-identical to the untouched
+    // default. 15px + a stronger blur is what clears
+    // tests/preset_p2_test.js's empty-content gate today; REVISIT toward the
+    // original lighter values once a browser-based gate can render real content.
+    description: "A translucent-reading soft-edged tile with a light blur at the border, the way a paused preview looks behind a loading veil.",
+    props: {
+      stroke: "#ffffff", strokeWidth: 15, cornerRadius: 14, opacity: 0.8,
+      shadow: { dx: 0, dy: 4, blur: 14, color: "#000000", opacity: 0.2 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 4, gaussianBlur: 6,
+      ...NO_CROP,
+    },
+  },
+];
 
 export const videoPlugin = {
   type: "video",
@@ -118,6 +299,10 @@ export const videoPlugin = {
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     src: UNSOURCED,
+    // THE POSTER (see the header's THUMBNAIL section). `null` is the honest
+    // "nothing set" — and the one that costs a pre-poster deck nothing, since a
+    // null leaf is the delete sentinel and folds straight back to absent.
+    ...defaults("thumbnail", "showThumbnail"), // thumbnail: null, showThumbnail: false
     // Playback + animated flags all default true — sourced from the SHARED
     // PROPERTY REGISTRY (core/properties.js): autoplay/loop/muted/animated each
     // declare `default: true` there, so this stays in sync with the rows below.
@@ -143,6 +328,13 @@ export const videoPlugin = {
     // registry default: video.src stores the served /asset/<project>/<file>
     // path, unlike filmstrip's bare-filename form).
     videoSrcRow("Source"),
+    // THE POSTER + ITS TOGGLE (see the header's THUMBNAIL section). Directly
+    // under the Source row because they are the same question about the same
+    // widget — WHAT it shows — and above the playback flags, which are about HOW
+    // the clip runs once it is the thing being shown. `showThumbnail` carries its
+    // own `visibleWhen` in the registry, so it simply is not there until a
+    // thumbnail is set.
+    ...props("thumbnail", "showThumbnail"),
     // Boolean playback rows + the animated flag (BooleanField — the keyframeable
     // boolean control), all from the registry so their help texts are shared.
     ...props("autoplay", "loop", "muted", "animated"),
@@ -156,6 +348,7 @@ export const videoPlugin = {
     ...props("opacity"),
     ...bundle("effects"),
   ],
+  presets: VIDEO_PRESETS,
   /**
    * Pure function. State → display-list commands (local space) — THE render
    * API. The `ref` IS the source string: raster backends resolve it (the GPU
@@ -181,17 +374,35 @@ export const videoPlugin = {
    * implied: a control that reports nothing is exactly the defect class this app
    * keeps finding.
    *
+   * THE THUMBNAIL BRANCH (see the header's THUMBNAIL section): with
+   * `showThumbnail` on AND a thumbnail set, this emits an `image` op for the
+   * poster instead of the `video` op — same rect, same source rect, same opacity,
+   * so every decoration below applies unchanged. Still PURE: which branch runs is
+   * a function of state alone.
+   *
    * EDGE-CROP INSETS + BORDER + ROUNDED CORNERS: identical to the image widget
    * (cropInsetsToSource shrinks the quad + crops the source; decorateStrokedBox
    * frames the cropped rect). See image.js/decorate.js for the world + opacity
    * contracts. All-zero crop + no border → the bare video op (unchanged).
    */
   emit(s, _targetWorldIR, world) {
-    if (typeof s.src !== "string" || s.src.length === 0) return [];
+    const showingThumbnail = s.showThumbnail === true && hasThumbnail(s);
+    // THE SOURCE GATE READS WHICHEVER SOURCE IS ACTUALLY BEING DRAWN. A poster-
+    // showing widget with no `src` is a perfectly good picture, so gating on the
+    // clip would blank it for a reason that does not apply to what it draws.
+    const ref = showingThumbnail ? s.thumbnail : s.src;
+    if (typeof ref !== "string" || ref.length === 0) return [];
     const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
     if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
     const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
-    const quad = video({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+    // ONE RECT, TWO OPS. `image()` and `video()` take the SAME rect + source-rect +
+    // opacity arguments, so the poster inherits the clip's fit and crop semantics
+    // by construction rather than by a second implementation of them — the crop
+    // insets, border, rounding and effects below are computed once and are
+    // identical either way. That is the whole reason the branch is this narrow.
+    const quad = showingThumbnail
+      ? image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh })
+      : video({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): shadow/bloom silhouette the FRAMED video, border included.
     return applyEffects(decorateStrokedBox([quad], style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });

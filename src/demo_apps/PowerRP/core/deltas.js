@@ -18,6 +18,7 @@
 import { interpolate } from "./interpolators.js";
 import { blendUnderMode, defaultModeFor, interpKeyFor, isInterpKey, modeClaimsTrees, modeForBlend, modeParamsFrom } from "./interp_modes.js";
 import { MORPH_KEY, morphModeForBlend, morphModeIsActive, universalMorphToken } from "./morph_property.js";
+import { componentDeltaIsColor, lerpedColorComponents, resolveColorComponentDelta } from "./vector_values.js";
 
 /** Delete sentinel. A delta leaf of NONE deletes the key from the state. */
 export const NONE = null;
@@ -187,6 +188,40 @@ function mutBlendApply(state, delta, alpha) {
     }
     if (val === NONE) {
       delete state[key];
+    } else if (componentDeltaIsColor(val)) {
+      // ── THE COLOUR-COMPONENT SEAM (R7-38; core/vector_values.js owns the
+      // rules and the sentences). A channel keyframe writes a REAL delta at a
+      // REAL path — `fill.color.r` — and this is where that delta is RESOLVED
+      // against the base colour instead of merged into it.
+      //
+      // IT MUST PRE-EMPT THE `isTree` ARM BELOW, which is the whole bug this
+      // fixes. That arm sees `{color: {r: 255}}` over the string "#7aa2f7",
+      // finds the state is not a tree, does `state[key] = {}` and recurses —
+      // producing `{fill: {color: {r: 255}}}`, with the author's colour GONE.
+      // And that object is the shape `render_gpu/ir.js isGradientPaint` reads as
+      // a gradient (every non-array object is one), so the next frame throws on
+      // a stopless gradient. Measured before this branch existed.
+      //
+      // THE GUARD IS FOUR CHEAP TESTS AND IT IS FALSE FOR EVERY LEGACY DELTA
+      // (componentDeltaIsColor: one key, named `color`, object-valued, all
+      // declared axes). A gradient patch, a paint switch, a whole-colour write
+      // and a sparse list keyframe each fail one of them and fall through to the
+      // arms they have always taken, byte-identically.
+      //
+      // THE TWEEN IS THE POINT ("it can be interp'd"): the channels lerp from
+      // the BASE colour's own values, so keying R animates R and leaves G and B
+      // where the base put them. At alpha 1 `lerpedColorComponents` returns the
+      // targets exactly, so the endpoint law above holds channel-wise.
+      //
+      // A REFUSING PAINT (off/material/crossfade) LEAVES THE STATE UNTOUCHED.
+      // The fold cannot speak — it runs per frame, and throwing would take the
+      // app down over a document that is merely wrong — so the paint is provably
+      // unchanged and the surfaces that CAN speak (the Inspector row, the
+      // equation error path) report the sentence. Never a corrupted paint, and
+      // never a half-write that pretends it landed.
+      const components = alpha >= 1 ? val.color : lerpedColorComponents(state[key], val.color, alpha);
+      const resolved = resolveColorComponentDelta(state[key], components, key);
+      if (resolved.paint !== undefined) state[key] = resolved.paint;
     } else if (isTree(val)) {
       // STRUCTURAL keyframing — a sparse per-element LIST keyframe: an
       // object-shaped delta over an ARRAY state addresses elements by index

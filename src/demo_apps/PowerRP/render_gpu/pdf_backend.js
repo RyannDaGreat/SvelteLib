@@ -61,7 +61,7 @@ import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { richTextDraws } from "../core/richtext.js";
 import { fitBox, pointsBounds, inflateRect } from "../core/geometry.js";
-import { tokenizePathD, transformPathD, matIdentity } from "../core/svg_paths.js"; // THE grammar walker — older and complete; this file's local tokenizer knew only MathJax's subset
+import { normalizedRuns as coreNormalizedRuns } from "../core/svg_paths.js"; // THE grammar walker — older and complete; this file's local tokenizer knew only MathJax's subset, and the walker that replaced it now lives in core beside the transformPathD it is built on
 import { intersectRect, aabbOfMappedRect } from "../core/clip.js"; // THE declared clip primitives — this file carried a byte-identical intersectRect for a day after clip.js unified it, and folded four mapped corners by hand in two more places
 
 /**
@@ -420,6 +420,15 @@ export function svgPathBounds(d) {
  * Pure function. `d` reduced to one explicit run per drawing command:
  * `[["M",x,y], ["L",x,y], ["C",…6], ["Q",…4], ["Z"]]`, absolute, in the order drawn.
  *
+ * ── IT IS core/svg_paths.js's NOW, AND THIS IS A PDF-PRECISION BINDING ────────
+ * The walker moved to core/svg_paths.js beside the `transformPathD` it was always
+ * built on, because core/'s OWN `pathsBounds`/`pathPoints` were a command-blind
+ * regex scrape of every number in the string and needed exactly this reading (that
+ * docblock carries the measurements). This export stays because the PDF writer's
+ * precision is not core's default: it binds PDF_PATH_DECIMALS so normalization
+ * cannot round below what `pdfNum` writes. Re-exported so the parity test and
+ * `svg_backend.js` keep importing the grammar from the file that emits it.
+ *
  * ── WHY THIS REPLACED A LOCAL TOKENIZER, AND WHY THAT TOKENIZER WAS ONCE RIGHT ──
  * This file used to carry its own `tokenizeSvgPath`, which split on command letters
  * and put every number up to the next letter into ONE run. Its docblock said what it
@@ -462,12 +471,7 @@ export function svgPathBounds(d) {
  * @example normalizedRuns("M0 0H10") // [["M",0,0],["L",10,0]] (H is baked to an absolute L)
  */
 export function normalizedRuns(d) {
-  const runs = [];
-  for (const t of tokenizePathD(transformPathD(d, matIdentity(), PDF_PATH_DECIMALS))) {
-    if (typeof t === "string") runs.push([t]);
-    else runs[runs.length - 1].push(t);
-  }
-  return runs;
+  return coreNormalizedRuns(d, PDF_PATH_DECIMALS);
 }
 
 /**
@@ -1764,11 +1768,21 @@ function emitVector(cmd, world, out, ctx) {
       break;
     }
     case "polyline": {
+      // OFF ink (parsePaint → null) draws nothing, like the polygon case below.
+      if (!cmd.color) break;
+      // A GRADIENT INK TAKES THE EXISTING GRADIENT-STROKE DEGRADATION, not a new
+      // one. PDF has no stroked-gradient primitive, so every gradient STROKE in
+      // this backend already degrades to its first stop with a loud one-time report
+      // (gradientStrokeSolid, shared with the rect/ellipse/path branches) — a
+      // polyline's ink is a stroke, so it joins that rule rather than minting a
+      // second answer. The op is now REPORTED where before it silently flattened at
+      // the ir.js builder with nothing said at any layer.
+      const ink = isGradientPaint(cmd.color) ? gradientStrokeSolid(cmd.color) : cmd.color;
       // The op's OWN contract, not a widget knob — the same two names the painter
       // and svg_backend read, so the three cannot spell it differently. No `cmd` to
       // paintSetup: a stamped strokeJoin must not reach an op that fixes its own
       // corners (paintSetup's identity `j` is then immediately overridden here).
-      ops.push(...paintSetup(null, cmd.color, cmd.width, cmd.opacity, ctx));
+      ops.push(...paintSetup(null, ink, cmd.width, cmd.opacity, ctx));
       ops.push(`${pdfCapCode(POLYLINE_CAP)} J ${pdfJoinCode(POLYLINE_JOIN)} j`);
       ops.push(pointsPath(cmd.points), "S");
       break;

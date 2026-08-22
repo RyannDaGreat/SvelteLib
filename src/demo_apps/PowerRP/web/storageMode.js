@@ -69,13 +69,20 @@ const PROBE_PATH = "/api/projects/";
  *    mirror already in app.svelte.js covers same-browser copy/paste, which is
  *    what static mode keeps.
  *  - THUMBNAIL PERSISTENCE needs the server's disk cache; thumbnails still
- *    render in-session (ensureAssetThumbnail already degrades loudly-once here). */
+ *    render in-session (ensureAssetThumbnail already degrades loudly-once here).
+ *  - GIF→MP4 TRANSCODE needs ffmpeg (server.py transcode_uploaded_gif). This is
+ *    the one entry whose absence is INVISIBLE rather than merely unavailable: a
+ *    GIF still uploads and still lands on the canvas, just frozen at frame one —
+ *    which is precisely what an animated GIF looked like everywhere before the
+ *    transcode existed. So the sentence is attached to the upload that just
+ *    happened (web/gifVideo.js gifStaticRefusal), not to a dead button. */
 export const UNAVAILABLE_IN_STATIC = {
   renderJobs: "Render jobs need the PowerRP project server (they run ffmpeg in a detached process). Use in-page video export instead.",
   serverMp4: "Server-side MP4 encoding needs ffmpeg on a backend. The in-page encoder still works.",
   videoDuration: "Measuring a clip's length needs ffprobe on a backend. Enter the duration manually.",
   serverClipboard: "The cross-presentation clipboard needs a backend session. Copy/paste within this browser still works.",
   thumbnailCache: "Thumbnails are rendered fresh each session (persisting them needs a backend disk cache).",
+  gifTranscode: "Playing an animated GIF needs a backend to convert it to MP4 with ffmpeg (no browser can play a GIF as video), so it shows its first frame only. Convert it yourself and upload the MP4 to animate it.",
 };
 
 /** The resolved mode: "http" | "local" | null before detect() has run. Read

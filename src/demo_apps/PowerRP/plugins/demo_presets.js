@@ -656,6 +656,130 @@ export const MOUSE_CURSOR = {
   },
 };
 
+// ── THE PER-FRAME TRIGGER CHAIN (core/exec_frame.js) ─────────────────────────
+
+/** Column pitch for the trigger chain, in world units. Wide enough that a
+ *  default-width trigger card (EXEC_NODE_W = 170) leaves a wire long enough to read
+ *  as a curve rather than a butt joint — core/audio_patches.js's own criterion. */
+const TRIGGER_COL = 220;
+/** Row pitch, for the two nodes that hang below the chain's spine. */
+const TRIGGER_ROW = 130;
+/** The cycle, in seconds. `time mod PERIOD >= 1` is high for the second half of every
+ *  period, so the trigger sees exactly one rising edge per period — which is the
+ *  user's "increments once every 2 seconds" (2026-08-12). */
+const TRIGGER_PERIOD = 2;
+
+/**
+ * THE PER-FRAME TRIGGER PRESET — the user's own chain, node for node.
+ *
+ * > *"A demo would be time node, going into a modulo 2 node, and an is == 0 and is==
+ * > to a number==1 nodes, then feed that into a schmitt trigger, which feeds into a
+ * > node that hooks into a set global var node, that sets the var to a value upon
+ * > triggering, which in this case is that var node's read output connected to a ++
+ * > node, so it increments once every 2 seconds, connected to a number display node.
+ * > On frames where triggers fire, the wires connecting them should change color to
+ * > show that something happened."* (user, 2026-08-12)
+ *
+ * IT IS ORDINARY WIDGETS AND ORDINARY WIRES, which is this file's whole rule — *"these
+ * are normal basic ass vanilla widgets … but with pre-filled equations"*. There is no
+ * `trigger_demo` plugin and adding one would be the mistake this file exists to
+ * prevent. Every node here is one an author can insert from the palette and wire by
+ * hand; the preset only saves them the dragging.
+ *
+ * ── THE ONE PLACE THE SKETCH AND THE ARCHITECTURE DISAGREE, STATED OUT LOUD ──
+ * The sketch wires the variable's read output BACK into the `++` node, which is a
+ * CYCLE: the var feeds `++`, `++` feeds the setter, the setter writes the var.
+ * `connectionRefusal` refuses that at connect time, and it would also mean the
+ * document is written once every two seconds — so a saved deck's bytes would depend
+ * on how long it had been played. So the counter OWNS its tally (SIMULATED state, in
+ * the simulation table) and the Set Var node is a PUBLICATION of it, which is
+ * `plugins/node_counter.js`'s own argument moved to the frame axis. The chain is
+ * therefore a straight line with no back edge, and it does exactly what the sketch
+ * asked for: one increment every two seconds, on the display.
+ * `plugins/node_increment.js`'s header carries the full reasoning.
+ *
+ * ── WHY `>= 1` AND NOT THE SKETCH'S TWO EQUALITY NODES ─────────────────────
+ * The sketch names an `== 0` and an `== 1` node. Against a CONTINUOUS `time mod 2`,
+ * exact equality is almost never true — the clock would have to land on the integer
+ * to the last float — so a pair of `==` nodes would fire on a frame or two per
+ * MINUTE, at random, or never. That is the trap `plugins/node_compare.js`'s header
+ * documents (equality is exact and deliberately has no epsilon), and the honest
+ * reading of "is it in the second half of the cycle" is `>= 1`. The Compare node
+ * ships with all six comparisons, so an author who wants the literal `==` has it.
+ *
+ * @example // TRIGGER_CHAIN.items({id: (n) => n, centre: {x: 640, y: 360}, registry}).length // 8
+ */
+export const TRIGGER_CHAIN = {
+  id: "trigger-chain",
+  title: "Per-Frame Trigger Chain",
+  icon: "mdi:flash-triangle-outline",
+  help: "The per-frame trigger demo: a clock through a modulo and a comparison into a Schmitt trigger, which pulses a counter once every two seconds and publishes the tally to a display. Ordinary node widgets wired by hand — the Schmitt trigger and the counter carry state between frames (SIMULATED), so the deck renders in contiguous frame ranges. Present it and watch the exec wires flash white on the frames the trigger fires.",
+  items({ id, centre }) {
+    // The chain lays out left to right in SIGNAL ORDER — the Reaktor convention
+    // core/audio_patches.js states — centred on the insertion point.
+    const x0 = centre.x - TRIGGER_COL * 3;
+    const y0 = centre.y - TRIGGER_ROW / 2;
+    const at = (col, row = 0) => ({ x: x0 + col * TRIGGER_COL, y: y0 + row * TRIGGER_ROW });
+    const wire = (name, port) => ({ item: id(name), port });
+    return [
+      { name: "clock", state: { type: "node_time", name: "Clock", ...at(0), rate: 1, offset: 0, inputs: {} } },
+      // The modulo's divisor as an ordinary Number node, so the "2" in "every 2
+      // seconds" is a knob on the canvas rather than a constant buried in a wire.
+      { name: "period", state: { type: "node_number", name: "Period", ...at(0, 1), value: TRIGGER_PERIOD, inputs: {} } },
+      {
+        name: "mod",
+        state: {
+          type: "node_math", name: "Modulo", ...at(1), op: "mod",
+          inputs: { a: wire("clock", "out"), b: wire("period", "out") },
+        },
+      },
+      {
+        name: "compare",
+        state: {
+          type: "node_compare", name: "Second half?", ...at(2), op: "ge", b: 1,
+          inputs: { a: wire("mod", "out") },
+        },
+      },
+      {
+        name: "trigger",
+        state: {
+          type: "node_schmitt", name: "Schmitt", ...at(3),
+          // A ZERO-WIDTH BAND, because the input is already a clean 0/1 from the
+          // Compare node and there is no noise to debounce. The hysteresis is there
+          // for a continuous input; wiring `mod` straight in and widening the band
+          // is the variation worth trying, and is why both thresholds are rows.
+          low: 0.5, high: 0.5, mode: "rise", level: 0,
+          inputs: { in: wire("compare", "out") },
+          exec: { then: wire("count", "run") },
+        },
+      },
+      {
+        name: "count",
+        state: {
+          type: "node_increment", name: "Counter", ...at(4), start: 0, step: 1,
+          inputs: {},
+          exec: { then: wire("publish", "run") },
+        },
+      },
+      {
+        name: "publish",
+        state: {
+          type: "node_set_var", name: "Published", ...at(5), initial: 0, value: 0,
+          inputs: { value: wire("count", "out") },
+          exec: {},
+        },
+      },
+      {
+        name: "display",
+        state: {
+          type: "node_display", name: "Ticks", ...at(6), decimals: 0,
+          inputs: { in: wire("publish", "out") },
+        },
+      },
+    ];
+  },
+};
+
 /**
  * THE DEMO PRESET ROSTER — the ONE array both consumers read, and both live in
  * web/demoInsert.js: `presetTemplate` turns each record into an insertable template
@@ -667,7 +791,7 @@ export const MOUSE_CURSOR = {
  * which is the same rule DEMO_PATCHES follows and for the same reason: a preset that
  * exists in the data and not in the menu is a feature nobody can find.
  */
-export const DEMO_PRESETS = [DOUBLE_PENDULUM, THREE_BODY, MOUSE_CURSOR];
+export const DEMO_PRESETS = [DOUBLE_PENDULUM, THREE_BODY, MOUSE_CURSOR, TRIGGER_CHAIN];
 
 /**
  * Pure function. A preset's items as `{id → state}` in creation order, with every

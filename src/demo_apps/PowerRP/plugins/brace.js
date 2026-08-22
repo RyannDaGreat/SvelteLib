@@ -79,6 +79,12 @@ const PRESETS = [
   { name: "Soft Chevron", description: "A chevron with its point rounded off: straight arms, curved apex.", props: { curl: 1, shoulder: 0 } },
   { name: "Half Curl", description: "Halfway between square and curly — the corners are eased rather than rounded.", props: { curl: 0.5, shoulder: 1 } },
   { name: "Wide Shoulders", description: "Curly, but the arms hug the span more tightly before turning out to the point.", props: { curl: 1, shoulder: 0.65 } },
+  { name: "Crisp Bracket", description: "Nearly square corners over an almost-full bracket profile — a bracket with just the hard edge taken off.", props: { curl: 0.25, shoulder: 0.85 } },
+  { name: "Gentle Point", description: "Mostly straight arms with a softened point — closer to a chevron than a bracket, but not quite either.", props: { curl: 0.35, shoulder: 0.15 } },
+  { name: "Tight Curl", description: "Rounded corners on arms that hug the span closely before angling in to the point — a curly brace drawn narrow.", props: { curl: 0.85, shoulder: 0.35 } },
+  { name: "Slender Curl", description: "Fully rounded corners with the shoulders pulled way in — a thin curly point on a short bracket profile.", props: { curl: 1, shoulder: 0.15 } },
+  { name: "Narrow Bracket", description: "Sharp square corners with the shoulders pulled in short — a compact bracket rather than the full-profile square brace.", props: { curl: 0, shoulder: 0.3 } },
+  { name: "Balanced Blend", description: "Dead centre of the curl/shoulder square — half-rounded corners over a half-length bracket profile, evenly between every named look.", props: { curl: 0.5, shoulder: 0.5 } },
 ];
 
 /**

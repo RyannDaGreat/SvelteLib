@@ -64,8 +64,8 @@ function test(name, fn) {
 const registry = createRegistry();
 registerAll(registry, createCommands());
 
-/** The five connectors, DERIVED from the roster (every plugin spreading the
- *  endpoint-pair hooks and shipping presets) rather than listed, so a sixth is
+/** The connectors, DERIVED from the roster (every plugin spreading the
+ *  endpoint-pair hooks and shipping presets) rather than listed, so a new one is
  *  swept the day it is registered. */
 const CONNECTORS = registry.all().filter((p) => p.editPoints && p.moveBy && p.closestToward && (p.presets ?? []).length);
 
@@ -87,9 +87,23 @@ async function frame(plugin, props) {
 // "Nothing applied" for a widget is the canvas with no widget on it.
 const BLANK = readPng(await renderToPng([], VIEW, { width: W, height: H }));
 
+// A PROPERTY, NOT A TRANSCRIPT. This assertion used to be a `deepEqual` against a
+// hardcoded list of seven type names, which DEFEATED the derivation three lines
+// above: the filter exists so a newly registered connector is swept automatically,
+// and a transcript makes that automatic sweep a guaranteed FAILURE instead. That is
+// not hypothetical — `corkboardYarn` was registered, the sweep picked it up exactly
+// as designed, and the transcript turned that success into a red test at HEAD. The
+// list was also self-contradicting (its comment said "five" while naming seven),
+// which is what a hand-maintained copy of a derived set decays into.
+//
+// So assert what the sweep must be TRUE OF, not what it happened to contain: that
+// the filter matched anything at all (a registry refactor that broke the hook names
+// would silently sweep NOTHING and every per-connector test below would vanish with
+// no red), and that each match really carries the presets the sweep will render.
 test("the sweep found the connector preset tables at all", () => {
-  assert.deepEqual(CONNECTORS.map((p) => p.type).sort(),
-    ["arrow", "brace_curly", "brace_square", "curved_arrow", "elbow_arrow", "fancy_arrow", "line"]);
+  assert.ok(CONNECTORS.length > 0, "the endpoint-pair filter matched no plugins — the sweep below would be empty");
+  for (const p of CONNECTORS)
+    assert.ok(p.presets.length > 0, `${p.type} was swept but ships no presets`);
 });
 
 for (const plugin of CONNECTORS) {

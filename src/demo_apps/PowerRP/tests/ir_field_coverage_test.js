@@ -123,7 +123,15 @@ const CASES = {
   },
   polyline: {
     build: (o) => ir.polyline({ points: [[0, 0], [5, 5], [10, 0]], width: 2, color: "#000", ...o }),
-    variants: { points: { points: [[0, 0], [9, 9]] }, width: { width: 6 }, color: { color: "#0f0" }, opacity: { opacity: 0.5 } },
+    // `color` moves to a GRADIENT, not merely to another solid. This op's ink was
+    // the last one parsed with parseColor, which silently reduced a gradient to its
+    // first stop — and a solid→solid variant could never see that, because both
+    // spellings survive the reduction. The variant that would have caught it is the
+    // one that changes paint KIND, so that is the one this table now carries.
+    variants: {
+      points: { points: [[0, 0], [9, 9]] }, width: { width: 6 }, opacity: { opacity: 0.5 },
+      color: { color: { type: "linearGradient", linear: { stops: [{ offset: 0, color: "#f00" }, { offset: 1, color: "#00f" }], angle: 0 } } },
+    },
   },
   polygon: {
     build: (o) => ir.polygon({ points: [[0, 0], [10, 0], [5, 8]], fill: "#0f0", ...o }),

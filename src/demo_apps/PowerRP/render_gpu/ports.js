@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, applyStrokeSpace, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
 import { morphPaths, payloadToPathD, assertMorphPaths, midMorphFillRule } from "../core/morph.js";
 import { statePaint, STATE_PAINT_MARK } from "../core/morph_payload.js";
 import { isVisibleFxToken, visibleLevel, isPaintShaped, modeParams, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
@@ -358,6 +358,18 @@ export function sceneIR(nodes, ctx = {}) {
     scene3d: ctx.scene3d ?? null,
     liveAnalysis: ctx.liveAnalysis ?? null,
     live: ctx.live === true,
+    // THE INTERACTION-LOD FLAG (user, 2026-08-12: paper peacock "It's laggy to
+    // drag around"). False for exactly one thing: a frame painted DURING a live
+    // pointer gesture in the editor, where a PDF widget must draw from the raster
+    // cache it already has instead of kicking a fresh pdf.js render for whichever
+    // scale bucket the drag is sweeping through right now.
+    //
+    // DEFAULTS TRUE, AND THAT DEFAULT IS THE CONTRACT: every non-editor consumer
+    // — exports, the presenter, thumbnails, cameraFrame, the CLI — passes nothing
+    // and therefore renders at full quality, unchanged to the byte. An export can
+    // never see a degraded frame, because an export has no pointer gesture to
+    // report and cannot accidentally opt in by omission.
+    interactive: ctx.interactive !== false,
   };
   const byId = new Map(nodes.map((n) => [n.itemId, n]));
   // ── THE WIRE LAYER (WORKSTREAM BN, user 2026-08-03: "the wires between nodes
@@ -610,13 +622,19 @@ function emitNodeBody(node, byId, display) {
   // `live` participates in that test so a surface that repaints but happens to
   // hold no PDF and no map still reaches its widgets — without it, the flag would
   // silently evaporate on exactly the scenes it matters for.
-  const renderCtx = display.pdfDisplay || display.mapTiles || display.scene3d || display.liveAnalysis || display.live
+  // `!display.interactive` joins the gate rather than only the object: it is the
+  // one field whose INTERESTING value is falsy, so a frame that carries nothing but
+  // "a gesture is live" would otherwise collapse to a null renderCtx and the LOD
+  // would never reach emit(). The other five are truthy-when-present, which is why
+  // a bare truthiness chain was sufficient until now.
+  const renderCtx = display.pdfDisplay || display.mapTiles || display.scene3d || display.liveAnalysis || display.live || !display.interactive
     ? {
         pdfDisplay: display.pdfDisplay?.get(node.itemId) ?? null,
         mapTiles: display.mapTiles?.get(node.itemId) ?? null,
         scene3d: display.scene3d?.get(node.itemId) ?? null,
         liveAnalysis: display.liveAnalysis?.get(node.itemId) ?? null,
         live: display.live,
+        interactive: display.interactive,
       }
     : null;
   // emit() gets a subtree as arg 2 (a group's members' IR, or a crop box's target
@@ -714,7 +732,7 @@ function emitNodeBody(node, byId, display) {
   // an op, so resolveMaterialFillPaints above never saw it — manimIR resolves it
   // itself, and a scene-sampling material needs the scene (manimSketchStroke).
   const inked = manimIR(node, cmds, byId);
-  const body = applyActiveFade(fxState, applyStrokeJoin(fxState, applyStrokeOffset(fxState, applyStrokeTrim(fxState, applyNodeEffects(fxNode, inked)))));
+  const body = applyActiveFade(fxState, applyStrokeSpace(fxState, applyStrokeJoin(fxState, applyStrokeOffset(fxState, applyStrokeTrim(fxState, applyNodeEffects(fxNode, inked))))));
   // THE OWNER TAG — this node's identity, hung on the ONE push that opens its op
   // run, so the PAINT-TIME boundary can name the item it had to contain
   // (render_gpu/skia/paint_skia.js paintFlat; flattenIR carries the tag down onto

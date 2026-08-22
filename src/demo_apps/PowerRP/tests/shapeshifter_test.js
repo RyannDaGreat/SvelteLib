@@ -253,21 +253,30 @@ test("family presets: ≥10, unique names, declared knobs, in-range, non-degener
 
       for (const [key, val] of Object.entries(preset.props)) {
         const row = rowByKey.get(key);
-        assert.ok(row, `${fam.type} "${preset.name}": prop "${key}" is a declared knob`);
-        if (row.kind === "number") {
+        // A preset prop must be a declared knob OR a family-defaults state slot:
+        // callout's tailX/tailY are real state controlled by an on-canvas handle
+        // with deliberately no Inspector row (stated at its defaults), and the
+        // roster-wide preset_contract_test's rule is defaults-or-rows for the
+        // same reason. Row-shape validation applies only where a row exists.
+        assert.ok(row || key in fam.defaults, `${fam.type} "${preset.name}": prop "${key}" is a declared knob or defaults slot`);
+        if (row && row.kind === "number") {
           assert.equal(typeof val, "number", `${fam.type} "${preset.name}": numeric knob "${key}" gets a number`);
           assert.ok(Number.isFinite(val), `${fam.type} "${preset.name}": knob "${key}" is finite`);
           if (row.min !== undefined) assert.ok(val >= row.min, `${fam.type} "${preset.name}": "${key}"=${val} ≥ min ${row.min}`);
           if (row.max !== undefined) assert.ok(val <= row.max, `${fam.type} "${preset.name}": "${key}"=${val} ≤ max ${row.max}`);
-        } else if (row.kind === "select") {
+        } else if (row?.kind === "select") {
           assert.ok(row.options.includes(val), `${fam.type} "${preset.name}": "${key}"="${val}" is a declared option`);
-        } else if (row.kind === "boolean") {
+        } else if (row?.kind === "boolean") {
           assert.equal(typeof val, "boolean", `${fam.type} "${preset.name}": boolean knob "${key}" gets a boolean`);
         }
       }
 
       // The preset must actually draw: fold props over defaults and run outline().
-      const subs = fam.outline({ ...fam.defaults, ...preset.props });
+      // Fold over the PLUGIN's defaults, not the family's four knobs: presets are
+      // applied to a real item in the app, and outline() reads box geometry (w/h)
+      // that only the built plugin's defaults carry. The family-only fold NaN'd
+      // every radialSweep preset the first time that family ever HAD presets.
+      const subs = fam.outline({ ...makeFamilyPlugin(fam).defaults, ...preset.props });
       assert.ok(subs.length >= 1, `${fam.type} "${preset.name}": outline has ≥1 subpath`);
       for (const sp of subs) {
         assert.ok(sp.length >= 3, `${fam.type} "${preset.name}": each subpath is a polygon`);

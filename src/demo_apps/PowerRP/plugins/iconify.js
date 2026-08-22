@@ -109,7 +109,7 @@ import { morphPayloadFromOps } from "../core/morph_payload.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
-import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../core/properties.js";
+import { BUNDLES, bundle, bundleNestedDefaults, customProps, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { decorateSilhouetteBorder } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
@@ -578,10 +578,85 @@ const CUSTOM = customProps([
   },
 ]);
 
+// ICON TREATMENTS (R7-39 presets law) — the catalog is 200k+ icons, so this
+// family is deliberately NOT an icon-choice table (no preset ever writes
+// `icon`, per PLACEMENT_KEYS' spirit and the "a preset changes the look, not
+// the content" convention `plugins/image.js` states for `src`); it is a table
+// of named ways to FINISH whatever icon the author already picked. Every row
+// is a total overlay over: `ink` (currentColor resolution), `fill` (the
+// stencil-recolour paint row, default off), the `strokedBorder` bundle
+// (stroke/strokeWidth/cornerRadius + the five stroke-trim keys), `opacity`,
+// and the six-key effects bundle — so hovering any row after any other leaves
+// nothing behind (`plugins/group.js`'s identity law, restated here).
+//
+// THE TWO-LAYER COLOUR MODEL DECIDES WHICH ROWS EACH TREATMENT LEANS ON. A
+// mono set (tabler, mdi, lucide…) draws `stroke="currentColor"`, so `ink`
+// alone recolours it; a full-colour set (logos:*, twemoji…) ignores `ink`
+// entirely and only the `fill` stencil can retint it. A treatment that wants
+// to work on BOTH kinds of icon (the safer default for a general preset table)
+// sets `ink` to match its intended colour AND leaves `fill` off — the ink
+// still governs the common case, and a full-colour icon simply keeps its own
+// colours (the documented off behaviour) rather than silently failing to
+// tint. Treatments that explicitly want a FORCED single colour (stencil
+// recolour, engraved, watermark) turn `fill` on so a multi-colour icon is
+// dragged into line too.
+//
+// THE SIX-KEY EFFECTS SET IS DERIVED, NOT TRANSCRIBED (the rect/image/group
+// precedent) — the day BUNDLES.effects grows a seventh member, this throws at
+// import time with the new head named, instead of every preset row silently
+// leaking the previous row's value on hover.
+const EFFECT_HEADS = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
+if (EFFECT_HEADS.length !== 6)
+  throw new Error(`iconify presets: BUNDLES.effects grew a new head (${EFFECT_HEADS.join(", ")}) — add its OFF identity below and extend every preset row`);
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLUR_OFF = 0; // gaussianBlur's identity: 0 = no blur
+const EFFECTS_OFF = { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF };
+
+// THE STROKE-TRIM IDENTITY — same overlay reason as rect/image: the five trim
+// keys carry no DEFAULT (absent-is-legacy), so any row that touches the border
+// at all writes them explicitly, and "Outline Ghost" (which trims nothing)
+// still states the untrimmed identity rather than leaving a previous row's
+// gap in place after a hover.
+const TRIM_OFF = { strokeStart: 0, strokeEnd: 1, strokePhase: 0, strokeCapStart: "flat", strokeCapEnd: "flat" };
+
+// A neutral mid-grey — used by treatments that need a border/chip colour with
+// no colour opinion of its own (the ink is what carries the icon's identity).
+const CHIP_NEUTRAL = "#e8e8ec";
+
+const PRESETS = [
+  { name: "Glowing Badge", description: "A soft halo escaping the glyph itself: a bright cyan ink over a wide screen-blended bloom, so the icon reads as lit from within rather than drawn on top.",
+    props: { ink: "#5be8ff", fill: SVG_FILL_OFF, stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 1, ...TRIM_OFF, shadow: SHADOW_OFF, bloom: { radius: 24, strength: 0.7 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
+  { name: "Embossed Chip", description: "A raised metal tablet stamped with the glyph: a brushed-steel square chip under the icon, with a crisp offset shadow giving the whole tile physical height.",
+    props: { ink: "#2b2f36", fill: SVG_FILL_OFF, stroke: "#aab2bd", strokeWidth: 10, cornerRadius: 16, opacity: 1, ...TRIM_OFF, shadow: { dx: 2, dy: 4, blur: 6, color: "#000000", opacity: 0.45 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
+  { name: "Outline Ghost", description: "A near-invisible placeholder mark: low opacity, no fill stencil, no border at all — a glyph that reads as reserved space rather than authored content.",
+    props: { ink: "#9a9a9a", fill: SVG_FILL_OFF, stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 0.25, ...TRIM_OFF, ...EFFECTS_OFF } },
+  { name: "Filled Circle Chip", description: "A solid colour disc behind the glyph, the border bundle doing the work of the chip itself: a fully rounded stroke ring wide enough to read as a filled roundel.",
+    props: { ink: "#ffffff", fill: SVG_FILL_OFF, stroke: "#3fa9f5", strokeWidth: 40, cornerRadius: 999, opacity: 1, ...TRIM_OFF, shadow: { dx: 0, dy: 3, blur: 8, color: "#0a4a7a", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
+  { name: "Neon", description: "A tube-light sign of the glyph: a saturated magenta ink over a screen blend with a strong wide bloom, so the icon emits colour into the slide instead of sitting flat on it.",
+    props: { ink: "#ff2ec4", fill: SVG_FILL_OFF, stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 1, ...TRIM_OFF, shadow: SHADOW_OFF, bloom: { radius: 32, strength: 0.85 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
+  { name: "Stencil Recolor", description: "The FILL stencil forced on: every path of the glyph, mono or full-colour, takes one flat orange paint — the general answer for tinting a multi-colour set that Ink alone cannot reach.",
+    props: { ink: "#ff8a1e", fill: "#ff8a1e", stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 1, ...TRIM_OFF, ...EFFECTS_OFF } },
+  { name: "Drop-Shadow Sticker", description: "A die-cut sticker look: a thick white outline standing in for the cut edge, lifted off the page by a soft close shadow.",
+    props: { ink: "#1a1a1a", fill: SVG_FILL_OFF, stroke: "#ffffff", strokeWidth: 14, cornerRadius: 999, opacity: 1, ...TRIM_OFF, shadow: { dx: 0, dy: 6, blur: 12, color: "#000000", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
+  { name: "Engraved", description: "A mark cut INTO the surface rather than sitting on it: a dark stencil ink under a tight inner shadow, reading as debossed rather than printed.",
+    props: { ink: "#3a3a3a", fill: "#3a3a3a", stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 1, ...TRIM_OFF, shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 6, color: "#000000", opacity: 0.6 }, softEdges: 0, gaussianBlur: BLUR_OFF } },
+  { name: "App Icon Tile", description: "The home-screen idiom: a big rounded-square chip behind the glyph and a soft shadow under the whole tile, the way a phone launcher presents an app.",
+    props: { ink: "#ffffff", fill: SVG_FILL_OFF, stroke: "#4a6cf7", strokeWidth: 48, cornerRadius: 22, opacity: 1, ...TRIM_OFF, shadow: { dx: 0, dy: 10, blur: 20, color: "#000000", opacity: 0.3 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
+  { name: "Watermark Faint", description: "A background mark meant to be seen, not read: the fill stencil forced to a pale neutral grey at low opacity, sitting quietly behind slide content.",
+    props: { ink: CHIP_NEUTRAL, fill: CHIP_NEUTRAL, stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 0.18, ...TRIM_OFF, ...EFFECTS_OFF } },
+  { name: "Spotlight", description: "The glyph picked out of darkness: white ink inside a soft-edged black disc standing in for the vignette, so the icon reads as the one lit thing on an otherwise dark stage rather than merely glowing at its own edge.",
+    props: { ink: "#ffffff", fill: SVG_FILL_OFF, stroke: "#0a0a0a", strokeWidth: 70, cornerRadius: 999, opacity: 1, ...TRIM_OFF, shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 16, gaussianBlur: BLUR_OFF } },
+  { name: "Ink Stamp", description: "A rubber-stamped mark pressed onto paper: a dark stencil fill ringed by a rough circular stamp border, both under a multiply blend, so the whole mark can only darken what is behind it and reads as absorbed ink rather than a flat overlay.",
+    props: { ink: "#7a2e14", fill: "#7a2e14", stroke: "#7a2e14", strokeWidth: 18, cornerRadius: 999, opacity: 1, ...TRIM_OFF, shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "multiply", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
+];
+
 export const iconifyPlugin = {
   type: "iconify",
   ephemeral: EPHEMERAL.NONE,
   title: "Iconify Icon",
+  presets: PRESETS,
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // Double-click mounts the canvas-overlay palette (the cursor precedent);
   // floatingToolbar() below is its content — search bar + icon grid.

@@ -33,6 +33,12 @@
  *   1. EXEC SOURCES ARE FUNCTIONS OF POSITION. An event may fire only at a SLIDE
  *      BOUNDARY, and only because of what the document says at boundaries j−1 and j.
  *      No wall clock, no pointer, no frame counter, no state from frame N−1.
+ *      THIS IS A RULE ABOUT *THIS* DOMAIN, NOT ABOUT THE APP. A reader who arrives
+ *      here looking for PER-FRAME triggers should not leave concluding they are
+ *      forbidden: they are `core/exec_frame.js`, a SECOND domain built on R7-9's
+ *      SIMULATED state, with its own laws re-derived against the simulation table
+ *      instead of against the slide grid — and its own costs (contiguous-shard-only
+ *      rendering, no replay, `resetSimulation()` semantics) stated there.
  *   2. THE ONLY EFFECT IS `set <path> to <value>`. There is no `add`, no `toggle`,
  *      no read-modify-write — not "discouraged", ABSENT. `execEffect` is handed the
  *      state and returns `[[path, value]]` pairs; it is never handed a writer, so an
@@ -171,6 +177,17 @@ export function nodeExecKind(plugin, state) {
  *     someone duplicates a patch; tests/multipaste_test.js catches the itemRefs half
  *     from the other direction, and this catches both halves at declaration.
  *
+ * ── A FRAME-DOMAIN NODE FIRES FROM `frameStep`, NOT FROM `execEvent` ────────
+ * `core/exec_frame.js` is the SECOND domain, and its event sources fire once per
+ * RENDERED FRAME rather than at a slide boundary — so they declare `frameStep` where
+ * a slide-domain event declares `execEvent`. Both are "something that fires an exec
+ * pin", so both satisfy the same three gates above; only the name of the hook
+ * differs. Without this clause the gate reported a correct Schmitt trigger as having
+ * *"no `execEvent` predicate — nothing would ever fire it"*, which was false and
+ * pointed at the wrong fix. The `exec: {}` / EXEC_ITEM_REFS half of the gate applies
+ * to a frame node UNCHANGED and deliberately: its wire is stored the same way and a
+ * duplicated copy would fire at the original just as silently.
+ *
  * @param {object} plugin - a widget plugin
  * @param {object} [state] - a state to ask for ports
  * @returns {string|null} the problem sentence, or null
@@ -182,10 +199,26 @@ export function nodeExecKind(plugin, state) {
  * @example const wired = {type: "e", defaults: {exec: {}}, itemRefs: [["exec", "*", "item"]], ports: () => ({outputs: [{key: "then", type: "exec"}]})};
  * @example execKindProblem(wired).includes("no `execEvent` predicate") // true
  * @example execKindProblem({...wired, execEvent: () => true}) // null
+ * @example // a FRAME-domain node fires from `frameStep` instead, and is equally sound:
+ * @example execKindProblem({...wired, frameStep: () => ({})}) // null
  */
 export function execKindProblem(plugin, state) {
   const kind = nodeExecKind(plugin, state);
-  const hasPredicate = typeof plugin?.execEvent === "function";
+  const framed = typeof plugin?.frameStep === "function";
+  // A WIDGET WHOSE PORTS ARE AUTHORED CANNOT BE GATED STATICALLY, and declaring that
+  // is better than gating it wrongly. `plugins/node_custom.js` sets
+  // `authoredPorts: true`: its port list comes from a compiled user SPEC, so at its
+  // defaults it has whatever the starter spec says and at runtime whatever the author
+  // wrote — there is no fixed declaration for this function to check, and every
+  // sentence below would be guessing about a list it cannot see. The two failures the
+  // gate exists to catch are structurally impossible for it: it always carries a
+  // firing hook (`frameStep`), and `execNodeDefaults` always gives it `exec: {}` plus
+  // EXEC_ITEM_REFS. What its ports MEAN is checked where it can be — at compile, by
+  // core/custom_node.js, which refuses a bad port with a sentence.
+  if (plugin?.authoredPorts) return null;
+  // EITHER DOMAIN'S FIRING HOOK COUNTS — see the docblock. A frame node's
+  // `frameStep` is what fires its pins, exactly as `execEvent` is on the slide axis.
+  const hasPredicate = typeof plugin?.execEvent === "function" || framed;
   if (kind === "pure")
     return hasPredicate ? `exec_flow: "${plugin?.type}" declares an \`execEvent\` predicate but no exec output port — it could fire and nothing could hear it. Declare an exec output in ports().` : null;
   const outputs = declaredPorts(plugin, state ?? plugin?.defaults ?? {}).outputs;
@@ -331,6 +364,20 @@ function boundaryWrites(base, prev, registry, slideIndex, pending) {
     if (!state || state.active === false) continue;
     const plugin = registryPlugin(registry, state.type);
     if (!plugin || nodeExecKind(plugin, state) !== "event") continue;
+    // A FRAME-DOMAIN NODE IS NOT ONE OF THIS DOMAIN'S EVENTS, and skipping it here is
+    // not an optimisation — it is the difference between a working deck and a THROWN
+    // FRAME. `nodeExecKind` reads PORTS, and a Schmitt trigger's ports (an exec out,
+    // no exec in) are indistinguishable from an On Reveal's, so this walk classified
+    // it as an event and called the `execEvent` it does not have: "plugin.execEvent
+    // is not a function", out of app.svelte.js's `nodes()`, on every derive of any
+    // deck containing one. MEASURED by tests/execframe_probe.js — the node suites
+    // drive stepFrameDomain directly and never reach this walk, so nothing else could
+    // have caught it.
+    //
+    // The two domains' sources are told apart by WHICH HOOK THEY DECLARE, which is
+    // the same question `execKindProblem` asks and the same one
+    // `core/exec_frame.frameNodeIsSimulated` asks — never by a type list.
+    if (typeof plugin.execEvent !== "function") continue;
     const ctx = { id, self: state, inputs: graph[id]?.inputs ?? {}, prevInputs: prevGraph[id]?.inputs ?? {}, prevSelf: prev?.items?.[id] ?? null, state: base, prev, slideIndex };
     if (!plugin.execEvent(ctx)) continue;
     for (const p of declaredPorts(plugin, state).outputs) {

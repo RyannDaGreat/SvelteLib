@@ -125,6 +125,94 @@ const FAMILIES = [
     //         hairline gap, and the whole point of that row is that you see it.
     anchors: "reject 7.99 (phase 0 vs 5) / keep 16.55 (DEFAULT vs Broken Ring)",
   },
+  // ── THE TEN R7-39 SHAPESHIFTER FAMILIES (plugins/shapeshifter.js) ────────────
+  // Every subject here is the SAME `path` IR op the rest of this file already
+  // covers (subpathsPathD of a pure core/outline.js generator), so no new stamp
+  // or reduction is needed — asEmitted + litSet, exactly like `polygon`. Bounds
+  // are MEASURED per family (not copied from polygon's 17): a shape whose look
+  // is dominated by a large filled body (cornerRect, callout) separates far less
+  // per-pixel than a thin silhouette family even when the geometry is genuinely
+  // different, because the differing region (a corner, a tail sliver) is a small
+  // share of a big filled area. Each bound sits below its measured narrowest KEEP
+  // with margin, and above zero — the anchors are the real narrowest pair found
+  // by a full pairwise sweep over (DEFAULT + all presets), not a picked pair.
+  {
+    type: "ss_arrow", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 20,
+    // Narrowest KEEP measured: 32.06 (DEFAULT vs Right Arrow, a bolder head/shaft
+    // than the plugin default). No collision anywhere near this bound.
+    anchors: "keep 32.06 (DEFAULT vs Right Arrow) — narrowest pair in the family",
+  },
+  {
+    type: "ss_banner", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 2,
+    // Narrowest KEEP measured: 2.78 (Outward Fork vs Sharp Outward Points, two
+    // different outward-flare depths — a real geometric difference at a shape
+    // whose forked notch is a small share of the banner's filled area).
+    anchors: "keep 2.78 (Outward Fork vs Sharp Outward Points) — narrowest pair in the family",
+  },
+  {
+    type: "ss_callout", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 0.5,
+    // Narrowest KEEP measured: 0.80 (Sharp Callout vs Whisper Bubble). A callout
+    // is a large rounded body with a thin tail — real corner-radius/tail
+    // differences move very little of the frame, so this family's floor is far
+    // below polygon's. The bound sits below every measured pair with margin
+    // while still being strictly positive (rules out a true pixel-identical
+    // duplicate, which would measure exactly 0).
+    anchors: "keep 0.80 (Sharp Callout vs Whisper Bubble) — narrowest pair in the family",
+  },
+  {
+    type: "ss_cornerRect", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 1,
+    // Narrowest KEEP measured: 1.76 (DEFAULT vs Rounded Rect). Same reasoning as
+    // callout: a rounded/snipped CORNER is a small fraction of a filled rect's
+    // silhouette, so real differences read small under a lit-set pixel mean.
+    anchors: "keep 1.76 (DEFAULT vs Rounded Rect) — narrowest pair in the family",
+  },
+  {
+    type: "ss_crossPlus", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 1.5,
+    // Narrowest KEEP measured: 2.23 (Chunky Cross vs Fat Rounded Tick — both
+    // near-maximal arm thickness, differing only in corner rounding).
+    anchors: "keep 2.23 (Chunky Cross vs Fat Rounded Tick) — narrowest pair in the family",
+  },
+  {
+    type: "ss_frame", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 15,
+    // Narrowest KEEP measured: 22.66 (DEFAULT vs Half-Frame U — a full frame
+    // against the same thickness with the top edge removed).
+    anchors: "keep 22.66 (DEFAULT vs Half-Frame U) — narrowest pair in the family",
+  },
+  {
+    type: "ss_gear", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 10,
+    // Narrowest KEEP measured: 14.46 (DEFAULT vs Settings Icon — same tooth
+    // count, wider root and hole).
+    anchors: "keep 14.46 (DEFAULT vs Settings Icon) — narrowest pair in the family",
+  },
+  {
+    type: "ss_polygonStar", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 12,
+    // Narrowest KEEP measured: 16.33 (Sheriff Badge vs Rounded Pentagon — a
+    // five-point star at 0.75 inner ratio against a five-sided polygon, both
+    // gently rounded).
+    anchors: "keep 16.33 (Sheriff Badge vs Rounded Pentagon) — narrowest pair in the family",
+  },
+  {
+    type: "ss_quadWedge", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 8,
+    // Narrowest KEEP measured: 10.57 (Rectangle vs Funnel — taper 1 against a
+    // flared top wider than the base).
+    anchors: "keep 10.57 (Rectangle vs Funnel) — narrowest pair in the family",
+  },
+  {
+    type: "ss_radialSweep", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
+    bound: 12,
+    // Narrowest KEEP measured: 15.85 (Pac-Man vs Full Disc — a wide-mouth solid
+    // wedge against the same disc with the gap closed to a full circle).
+    anchors: "keep 15.85 (Pac-Man vs Full Disc) — narrowest pair in the family",
+  },
 ];
 
 for (const spec of FAMILIES) {
@@ -229,7 +317,8 @@ test("EVERY preset in a family writes the IDENTICAL key set", () => {
   // previously HOVERED row left there — so a `closed: true` shape picked after
   // "Check Mark" would draw as an unfilled line, and a filled circle picked after
   // "Hairline Ring" would keep the transparent fill.
-  for (const type of ["polygon", "donut", "circle"]) {
+  const KEY_SET_TYPES = ["polygon", "donut", "circle", ...FAMILIES.map((f) => f.type).filter((t) => t.startsWith("ss_"))];
+  for (const type of new Set(KEY_SET_TYPES)) {
     const plugin = roster.find((p) => p.type === type);
     for (const family of presetFamiliesOf(plugin)) {
       const sets = new Set(family.presets.map((p) => Object.keys(p.props).sort().join(",")));

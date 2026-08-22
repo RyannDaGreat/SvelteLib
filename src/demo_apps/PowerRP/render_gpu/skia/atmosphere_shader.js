@@ -71,6 +71,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { schemaAngleRadians } from "../../core/properties.js";
 
 /**
  * The SkSL. `main(float2 p)` works in DEVICE px, as the framework specifies; the
@@ -173,11 +174,22 @@ export const ATMOSPHERE_FILL_PARAMS = [
     help: "How dark the unlit hemisphere goes. Never quite 1 by default: a real night side carries earthshine and scattered light, and a pure black hemisphere reads as a rendering bug rather than as night. 0 lights the whole globe evenly (no terminator)." },
   { name: "limbDarken", kind: "number", default: 0.35, min: 0, max: 1, step: 0.01, label: "Limb darkening",
     help: "How much the SURFACE dims toward the edge. The same longer air path that brightens the atmosphere dims the ground behind it, and this is what stops the globe looking like a flat sticker of a map." },
-  { name: "lightAngle", kind: "angle", display: "degrees", default: -35, label: "Sun angle",
+  // STORES DEGREES, so NO `display: "degrees"` (which would declare radians — see
+  // core/properties.angleStorageUnit). This row carried that key for its whole life
+  // while packAtmosphere below multiplied by π/180, which made the two disagree:
+  // the dial rendered this -35 default as -2005°, and a -35° edit committed -0.611
+  // and reached the shader as -0.0107 rad — the sun barely moved. globe_map's
+  // presets store literal degrees (-170, -90, -60, -35), so DEGREES is what is
+  // really stored and dropping the key is the zero-migration half of the fix.
+  { name: "lightAngle", kind: "angle", default: -35, label: "Sun angle",
     help: "Direction TO the sun, in the widget's own frame (-90 is straight up the screen). KEYFRAME THIS to sweep the terminator across the planet — a day passing, in one property." },
   { name: "lightHeight", kind: "number", default: 0.35, min: -1, max: 1, step: 0.01, label: "Sun height",
     help: "How far the sun sits out of the screen plane. 1 puts it directly behind the viewer (a fully lit disc, no terminator); 0 puts it exactly at the side (half lit); negative moves it behind the planet for a crescent." },
 ];
+
+/** Stored angle → radians, reading each row's DECLARED storage unit from the
+ *  schema above rather than restating it here (core/properties.schemaAngleRadians). */
+const toRadians = schemaAngleRadians(ATMOSPHERE_FILL_PARAMS);
 
 /**
  * Pure function. The framework's normalized `u` → the packed uniform array, in
@@ -197,7 +209,7 @@ export const ATMOSPHERE_FILL_PARAMS = [
 export function packAtmosphere(u) {
   const [r, g, b, a] = parseColor(u.glowColor ?? "#6cb8ff");
   const radius = Math.max(1e-4, Math.min(u.halfW ?? 1, u.halfH ?? 1));
-  const angle = ((u.lightAngle ?? 0) * Math.PI) / 180;
+  const angle = toRadians("lightAngle", u.lightAngle ?? 0);
   return new Float32Array([
     u.cx ?? 0, u.cy ?? 0,
     radius,

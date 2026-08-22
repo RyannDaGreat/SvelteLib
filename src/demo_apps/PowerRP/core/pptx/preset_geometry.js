@@ -85,18 +85,57 @@
  * CURRENT pen point; stAng/swAng in 60,000ths of a degree, sweep direction
  * given by swAng's sign -- negative is a real, observed value and means
  * counter-clockwise). SVG's `A` is endpoint-parameterized, so this module:
- *   1. Solves the center backward from the pen point: cx = x0 - wR*cos(stAng),
- *      cy = y0 - hR*sin(stAng) (standard ellipse parametric form; OOXML's
- *      clockwise-increasing angle convention already matches SVG's Y-down
- *      screen convention, so no angle-skew correction is needed the way an
- *      AWT Arc2D port would require -- see the geometry research doc, §4).
- *   2. Computes the endpoint the same way at stAng+swAng.
+ *   1. Maps stAng from a GEOMETRIC angle to the ellipse's PARAMETRIC angle
+ *      (`ellipseParametricAngle` -- see THE ANGLE CONVENTION below), then
+ *      solves the center backward from the pen point at that parametric angle.
+ *   2. Computes the endpoint the same way, mapping the ABSOLUTE end angle
+ *      stAng+swAng through the same correction (never by adding a "corrected
+ *      sweep" to the corrected start -- the mapping is not additive).
  *   3. large-arc-flag = 1 iff |swAng| > 180deg (cd2); sweep-flag = 1 iff
  *      swAng > 0.
  *   4. |swAng| >= 360deg (a full or near-full turn -- `blockArc`,
  *      `circularArrow`, `pie`/`chord`, `arc` all sweep this far) is split
  *      into TWO `A` commands of swAng/2 each, because SVG refuses to render
  *      a full ellipse via one endpoint-arc command when start === end.
+ *
+ * THE ANGLE CONVENTION: stAng IS A GEOMETRIC ANGLE, NOT A PARAMETRIC ONE, and
+ * this module got it wrong until workstream PPTXPAINT. `stAng` names the angle
+ * of the RAY from the ellipse centre to the arc's start point -- so the start
+ * point is where that ray CROSSES the ellipse -- whereas the standard
+ * parametric form `(cx + wR*cos t, cy + hR*sin t)` wants the ECCENTRIC ANOMALY
+ * `t`. The two are related by
+ *
+ *     t = atan2(wR * sin(stAng), hR * cos(stAng))
+ *
+ * (equivalently tan t = (wR/hR) * tan(stAng)), which is what
+ * `ellipseParametricAngle` below computes. SOURCE: LibreOffice's
+ * `lcl_getNormalizedCircleAngleRad` (svx/source/customshapes/
+ * EnhancedCustomShape2d.cxx, used by its ARCANGLETO handler, whose pre-2020
+ * form logged the step literally as "angles -> parameters"), corroborated by an
+ * INDEPENDENT implementation in Apache POI (`ArcToCommandIf.java`: "calculate
+ * the inverse angle - taken from the (reversed) preset definition", plus
+ * `ArcToCommand.java`'s "Arc2D angles are skewed, OOXML aren't ... so we need to
+ * unskew them"). ECMA-376's own prose does not specify the mapping -- it says
+ * only that wR/hR "define the supposed circle" -- which is why this is derived
+ * from the two reference implementations rather than quoted from the standard.
+ *
+ * THE CORRECTION IS IDENTITY ON THE AXES, which is exactly why the bug survived
+ * so long: at 0/90/180/270deg the two conventions agree exactly (LibreOffice
+ * short-circuits those four cases for the same reason), so every CIRCULAR arc
+ * (wR === hR) and every elliptical arc that starts and sweeps on quadrant
+ * boundaries renders identically either way. MEASURED on this table: `leftBrace`,
+ * `can` and `blockArc` resolve byte-identical centres under both conventions,
+ * while `curvedRightArrow`'s eight arcs collapse from SIX scattered centres
+ * (including one 77.4 units off the shape) to the TWO concentric centres the
+ * shape is actually built from.
+ *
+ * CONCENTRICITY IS NOT THE TEST, despite being the symptom that exposed this.
+ * Both conventions chain SELF-CONSISTENTLY -- each solves the centre and the
+ * endpoint through the same mapping, so a closure/round-trip check passes under
+ * either. What actually differs is WHERE the arc lands. The discriminating
+ * property, and the one `tests/pptx_subpath_paint_test.js` pins, is that under
+ * the correct convention `atan2` of (start point - centre) returns `stAng`
+ * itself for a non-quadrant angle; under the raw-parametric reading it does not.
  *
  * FLIP/ROTATE/GROUP TRANSFORMS ARE OUT OF SCOPE HERE. This module returns
  * path data in the shape's own `[0,w] x [0,h]` local space; xfrm-level
@@ -296,6 +335,49 @@ export function foldGuides(avLst, adjustments, gdLst, w, h) {
 }
 
 /**
+ * Pure function. Maps a DrawingML GEOMETRIC angle (60,000ths of a degree, the
+ * angle of the ray from the ellipse centre to a point ON the ellipse) to the
+ * PARAMETRIC angle (eccentric anomaly, in RADIANS) that the standard form
+ * `(cx + wR*cos t, cy + hR*sin t)` takes. See THE ANGLE CONVENTION in this
+ * module's header for the sources and for why this is not optional.
+ *
+ * `t = atan2(wR*sin(a), hR*cos(a))`, i.e. `tan t = (wR/hR) * tan a`. IDENTITY on
+ * the four axis angles (0/90/180/270deg) and for any circular arc (wR === hR) --
+ * those return exactly rather than through `atan2`, matching LibreOffice's own
+ * short-circuit and keeping every circular preset's output byte-identical to
+ * what this module produced before the correction existed.
+ *
+ * A DEGENERATE RADIUS (wR or hR === 0) falls back to the raw angle: `atan2(0,0)`
+ * is 0 and would silently collapse every angle on a zero-extent ellipse to the
+ * same point, which is a worse answer than the uncorrected one and hides the
+ * degeneracy from the caller.
+ *
+ * Args:
+ *   wR, hR (number): ellipse half-axes.
+ *   angle60000ths (number): the geometric angle, in 60,000ths of a degree.
+ *
+ * Returns:
+ *   number -- the parametric angle in radians.
+ *
+ * @example ellipseParametricAngle(50, 50, 2700000) // 0.7853981633974483 (a CIRCLE: 45deg unchanged)
+ * @example ellipseParametricAngle(100, 50, 5400000) // 1.5707963267948966 (90deg is on an axis: identity)
+ * @example ellipseParametricAngle(100, 50, 2700000) // 1.1071487177940904 (45deg on a 2:1 ellipse: skewed toward the long axis)
+ * @example ellipseParametricAngle(0, 50, 2700000) // 0.7853981633974483 (degenerate: the raw angle, not a collapse to 0)
+ */
+export function ellipseParametricAngle(wR, hR, angle60000ths) {
+  const raw = angle60000ths * RAD_PER_60000TH;
+  if (wR === hR || wR === 0 || hR === 0) return raw;
+  const QUARTER_TURN_60000THS = 5400000; // 90deg — the period of the identity cases
+  if (angle60000ths % QUARTER_TURN_60000THS === 0) return raw;
+  // atan2 returns (-PI, PI]; carry `raw`'s turn count back so a start angle past
+  // one full turn stays on its own turn rather than folding — the sweep is
+  // applied to the ABSOLUTE end angle, so a folded start would move the arc.
+  const folded = Math.atan2(wR * Math.sin(raw), hR * Math.cos(raw));
+  const TWO_PI = Math.PI * 2;
+  return folded + TWO_PI * Math.round((raw - folded) / TWO_PI);
+}
+
+/**
  * Pure function. Converts one DrawingML `arcTo` (center-parameterized: an
  * ellipse of half-axes wR,hR, positioned so the arc starts at the CURRENT
  * pen point `(x0,y0)`) into one or two SVG elliptical-arc path fragments
@@ -322,14 +404,19 @@ export function foldGuides(avLst, adjustments, gdLst, w, h) {
 export function arcToSvgSegments(x0, y0, wR, hR, stAng, swAng) {
   const FULL_TURN_60000THS = 21600000; // 360deg
   const HALF_TURN_60000THS = 10800000; // 180deg
-  const toRad = (a) => a * RAD_PER_60000TH;
+  // GEOMETRIC -> PARAMETRIC on every angle this function touches (see the
+  // module header's THE ANGLE CONVENTION). Both the centre solve and every
+  // endpoint go through it, and each maps its own ABSOLUTE angle — the
+  // correction is NOT additive, so a "corrected sweep" added to a corrected
+  // start would be a different (wrong) arc.
+  const toParam = (a) => ellipseParametricAngle(wR, hR, a);
 
-  // Center solved backward from the pen point (§4 of the geometry research):
-  // the arc starts at (x0,y0), so cx = x0 - wR*cos(stAng), cy analogous.
-  const cx = x0 - wR * Math.cos(toRad(stAng));
-  const cy = y0 - hR * Math.sin(toRad(stAng));
+  // Center solved backward from the pen point: the arc starts at (x0,y0), so
+  // cx = x0 - wR*cos(t0) where t0 is stAng's PARAMETRIC angle.
+  const cx = x0 - wR * Math.cos(toParam(stAng));
+  const cy = y0 - hR * Math.sin(toParam(stAng));
 
-  const pointAt = (ang) => ({ x: cx + wR * Math.cos(toRad(ang)), y: cy + hR * Math.sin(toRad(ang)) });
+  const pointAt = (ang) => ({ x: cx + wR * Math.cos(toParam(ang)), y: cy + hR * Math.sin(toParam(ang)) });
   const oneArc = (fromAng, sweep) => {
     const end = pointAt(fromAng + sweep);
     const largeArc = Math.abs(sweep) > HALF_TURN_60000THS ? 1 : 0;
@@ -455,6 +542,111 @@ export function resolveTextRect(rectSpec, guides) {
   const r = resolveArg(String(rectSpec.r), guides);
   const b = resolveArg(String(rectSpec.b), guides);
   return { x: l, y: t, w: r - l, h: b - t };
+}
+
+/**
+ * THE PER-SUBPATH FILL MODIFIERS (`<a:path fill="...">`, ST_PathFillMode), as
+ * a BLEND FRACTION toward black (negative) or white (positive). A DrawingML
+ * preset paints its 3D shading by declaring the SAME widget fill on several
+ * subpaths and asking for it darker or lighter per face — `cube`'s three
+ * visible faces are norm/darkenLess/lightenLess of one colour, which is why a
+ * renderer that ignores these draws a flat silhouette where a cube should be.
+ *
+ * ECMA-376 DOES NOT DEFINE THE MATH — it gives these enumerants display names
+ * only ("Darken Path Fill Less") and no factor — so these come from the two
+ * reference implementations:
+ *   - LibreOffice `EnhancedCustomShape2d.cxx`'s `CreateSubPath`, which sets
+ *     `dBrightness` to -0.4 / -0.2 / +0.4 / +0.2 for DARKEN / DARKENLESS /
+ *     LIGHTEN / LIGHTENLESS, applied by `GetColorData` as a straight per-channel
+ *     RGB lerp toward 0 or 255 (NO HSL/HSV, no gamma — its HSV path is the
+ *     LEGACY binary-MS branch, gated off for `ooxml-*` shapes).
+ *   - [MS-OI29500] S2.1.1327, which documents Office's own behaviour as
+ *     "blended with 40% black" / "20% white" etc., i.e. the same model.
+ * MEASURED AGAINST THE REFERENCE RENDERER, which is why these exact numbers are
+ * here rather than Office's: LibreOffice's headless PDF of this very table,
+ * with the widget's own `#7DCFFF` fill, writes `#4B7C99` for a `darken` face
+ * (= c * 0.6), `#64A5CC` for `darkenLess` (= c * 0.8), `#B1E2FF` for `lighten`
+ * and `#97D8FF` for `lightenLess` — each exact on all three channels, and
+ * confirmed one-to-one against the declared flags on cube, bevel, can,
+ * actionButtonHome and curvedDownArrow.
+ *
+ * OFFICE DIVERGES BY ABOUT ONE CODE VALUE on the "Less" pair and it is
+ * deliberately NOT matched: [MS-OI29500] notes Office uses 50/255 (~0.196)
+ * rather than 0.2. This app's measurable reference is LibreOffice (the one
+ * renderer the acceptance sweep compares against and the only one this project
+ * may drive headlessly), so it matches LibreOffice exactly rather than splitting
+ * the difference with a renderer it cannot check. Neither factor reproduces the
+ * reference on its own, incidentally — the last code value comes from the
+ * TRUNCATION documented at the return below, and chasing it with the factor
+ * instead would have hidden a real rule behind a fudged constant.
+ */
+const PATH_FILL_BRIGHTNESS = {
+  norm: 0,
+  darken: -0.4,
+  darkenLess: -0.2,
+  lighten: 0.4,
+  lightenLess: 0.2,
+};
+
+/**
+ * Pure function. Applies one `<a:path fill="...">` modifier to a hex colour,
+ * per `PATH_FILL_BRIGHTNESS` above: a straight per-channel lerp toward black
+ * (darken*) or white (lighten*), leaving ALPHA untouched — the shading changes
+ * a face's brightness, never its coverage.
+ *
+ * `"none"` is NOT handled here and must be branched on by the caller: it means
+ * the subpath is not filled AT ALL (a stroke-only detail line), which is the
+ * absence of a colour rather than a modification of one. Passing it throws,
+ * because silently returning the unmodified colour would flood-fill exactly the
+ * subpaths that must stay empty — the defect this whole path exists to fix.
+ *
+ * A non-hex paint (a gradient object, a named colour) passes through UNCHANGED
+ * rather than throwing: the shading is a convenience on a solid fill, and a
+ * widget whose fill is a gradient still draws its faces — undifferentiated,
+ * which is visibly imperfect but is a picture, not a crash. `norm` short-
+ * circuits so the overwhelmingly common case is identity by construction.
+ *
+ * Args:
+ *   color (string): the widget's fill, "#rgb"/"#rrggbb"/"#rrggbbaa".
+ *   mode (string): "norm" | "darken" | "darkenLess" | "lighten" | "lightenLess".
+ *
+ * Returns:
+ *   string -- the shaded colour, or `color` itself when unmodified.
+ *
+ * @example shadeSubpathFill("#7DCFFF", "norm") // "#7DCFFF" (identity, by short-circuit)
+ * @example shadeSubpathFill("#7dcfff", "darken") // "#4b7c99" (c * 0.6 — LibreOffice's own cube face)
+ * @example shadeSubpathFill("#7dcfff", "darkenLess") // "#64a5cc" (c * 0.8, truncated)
+ * @example shadeSubpathFill("#7dcfff", "lighten") // "#b1e2ff" (c + (255-c) * 0.4)
+ * @example shadeSubpathFill("#7dcfff", "lightenLess") // "#97d8ff" (c + (255-c) * 0.2, truncated)
+ * @example shadeSubpathFill("#7dcfff80", "darken") // "#4b7c9980" (alpha survives untouched)
+ * @example shadeSubpathFill("rgba(1,2,3,0.5)", "darken") // "rgba(1,2,3,0.5)" (non-hex passes through)
+ */
+export function shadeSubpathFill(color, mode) {
+  if (mode === "none")
+    throw new Error('preset_geometry: shadeSubpathFill got fill="none" — that subpath must not be filled at all, not filled with a shaded colour');
+  const brightness = PATH_FILL_BRIGHTNESS[mode];
+  if (brightness === undefined)
+    throw new Error(`preset_geometry: unknown path fill mode "${mode}" (expected one of ${Object.keys(PATH_FILL_BRIGHTNESS).join(", ")}, none)`);
+  if (brightness === 0) return color;
+  if (typeof color !== "string" || !/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) return color;
+
+  let h = color.slice(1);
+  if (h.length <= 4) h = [...h].map((c) => c + c).join("");
+  const channels = [];
+  for (let i = 0; i < h.length; i += 2) channels.push(parseInt(h.slice(i, i + 2), 16));
+  const CHANNEL_MAX = 255;
+  // Only R/G/B shade; a 4th channel (alpha) is carried through as-is.
+  const shaded = channels.map((c, i) =>
+    i >= 3 ? c : brightness >= 0 ? c * (1 - brightness) + brightness * CHANNEL_MAX : c * (1 + brightness));
+  // TRUNCATED, NOT ROUNDED, and this is measured rather than stylistic:
+  // LibreOffice's `Color` takes `sal_uInt8`, so its double -> byte conversion
+  // truncates. Rounding disagrees with the reference on exactly the channels
+  // whose product lands mid-step — `darkenLess` of #7DCFFF is #64A5CC truncated
+  // and #64A6CC rounded, and LibreOffice writes the former. All four modes match
+  // on all three channels under truncation and only two of four under rounding.
+  return "#" + shaded
+    .map((c) => Math.floor(Math.max(0, Math.min(CHANNEL_MAX, c))).toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /**

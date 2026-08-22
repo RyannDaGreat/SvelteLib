@@ -20,6 +20,11 @@ import {
   itemCreationSlide, itemAnimationKeyframes, lostEquationKeyframes, withItemsMadeStatic,
   itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
 } from "../core/document.js";
+// GLOBAL VARIABLE KINDS (backburner CX). The kind is meta state, not fold
+// state — a variable does not become a colour halfway through a transition — so
+// these read/write doc.meta.varKinds beside meta.script rather than the vars
+// subtree. core/var_kinds.js owns every rule.
+import { VAR_KIND_ZEROS, varKind, withVarKind, withVarKindRenamed } from "../core/var_kinds.js";
 import { setPath, getPath, blendApplied, applied } from "../core/deltas.js";
 import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta, retargetedPayload, retargetRefusal, retargetReport } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport, and its selection-targeted retarget
 import { clipboardKind, propertySubsetKind, pasteBadge, pasteIntent } from "./pasteAffordance.js"; // what the paste button's badge and tooltip say (WORKSTREAM UU half 2)
@@ -74,10 +79,11 @@ import { reportAction } from "../core/report.js";
 import { bundleDefaults } from "../core/properties.js";
 import {
   multiSelectPanel, multiToolPanel, presetPairs, materialPresetPairs, unifyPairs, retypeSkipReason,
+  universalRows,
   MULTISELECT_MODE, MATERIAL_PRESET_ROW_KIND,
 } from "../core/multiselect.js";
 import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/material_presets.js";
-import { sectionTriState, sectionToggleAction, sectionJumpTarget } from "../core/section_keyframes.js";
+import { sectionTriState, sectionToggleAction, sectionJumpTarget, jumpArrow, itemBakePaths } from "../core/section_keyframes.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy
@@ -88,7 +94,7 @@ import * as projectApi from "./projectApi.js";
 // mode). projectApi is still imported for the calls that are inherently
 // server-only (clipboard, render jobs, ffprobe duration) — those refuse loudly
 // in static mode rather than fetching a URL that cannot exist.
-import { assetStore, assetStoreFor, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason } from "./storageMode.js";
+import { assetStore, assetStoreFor, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason, UNAVAILABLE_IN_STATIC } from "./storageMode.js";
 // localAssetStore DIRECTLY (not through the storageMode seam): a DRAFT always
 // stages in the browser, in both storage modes, because the server has no folder
 // for a project the user has not decided to keep. See web/projectDraft.js.
@@ -116,6 +122,9 @@ import { strToU8, zipSync } from "fflate";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
 import { assetRef, assetKindForFile, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
+// An ANIMATED gif is a VIDEO: the server transcodes it at upload and these two read
+// that reply — which widget to insert, and what to say when there was no backend.
+import { insertTargetForUpload, gifStaticRefusal } from "./gifVideo.js";
 import { adoptedArchiveRefs, documentAssetRefs, foreignAssetRefs, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "./assetLocalize.js";
 import { createRegistry, widgetForAssetKind } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -824,6 +833,17 @@ export class PowerRPApp {
   clickThroughDepth = $state(0);
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
+  // THE PALETTE'S SECOND STAGE (R7-42). A command whose action needs ONE
+  // per-document argument sets this to a picker spec instead of minting a
+  // command per candidate value; CommandPalette renders it over its own row
+  // surface (searchable, arrow-keyed, Enter-picked) and clears it on pick or
+  // Escape. null = the palette is showing commands.
+  //
+  // THE SHAPE: {title, placeholder, options: [{value, label, detail?, icon?}],
+  //             onPick(app, value), onPreview?(app, value) -> revert}
+  // The options are gathered AT INVOKE TIME from the live document, which is
+  // what makes the roster static: nothing per-document ever enters the registry.
+  palettePicker = $state(null);
   dragging = $state(false); // canvas sets this; drives HintBar context
   // Which drag gesture is live: null, or one of DRAG_KINDS (web/canvas/
   // dragKinds.js) — drives the HintBar's per-gesture modifier hints (manifest
@@ -1920,8 +1940,8 @@ export class PowerRPApp {
   }
 
   /**
-   * Query. The widget types PRESENT on this slide, with how many of each — what a
-   * select-by-type submenu lists. Derived from the live nodes, so a type nobody has
+   * Query. The widget types PRESENT on this slide, with how many of each — what
+   * the by-type picker lists. Derived from the live nodes, so a type nobody has
    * placed is not offered and a new widget needs no edit here.
    *
    * @returns {Array<{type: string, title: string, count: number}>} sorted by title
@@ -1935,6 +1955,41 @@ export class PowerRPApp {
       counts.set(n.type, e);
     }
     return [...counts.values()].sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
+  }
+
+  /**
+   * Command. Opens the palette's SECOND STAGE on this slide's widget types
+   * (R7-42) — the type argument of select/deselect-by-type, gathered by a picker
+   * instead of by one minted command per type.
+   *
+   * The options are read from `typesOnSlide()` HERE, at invoke time, which is
+   * precisely what keeps the command roster static: nothing per-document is ever
+   * registered, so there is no rebuild effect and no splice into arrays the
+   * palette is walking (the f4b11012 hazard).
+   *
+   * `onPreview` stages the selection the highlighted option would make and
+   * returns its undo — the previewable-command protocol the minted rows used,
+   * carried over unchanged.
+   *
+   * @param {boolean} add - true selects the picked type, false deselects it
+   */
+  openTypePicker(add) {
+    this.palettePicker = {
+      title: add ? "Select by Widget Type" : "Deselect by Widget Type",
+      placeholder: add ? "Which kind to select…" : "Which kind to deselect…",
+      options: this.typesOnSlide().map((t) => ({
+        value: t.type,
+        label: t.title,
+        detail: `${t.count}`,
+        icon: "mdi:shape-outline",
+      })),
+      onPreview: (app, type) => {
+        const before = [...app.selectedIds()];
+        app.selectByType(type, add);
+        return () => app.selectMany(before);
+      },
+      onPick: (app, type) => app.selectByType(type, add),
+    };
   }
 
   /** Command. Clears the selection (palette "Deselect All" — manifest Round
@@ -2173,6 +2228,13 @@ export class PowerRPApp {
   modalSetAxis = () => {};
   modalAppendBuffer = () => {};
   modalBackspace = () => {};
+  // The MODAL TOGGLES (web/canvas/dragKinds.js MODAL_TOGGLES) — I flips individual
+  // origins, W flips wholistic scaling. Same seam as modalSetAxis, and modal for the
+  // same reason an axis lock is: the toggle belongs to THIS gesture and is gone when
+  // it ends, so nothing here persists. CanvasView guards it on a live modal AND on
+  // the toggle actually applying to the live kind, so a key arriving by another route
+  // cannot do what no chip offered.
+  modalToggle = () => {};
 
   // NUDGE hook — installed by CanvasView (which owns translateMembers /
   // translationPairs, so a nudge and a drag translate the selection through the
@@ -2516,6 +2578,12 @@ export class PowerRPApp {
     this.handleSelection = snap.handleSelection ?? [];
     this.slideIndex = Math.min(snap.slideIndex, snap.doc.slides.length - 1);
     if (snap.viewport) this.canvasActions?.setViewport(snap.viewport);
+    // UNDO AND REDO ARE DOCUMENT CHANGES TOO. This is not symmetry for its own sake:
+    // R7-43a's rule is that staleness is a property of the DOCUMENT, so undoing an
+    // html edit must be re-examined exactly like making one. (It normally renders
+    // NOTHING — undo restores the source, the asset ref and the fingerprint as one
+    // commit, so the widget lands FRESH and reuses its old picture.)
+    this.#documentChanged();
   }
 
   commit(doc) {
@@ -2526,6 +2594,45 @@ export class PowerRPApp {
       localStorage.setItem(AUTOSAVE_KEY, serialize(doc));
     } catch (e) {
       console.warn("Autosave failed:", e); // quota etc. — report, keep working
+    }
+    this.#documentChanged();
+  }
+
+  /**
+   * WATCHERS THE DOCUMENT WAKES — the seam a service uses to say "the document moved,
+   * look again". Registered by the editor shell (web/App.svelte), empty everywhere
+   * else, which is what keeps this file importable by the CLI and the node suites.
+   *
+   * A PLAIN CALLBACK LIST AND NOT AN `$effect`, deliberately: its first consumer
+   * (web/html2imageAutoRender.js) WRITES the document in response to reading it, and
+   * an effect that reads `doc` and commits `doc` is the `effect_update_depth_exceeded`
+   * failure App.svelte's own comments record. A callback invoked AFTER the write has
+   * landed has no reactive edge to close.
+   */
+  #docWatchers = [];
+
+  /** Command. Registers a document watcher, returning its unsubscribe (the shell's
+   * teardown calls it). */
+  onDocumentChanged(fn) {
+    this.#docWatchers.push(fn);
+    return () => { this.#docWatchers = this.#docWatchers.filter((w) => w !== fn); };
+  }
+
+  /**
+   * Command. Wakes every document watcher.
+   *
+   * A WATCHER THAT THROWS MUST NOT TAKE THE COMMIT WITH IT — the document has already
+   * changed and the undo entry is already written, so an exception here would leave
+   * the app inconsistent over what is, from `commit`'s point of view, someone else's
+   * bookkeeping. Reported loudly and the remaining watchers still run.
+   */
+  #documentChanged() {
+    for (const fn of this.#docWatchers) {
+      try {
+        fn();
+      } catch (e) {
+        console.error("A document watcher threw (the commit itself already landed):", e);
+      }
     }
   }
 
@@ -5162,13 +5269,21 @@ export class PowerRPApp {
   async pasteFiles(files) {
     for (const file of files) {
       try {
-        const up = await this.uploadAsset(file); // {ok, name, url}
-        const kind = assetKindForFile(file);
+        const up = await this.uploadAsset(file); // {ok, name, url, transcode?}
         // THE THIRD COPY of the image-or-video pair used to live here, which is
         // why a pasted PDF also went nowhere. The registry answers now, so paste
         // gained PDFs for free the moment pdf_page declared itself.
-        if (widgetForAssetKind(this.registry, kind)) await this.insertAssetWidget({ kind, url: up.url, name: up.name });
-        else console.warn(`Paste: uploaded "${up.name}" but no canvas widget exists for kind "${kind}" — it stays in the asset library.`);
+        //
+        // A PASTED ANIMATED GIF INSERTS ITS MP4 SIBLING — the same decision the
+        // canvas drop makes, from the same function (web/gifVideo.js), because
+        // this is exactly the call site that drifted last time this question had
+        // more than one implementation.
+        const target = insertTargetForUpload(up, assetKindForFile(file));
+        if (widgetForAssetKind(this.registry, target.kind)) await this.insertAssetWidget(target);
+        else console.warn(`Paste: uploaded "${up.name}" but no canvas widget exists for kind "${target.kind}" — it stays in the asset library.`);
+        // No ffmpeg in static mode, so a GIF pasted there is a still. Said out loud.
+        const refused = gifStaticRefusal(up, isStatic(), UNAVAILABLE_IN_STATIC.gifTranscode);
+        if (refused) console.warn(`Paste: ${refused}`);
       } catch (e) {
         console.error(`Paste-to-upload failed for "${file.name}":`, e);
       }
@@ -5751,8 +5866,177 @@ export class PowerRPApp {
    * `sectionJumpTarget` — the union, so the arrows and the bubble beside them
    * describe the same thing). Stays put when there is none. */
   jumpSectionKeyframes(paths, direction) {
-    const target = sectionJumpTarget(paths.map((p) => keyframeIndices(this.doc, p)), this.slideIndex, direction);
+    const target = this.sectionJumpTargetFor(paths, direction);
     if (target !== null) this.slideIndex = target;
+  }
+
+  /**
+   * Query. WHERE a section-wide ‹ / › would land, or null when there is nowhere
+   * — the availability the arrows themselves read (WORKSTREAM KEYFR, user:
+   * "The buttons for previous keyframe and next keyframe should be disabled if
+   * there is no previous or next keyframe to go to").
+   *
+   * SPLIT OUT OF `jumpSectionKeyframes`, WHICH NOW CALLS IT, so the button's
+   * greying and the button's click cannot disagree about whether there is a
+   * target: they are one computation with two readers, the save-dot/save-button
+   * shape. Extracting a second copy of the `keyframeIndices` walk for the UI to
+   * consult would be exactly the hand-maintained duplicate that shape exists to
+   * prevent.
+   *
+   * O(slides × paths) per call and read once per arrow per render — the same cost
+   * the click already paid, now also paid to draw. That is well inside the
+   * Inspector's per-row budget (`hasKeyPath` is already called per path per row),
+   * but it is NOT a command-registry `when` gate, where the hot-path rule in
+   * core/commands.js would forbid a document walk.
+   */
+  sectionJumpTargetFor(paths, direction) {
+    return sectionJumpTarget(paths.map((p) => keyframeIndices(this.doc, p)), this.slideIndex, direction);
+  }
+
+  /**
+   * Query. THE ONE CALL EVERY ‹ / › ARROW IN THE APP MAKES — where it would land,
+   * whether it may be clicked, and the sentence it shows either way
+   * (core/section_keyframes.js `jumpArrow` owns the descriptor and the reasoning).
+   *
+   * IT EXISTS BECAUSE THE FIRST FIX REACHED ONLY HALF THE ARROWS (user, 2026-08-13:
+   * "The small version didn't seem to have inherited this… The code is not the
+   * same"). The row triad (web/KeyframeControls.svelte) and the 70%-scale section
+   * triad (web/SectionKeyframeControls.svelte) were siblings by COPIED MARKUP, so
+   * availability added to one could not reach the other. Both now render off this,
+   * which means a variant either consumes the whole answer or has nothing to call.
+   *
+   * `subject` is the section title for the header triad and null for a row — the
+   * ONE thing the two tooltips legitimately differ about, and the reason a
+   * subject-less tip function could not be shared in the first place.
+   */
+  jumpArrowFor(paths, direction, subject = null) {
+    return jumpArrow(this.sectionJumpTargetFor(paths, direction), direction, subject);
+  }
+
+  // ── THE SLIDE-WIDE BAKE (user: "A 'Keyframe Everything In Slide' tool") ────
+
+  /**
+   * Query. Which items "Keyframe Everything In Slide" would bake, and whether the
+   * SELECTION scoped it: `{ids, scoped}`.
+   *
+   * TWO SCOPES, ONE TOOL (the brief's ruling, and the shape every other bulk
+   * keyframe tool here already has): a selection scopes the bake to it, and no
+   * selection bakes the whole slide. A tool that only ever did the whole slide
+   * would make "bake these three widgets" unreachable, and one that required a
+   * selection would make the slide-wide case — the one the title names — need a
+   * Select All first.
+   *
+   * ITEMS ACTIVE ON THIS SLIDE ONLY, which is what `nodes()` already means: an
+   * item hidden here (`active: false`) or not yet created has no visible state to
+   * pin, and baking one would write a whole scene's worth of properties for a
+   * widget that is not on the slide. A selected-but-hidden item therefore drops
+   * out of the scoped bake too — `nodes()` is the filter in BOTH branches, so the
+   * two scopes cannot disagree about what "on this slide" means.
+   */
+  bakeSlideTargets() {
+    const present = this.nodes().map((n) => n.itemId);
+    const selected = new Set(this.selectedIds());
+    if (selected.size === 0) return { ids: present, scoped: false };
+    return { ids: present.filter((id) => selected.has(id)), scoped: true };
+  }
+
+  /**
+   * Command (ONE undo unit). KEYFRAMES EVERYTHING: every keyframeable property of
+   * every target item gets a keyframe on the CURRENT slide, holding the value it
+   * already has.
+   *
+   * IT IS A BAKE, AND THE PICTURE DOES NOT CHANGE. Every write copies the item's
+   * OWN stored value at that path (`storedValueAtPath` — so an equation keyframes
+   * as the equation and a sparse material knob keyframes as its schema default),
+   * which is the section bubble's insert semantics applied item-wide. What changes
+   * is INHERITANCE: the slide's delta stops being sparse, and each pinned value no
+   * longer follows an edit made on an earlier slide. core/section_keyframes.js
+   * `keyframeEverythingHelp` is where that cost is stated to the user, and the
+   * command's help renders it.
+   *
+   * ONE `commit` OVER A FOLDED LOCAL, never a loop of `keyframePath` — the
+   * `toggleSectionKeyframes` rule, and far more load-bearing here: a slide-wide
+   * bake is thousands of leaves, and a per-leaf undo entry would make the tool
+   * impossible to take back.
+   *
+   * AN IN-PROGRESS TEXT/LATEX EDIT IS COMMITTED FIRST (`dismissEdit` —
+   * makeSelectionStatic's rule): it is a pending write on an item this call is
+   * about to pin, so it must land in the state being baked rather than be lost to
+   * the commit below, which writes `this.doc` directly and knows nothing about
+   * previewDelta.
+   *
+   * A PROPERTY WITH NO VALUE IS SKIPPED, AND THE SKIP IS COUNTED OUT LOUD. This
+   * is the one thing about the bake that had to be MEASURED rather than reasoned,
+   * and the measurement changed the design. On a real deck (examples/demo, slide 1,
+   * five widgets) 33 of 161 declared paths hold NOTHING: `strokeOffset`,
+   * `strokeCapStart`, `morph`, `delay` and friends are absent from the fold AND
+   * absent from `plugin.defaults` — the plugin's own `emit()` supplies a fallback
+   * at paint time and the property genuinely has no value to pin. Writing one
+   * anyway is not merely useless, it is SILENT JUNK: `keyframed(doc, i, path,
+   * undefined)` leaves an EMPTY `{}` item object in the delta, `hasKeyframe` reads
+   * false, and JSON.stringify drops the key — so the tool would report success
+   * while keyframing 128 of the 161 things its own title promised.
+   *
+   * So the filter is on `undefined` and the remainder is REPORTED, never hidden:
+   * "Keyframe Everything In Slide" is a tool whose whole contract is the word
+   * EVERYTHING, and a tool that quietly means "most" is the shape this codebase
+   * forbids. The report is a console line and not a refusal because the skips are
+   * CORRECT — there is nothing there to key — and refusing the whole bake over
+   * them would make the tool unusable on every real deck.
+   *
+   * NO TARGETS = NO WRITES AND NO UNDO ENTRY. `commit` refuses an unchanged
+   * document, so a bake of an already-fully-baked slide pushes nothing either.
+   */
+  keyframeEverythingInSlide() {
+    const { ids } = this.bakeSlideTargets();
+    if (ids.length === 0) return;
+    this.dismissEdit();
+    const paths = this.bakePathsFor(ids);
+    const written = paths.filter((p) => this.storedValueAtPath(p) !== undefined);
+    let doc = this.doc;
+    for (const path of written) doc = keyframed(doc, this.slideIndex, path, this.storedValueAtPath(path));
+    const skipped = paths.length - written.length;
+    if (skipped > 0)
+      console.warn(`PowerRP: Keyframe Everything In Slide keyframed ${written.length} propert${written.length === 1 ? "y" : "ies"} on slide ${this.slideIndex} across ${ids.length} widget(s), and SKIPPED ${skipped} that hold no value at all (a property absent from both the slide and the widget's defaults has nothing to pin — its plugin supplies a fallback when it paints). Nothing was lost; one undo takes the rest back.`);
+    this.commit(doc);
+  }
+
+  /**
+   * Query. Every state path the bake writes for `ids` — each item's plugin rows
+   * PLUS the universal rows no plugin declares (`universalRows` owns that set,
+   * including the camera's exemption from `active`).
+   *
+   * THE DECLARED ROWS ARE THE AUTHORITY, NOT THE STORED FOLD. A property the
+   * author never touched is absent from the fold and is exactly what a bake is
+   * for; `name`/`type` are stored and are NOT keyframeable here.
+   * core/section_keyframes.js `itemBakePaths` states both halves of that argument.
+   *
+   * `type` IS EXCLUDED HERE AND THE FLAG CANNOT COME FROM `universalRows`, which
+   * is a real asymmetry and not an oversight. `universalRows` returns the row's
+   * CONTRACT and carries no `keyframes` aspect at all — web/Inspector.svelte adds
+   * `keyframes: false` to `type` and `name` at its own call site, and it does so
+   * because R6-6.7 ruled that widget type IS keyframeable in principle and is
+   * blocked only on the retype command writing at the CURRENT slide. So the flag
+   * is a statement about a MISSING COMMAND, not about the property, and the two
+   * consumers must state it independently until that command exists. A bake that
+   * pinned `type` would fan a bare type string into the delta and leave the item
+   * holding its old plugin's state bag — the "a bare type write is not enough"
+   * defect core/retype.js opens with. (`name` needs no exclusion: it is not a
+   * universal row at all, and no plugin declares it.)
+   *
+   * MEASURED, not assumed: the first version of this method omitted the filter and
+   * `tests/keyfr_tools_test.js` caught it baking `type` on every widget.
+   *
+   * A node with no plugin is impossible here (`nodes()` resolves one per item), so
+   * there is no fallback branch to hide a missing type behind.
+   */
+  bakePathsFor(ids) {
+    const byId = new Map(this.nodes().map((n) => [n.itemId, n]));
+    return ids.flatMap((id) => {
+      const node = byId.get(id);
+      const universal = universalRows([{ plugin: node.plugin }]).filter((r) => r.key !== "type");
+      return itemBakePaths(id, [...(node.plugin.inspector ?? []), ...universal]);
+    });
   }
 
   // ── Variables (keyframable state.vars subtree — the Variables Panel) ──────
@@ -5762,9 +6046,51 @@ export class PowerRPApp {
     return this.rawState().vars ?? {};
   }
 
-  /** Creates a variable (value 0, keyframed on the CURRENT slide, like item
-   * creation). Loud on invalid names/duplicates; returns success. */
-  addVariable(name) {
+  /** THE VARIABLE KINDS map (doc.meta.varKinds — core/var_kinds.js): {name: kind}
+   * for every variable that is not a plain number. Absent entries ARE "number",
+   * which is why a pre-kinds document needs no migration. */
+  varKindsState() {
+    return this.doc.meta?.varKinds ?? {};
+  }
+
+  /** A variable's declared kind; "number" when it has none. */
+  variableKind(name) {
+    return varKind(this.varKindsState(), name);
+  }
+
+  /** Command. Retypes a variable, ONE undo unit — the kind AND the value together.
+   *
+   * THE VALUE MUST MOVE WITH THE KIND, and it is the whole reason this is not a
+   * two-line setter. A colour variable still holding `0` renders a swatch of
+   * nothing and every equation reading it gets a number where a hex string was
+   * promised; the row would look retyped while the document had not been. So the
+   * value is RESET TO THE NEW KIND'S ZERO on the current slide, in the same
+   * commit — a visible, undoable change rather than a silent mismatch.
+   *
+   * IT DELIBERATELY DOES NOT CONVERT. There is no honest number -> colour map, and
+   * inventing one (0 -> black? 0 -> #000000?) would fabricate an authored value. A
+   * retype is a fresh start, which the one undo step makes cheap to reverse.
+   * A retype to the SAME kind is a no-op and spends no undo unit. */
+  setVariableKind(name, kind) {
+    if (!(name in this.varsState())) {
+      console.error(`PowerRP: cannot set the kind of "${name}" — no such variable`);
+      return false;
+    }
+    if (this.variableKind(name) === kind) return true;
+    if (!(kind in VAR_KIND_ZEROS)) {
+      console.error(`PowerRP: "${kind}" is not a variable kind (known: ${Object.keys(VAR_KIND_ZEROS).join(", ")})`);
+      return false;
+    }
+    const doc = keyframed(this.doc, this.slideIndex, ["vars", name], VAR_KIND_ZEROS[kind]);
+    this.commit({ ...doc, meta: { ...doc.meta, varKinds: withVarKind(this.varKindsState(), name, kind) } });
+    return true;
+  }
+
+  /** Creates a variable, keyframed on the CURRENT slide at its KIND'S ZERO (like
+   * item creation). `kind` defaults to "number", which is byte-identical to what
+   * this method did before kinds existed. Loud on invalid names/duplicates;
+   * returns success. */
+  addVariable(name, kind = "number") {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       console.error(`PowerRP: "${name}" is not a valid variable name (letters, digits, _; not starting with a digit)`);
       return false;
@@ -5773,7 +6099,15 @@ export class PowerRPApp {
       console.error(`PowerRP: a variable named "${name}" already exists`);
       return false;
     }
-    this.commit(keyframed(this.doc, this.slideIndex, ["vars", name], 0));
+    if (!(kind in VAR_KIND_ZEROS)) {
+      console.error(`PowerRP: "${kind}" is not a variable kind (known: ${Object.keys(VAR_KIND_ZEROS).join(", ")})`);
+      return false;
+    }
+    const doc = keyframed(this.doc, this.slideIndex, ["vars", name], VAR_KIND_ZEROS[kind]);
+    // ONE COMMIT for the value and the kind, so creating a colour variable is one
+    // undo step and never leaves a kind entry naming a variable that does not exist.
+    this.commit(kind === "number" ? doc
+      : { ...doc, meta: { ...doc.meta, varKinds: withVarKind(this.varKindsState(), name, kind) } });
     return true;
   }
 
@@ -5782,7 +6116,9 @@ export class PowerRPApp {
   deleteVariable(name) {
     let doc = this.doc;
     for (let i = 0; i < doc.slides.length; i++) doc = unkeyframed(doc, i, ["vars", name]);
-    this.commit(doc);
+    // THE KIND ENTRY GOES WITH IT. A stale entry would silently retype the NEXT
+    // variable that reused the name (core/var_kinds.withVarKindRenamed's header).
+    this.commit({ ...doc, meta: { ...doc.meta, varKinds: withVarKindRenamed(this.varKindsState(), name, null) } });
   }
 
   /** Renames a variable document-wide, rewriting equation references (names
@@ -5790,7 +6126,10 @@ export class PowerRPApp {
   renameVariable(oldName, newName) {
     if (newName === oldName) return true;
     try {
-      this.commit(withVariableRenamed(this.doc, oldName, newName, this.registry));
+      const doc = withVariableRenamed(this.doc, oldName, newName, this.registry);
+      // THE KIND FOLLOWS THE NAME. The map is keyed by name, so without this a
+      // renamed colour variable would read as a Number — retyped by a rename.
+      this.commit({ ...doc, meta: { ...doc.meta, varKinds: withVarKindRenamed(this.varKindsState(), oldName, newName) } });
       return true;
     } catch (e) {
       console.error(`PowerRP: rename variable failed: ${e.message}`);

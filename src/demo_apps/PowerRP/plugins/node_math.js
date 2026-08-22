@@ -28,9 +28,19 @@ import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { NODE_ITEM_REFS, minimumNodeHeight, nodeCardRim, nodeInkBounds } from "../core/nodeflow.js";
-import { formatNodeValue, nodeCard, nodeRim, nodeValueText, portBeads } from "../core/node_chrome.js";
+import { familyCard, familyRim, formatNodeValue, nodeValueText, portBeads } from "../core/node_chrome.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "../core/transform.js";
+
+/** The card FAMILY this node wears (core/node_chrome.NODE_FAMILIES).
+ *  This node is an arithmetic operator.
+ *  It sorts with its kind in a wall of cards.
+ *
+ *  Before workstream NODECHROME_ it passed NO family and so wore the NEUTRAL
+ *  FALLBACK — which is the ABSENCE of a family rather than a family, and so a
+ *  different card design rather than a different tint of the same one. That is
+ *  the band-less card the user photographed beside a banded audio module. */
+const NODE_FAMILY = "math";
 
 const DEFAULT_W = 150;
 const CAT = "node";
@@ -51,6 +61,20 @@ export const MATH_OPS = Object.freeze({
   subtract: Object.freeze({ label: "Subtract", symbol: "−", apply: (a, b) => a - b }),
   multiply: Object.freeze({ label: "Multiply", symbol: "×", apply: (a, b) => a * b }),
   divide: Object.freeze({ label: "Divide", symbol: "÷", apply: (a, b) => a / b }),
+  // MODULO — one entry, exactly as this table's docblock promises ("Adding an
+  // operation is one entry"). Added for the per-frame trigger demo, whose head is
+  // `time mod 2` (user, 2026-08-12: "a time node, going into a modulo 2 node").
+  //
+  // IT IS THE EUCLIDEAN REMAINDER, NOT JavaScript's `%`, AND THAT IS THE WHOLE
+  // REASON THIS NEEDED A LINE OF THOUGHT. JS `%` takes the sign of the DIVIDEND, so
+  // `-1 % 2` is -1 — which means a `mod 2` node fed a value that dips below zero
+  // emits -1 where every author expects 1, and a `== 1` downstream of it silently
+  // stops matching for half the cycle. The equation grammar's own `%` is JS's, so
+  // this deliberately differs from it: a NODE is a picture of a cycle, and a cycle
+  // has no negative half. `a - b * floor(a / b)` is the standard spelling.
+  // A ZERO DIVISOR yields NaN rather than throwing, matching `divide`'s Infinity —
+  // a knob passing through zero mid-tween must not crash a slide.
+  mod: Object.freeze({ label: "Modulo", symbol: "mod", apply: (a, b) => a - b * Math.floor(a / b) }),
 });
 
 const OP_KEYS = Object.keys(MATH_OPS);
@@ -74,6 +98,10 @@ const DEFAULT_OP = "add";
  * @example applyMathOp("subtract", 2, 3) // -1
  * @example applyMathOp("divide", 3, 2) // 1.5
  * @example applyMathOp("divide", 1, 0) // Infinity
+ * @example applyMathOp("mod", 7, 2) // 1
+ * @example // EUCLIDEAN, not JS `%`: a negative dividend still lands in [0, b)
+ * @example applyMathOp("mod", -1, 2) // 1
+ * @example applyMathOp("mod", 4.5, 2) // 0.5
  * @example applyMathOp("nonsense", 2, 3) // 5 (unknown op falls back; the card shows "?")
  */
 export function applyMathOp(op, a, b) {
@@ -147,10 +175,10 @@ export const nodeMathPlugin = {
    */
   emit(s, _target, world) {
     const ops = [
-      ...nodeCard(s, "Math"),
+      ...familyCard(s, "Math", NODE_FAMILY),
       ...nodeValueText(s, mathSymbol(s.op ?? DEFAULT_OP)),
       ...portBeads(nodeMathPlugin, s),
-      ...nodeRim(s),
+      ...familyRim(s, NODE_FAMILY),
     ];
     return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },

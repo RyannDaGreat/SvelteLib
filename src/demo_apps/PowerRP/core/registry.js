@@ -626,7 +626,7 @@ export function composesEffects(plugin) {
  *
  *   purgeable === false — THE CAMERA. The view/background definition, not a
  *     drawn widget; it has no silhouette of its own to shadow or feather.
- *   ghost without foldsSubtree — cropbox / anchor_point. No rendered volume: a
+ *   ghost without foldsSubtree — cropbox / empty. No rendered volume: a
  *     crop box IS a clip region (its TARGET's effects ride into the crop
  *     content) and an anchor point is editor chrome. A GROUP is also a ghost but
  *     folds a composited member subtree, so it is eligible (and has always
@@ -656,7 +656,7 @@ export function composesEffects(plugin) {
  * @example effectsInjectable({capabilities: {bbox: true, transform: true}}) // true (an ordinary drawn widget)
  * @example effectsInjectable({capabilities: {bbox: true, backdrop: true}}) // true (a backdrop sampler: its SDF alpha is its silhouette)
  * @example effectsInjectable({capabilities: {bbox: true, purgeable: false}}) // false (THE camera)
- * @example effectsInjectable({capabilities: {bbox: true, ghost: true}}) // false (cropbox / anchor_point: no rendered volume)
+ * @example effectsInjectable({capabilities: {bbox: true, ghost: true}}) // false (cropbox / empty: no rendered volume)
  * @example effectsInjectable({capabilities: {bbox: true, ghost: true}, foldsSubtree: () => true}) // true (a group composites its member subtree)
  * @example effectsInjectable({capabilities: {backdrop: true}}) // false (the blur layer: no geometry to bound)
  */

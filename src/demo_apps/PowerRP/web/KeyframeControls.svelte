@@ -49,6 +49,32 @@
   No new core function was written for either fix — see core/section_keyframes.js
   for the pure logic and web/app.svelte.js for the two methods reused verbatim.
 
+  WORKSTREAM KEYFR (2026-08-12) MADE THE ARROWS SAY WHEN THEY CANNOT GO (user:
+  "The buttons for previous keyframe and next keyframe should be disabled if there
+  is no previous or next keyframe to go to"). The condition was ALREADY computed
+  and ALREADY thrown away: `sectionJumpTarget` returns null and
+  `jumpSectionKeyframes` "stays put when there is none", so on the first and last
+  keyframed slide these were live-looking controls that silently did nothing.
+
+  THE HOUSE FORM IS `aria-disabled` + A HANDLER GUARD, NEVER THE NATIVE ATTRIBUTE
+  (the toolbar's Save-button ruling): a natively disabled button is not focusable,
+  so a keyboard user could never reach the tooltip — and the tooltip is the ONLY
+  place the reason is written down. The guard is what actually refuses the click;
+  `aria-disabled` is what says so — and it is ALSO what carries the greying, via
+  app.css's `.jumpbtn[aria-disabled="true"]` rule, because the app already styles
+  `[aria-disabled]` to read exactly as `:disabled` (app.css's `.btn` block states
+  that rule and the reason). A second `.unavailable` class beside the attribute
+  would be one state spelled twice — the drift this codebase keeps paying for.
+
+  THE WHOLE ARROW STATE IS core's, not this file's. 2026-08-13 the user reported
+  that the fix had reached the row arrows and NOT the section header's smaller
+  ones — "The small version didn't seem to have inherited this… The code is not
+  the same" — which was exactly true: web/SectionKeyframeControls.svelte is this
+  file's markup COPIED, not a subclass of it, so nothing added here could reach it.
+  Both now render off ONE descriptor (`app.jumpArrowFor` ->
+  core/section_keyframes.jumpArrow), which carries target + disabled + tooltip
+  together, so a variant either consumes the whole answer or has nothing to call.
+
   Renders exactly the three buttons (no wrapper) so it drops into each panel's
   existing `.kf-controls` grid cell — the Variables Panel appends its own
   delete button after it in the same cell. Styling is the global app.css
@@ -59,6 +85,7 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { keyframeTriState } from "../core/multiselect.js";
+  import { TRI_ICONS } from "../core/section_keyframes.js";
 
   let {
     /** @type {object} The PowerRPApp controller. */
@@ -75,8 +102,8 @@
   let keyPaths = $derived(paths ?? [path]);
   let triState = $derived(keyframeTriState(keyPaths.map((p) => app.hasKeyPath(p))));
 
-  // The diamond's three readings (iconify only — never a Unicode glyph).
-  const TRI_ICONS = { all: "mdi:rhombus", some: "mdi:rhombus-split", none: "mdi:rhombus-outline" };
+  // The diamond's three readings (iconify only — never a Unicode glyph) come from
+  // core/section_keyframes.js, shared with the section header's own triad.
   const TRI_TIPS = {
     all: "Remove keyframe on this slide",
     some: "Only SOME selected items are keyed here — insert on all of them",
@@ -94,10 +121,32 @@
   function toggleKey() {
     app.toggleSectionKeyframes(keyPaths);
   }
+
+  // EACH ARROW'S WHOLE STATE — target, disabled, tooltip — from the ONE shared
+  // query every arrow in the app now makes (`app.jumpArrowFor` ->
+  // core/section_keyframes.jumpArrow). The section header's smaller triad reads
+  // the same thing with a subject; that is the fix for the user's "the small
+  // version didn't seem to have inherited this".
+  let prev = $derived(app.jumpArrowFor(keyPaths, -1));
+  let next = $derived(app.jumpArrowFor(keyPaths, +1));
+
+  /** Command. Jumps, unless there is nowhere to jump — THE GUARD that makes
+   * `aria-disabled` real. Native `disabled` is not used here (see the header:
+   * it would make the button unfocusable and its reason unreachable), so a
+   * disabled-looking arrow is still clickable and this is what refuses it. */
+  function jump(direction, arrow) {
+    if (arrow.disabled) return;
+    app.jumpSectionKeyframes(keyPaths, direction);
+  }
 </script>
 
-<Tooltip text="Previous keyframe">
-  <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpSectionKeyframes(keyPaths, -1)}>
+<Tooltip text={prev.tip}>
+  <button
+    class="jumpbtn"
+    aria-disabled={prev.disabled}
+    aria-label="Previous keyframe"
+    onclick={() => jump(-1, prev)}
+  >
     <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
   </button>
 </Tooltip>
@@ -112,8 +161,13 @@
     <iconify-icon icon={TRI_ICONS[triState]} width="17" height="17"></iconify-icon>
   </button>
 </Tooltip>
-<Tooltip text="Next keyframe">
-  <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpSectionKeyframes(keyPaths, +1)}>
+<Tooltip text={next.tip}>
+  <button
+    class="jumpbtn"
+    aria-disabled={next.disabled}
+    aria-label="Next keyframe"
+    onclick={() => jump(+1, next)}
+  >
     <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
   </button>
 </Tooltip>

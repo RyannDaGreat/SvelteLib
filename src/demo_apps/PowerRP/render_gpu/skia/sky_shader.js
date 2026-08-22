@@ -684,8 +684,14 @@ const PROXY_DAY_RAMP_HI = 0.12;                // …and where it reaches full d
 function clampN(x, lo, hi) { return Math.min(hi, Math.max(lo, x)); }
 /** Pure. smoothstep(e0,e1,x). @example sstep(0, 1, 0.5) // 0.5 */
 function sstep(e0, e1, x) { const t = clampN((x - e0) / (e1 - e0 || 1e-6), 0, 1); return t * t * (3 - 2 * t); }
-/** Pure. Component-wise lerp of two rgb triples. @example mix3([0,0,0],[1,1,1],0.5) // [0.5,0.5,0.5] */
-function mix3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+/** Pure. Component-wise lerp of two rgb triples. THE sky family's one copy —
+ *  sky_sun_shader.js and sky_moon_shader.js import it from here (the latter had it
+ *  as `moonMix3`, an identical body under a prefixed name, which is duplication a
+ *  grep for "mix3" does not even reveal). Exported from this module rather than a
+ *  new one because the family already treats this file as its main entry and
+ *  neither sibling is imported BY it, so there is no cycle to create.
+ *  @example mix3([0,0,0],[1,1,1],0.5) // [0.5,0.5,0.5] */
+export function mix3(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
 
 /**
  * Pure function. The sky PROXY stand-in spec: a vertical linear gradient from a

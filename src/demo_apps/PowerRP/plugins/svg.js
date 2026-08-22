@@ -230,6 +230,169 @@ function svgRimOutlines(state) {
   return outlines;
 }
 
+// ── ARTWORK TREATMENTS (R7-39 presets law) ────────────────────────────────────
+// EVERY ROW SETS EVERY EFFECTS KEY, IDENTITIES INCLUDED — the image.js precedent,
+// verbatim reasoning: application is an OVERLAY (app.applyPreset writes exactly
+// the keys in `props`), so a knob a row omits keeps whatever the PREVIOUSLY
+// HOVERED row left there. The OFF constants are named so every row reads the
+// same shape, and COMPLETENESS IS DERIVED FROM BUNDLES.effects
+// (tests/svg_presets_test.js), not transcribed.
+//
+// EVERY ROW ALSO SETS THE FULL RECOLOR/BORDER KEY SET: `ink`, `fill`,
+// `preserveAspect`, `stroke`, `strokeWidth`, `cornerRadius`, `opacity` — this
+// widget's whole-look identity, for the same overlay reason. `fill` is a PAINT
+// row (svgOverridePaint/svgOverrideSlotPaint): a plain hex string is a legal
+// solid override exactly like `svgOverridePaint({fill: "#ff00ff"})`'s own
+// doctest, and SVG_FILL_OFF is the shared OFF shape for the rows that leave the
+// artwork's own colours alone.
+//
+// NO PRESET SETS `svgSrc`, `svgSource` or `svgUrl` — the artwork is the
+// author's content, the qrcode `data` / image `src` rule verbatim. NO PRESET
+// SETS `preserveAspect` to anything but its own default (true): none of these
+// treatments is about squash-vs-fit, so every row states it explicitly (true)
+// rather than silently inheriting whatever a previously-hovered preset left —
+// the same "state every identity key" reasoning the effects/border keys get.
+//
+// DIVERSE BY TREATMENT CLASS: a colour system (Stencil Recolor, Duotone Wash),
+// a line-only reduction (Outline Ghost, Blueprint), a physical finish (Sticker,
+// Framed Plate), a light source (Neon Glow, Pop Badge's bloom), a depth cue
+// (Engraved's inner shadow), a translucency (Watermark Faint), a print artifact
+// (Print Registration's offset double), and a punch/impact look (Ink Stamp) —
+// eleven kinds of thing an imported graphic can become, not one kind eleven
+// times.
+//
+// BORDERS ARE REAL WHERE THE NAME SAYS SO, and this widget's own INK is true
+// vector (unlike image.js's raster-in-bare-node blind spot): a fresh SVG
+// widget's DEFAULT_SVG_SRC is a real rounded rect + check path, so every
+// treatment below — recolor, effects, border alike — paints against genuine
+// content in bare node. No harness-accommodation flags are needed here.
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLUR_OFF = 0;
+
+const SVG_PRESETS = [
+  {
+    name: "Stencil Recolor",
+    description: "The whole graphic reduced to one flat ink, like a spray stencil — every shape's fill and outline take a single solid ochre, silhouette and all.",
+    props: {
+      ink: "#000000", fill: "#c96f1f", preserveAspect: true,
+      stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Outline Ghost",
+    // A near-invisible fill (not fully transparent — the artwork's own paints
+    // would otherwise show through unchanged, defeating the point) reduces the
+    // graphic to almost nothing but its keyline, then a strong stroke reinstates
+    // the silhouette as a pure outline.
+    description: "A faint, near-erased fill so the graphic reads as line-work only — a ghost of the artwork traced in a crisp dark outline.",
+    props: {
+      ink: "#000000", fill: "#00000008", preserveAspect: true,
+      stroke: "#1a1a1a", strokeWidth: 2, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Sticker",
+    description: "A die-cut sticker: the artwork tinted white-hot at its own colours' expense is not the trick here — a thick white keyline stands the graphic off the page, with a soft outer glow so it reads as printed vinyl catching light.",
+    props: {
+      ink: "#000000", fill: SVG_FILL_OFF, preserveAspect: true,
+      stroke: "#ffffff", strokeWidth: 12, cornerRadius: 8, opacity: 1,
+      shadow: { dx: 0, dy: 6, blur: 10, color: "#000000", opacity: 0.35 }, bloom: { radius: 18, strength: 0.45 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Blueprint",
+    description: "Monochrome cyan-on-white line art, the way an architectural print reduces every drawing to one ruled colour — the graphic's own palette replaced entirely, framed by a thin technical border.",
+    props: {
+      ink: "#dbe9ff", fill: "#1a3a6b", preserveAspect: true,
+      stroke: "#dbe9ff", strokeWidth: 3, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Engraved",
+    // A dark stencil fill plus a bright inner shadow reads as light catching the
+    // near lip of a cut groove — the depth cue an engraving's incised line
+    // relies on, without any actual bevel geometry to draw.
+    description: "A pressed, incised look: the graphic recessed into a single dark tone with a bright inner shadow tracing the near edge of the groove, the way light catches an engraved line.",
+    props: {
+      ink: "#000000", fill: "#2b2b2b", preserveAspect: true,
+      stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: -2, dy: -2, blur: 3, color: "#ffffff", opacity: 0.55 }, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Neon Glow",
+    description: "A bright cyan tube-light silhouette on a wide, saturated bloom — the artwork rebuilt as a single glowing line the way a neon sign traces its tubing.",
+    props: {
+      ink: "#7dfaff", fill: SVG_FILL_OFF, preserveAspect: true,
+      stroke: "#7dfaff", strokeWidth: 4, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: { radius: 34, strength: 1.1 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Watermark Faint",
+    description: "Low opacity and nothing else — a background reference mark that should read as present but never compete with whatever sits over it.",
+    props: {
+      ink: "#000000", fill: SVG_FILL_OFF, preserveAspect: true,
+      stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 0.14,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Framed Plate",
+    description: "A dark engraved-metal border with an inset cream backing — the plaque a museum label or a brass nameplate is stamped onto, the graphic itself untouched inside it.",
+    props: {
+      ink: "#000000", fill: SVG_FILL_OFF, preserveAspect: true,
+      stroke: "#3a2a18", strokeWidth: 10, cornerRadius: 2, opacity: 1,
+      shadow: { dx: 0, dy: 4, blur: 8, color: "#000000", opacity: 0.4 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 6, color: "#f2e4c8", opacity: 0.5 }, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Duotone Wash",
+    description: "A single warm magenta standing in for the whole graphic, laid down through a multiply blend so it reads as a tinted duotone print rather than a flat stencil.",
+    props: {
+      ink: "#000000", fill: "#c4288f", preserveAspect: true,
+      stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "multiply", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Pop Badge",
+    description: "A round chip in a bright single ink with a punchy bloom behind it — the artwork shrunk to an app-icon-style badge, lit as if it were the button it looks like.",
+    props: {
+      ink: "#000000", fill: "#ffd400", preserveAspect: true,
+      stroke: "#1a1a1a", strokeWidth: 6, cornerRadius: 4096, opacity: 1,
+      shadow: { dx: 0, dy: 4, blur: 6, color: "#000000", opacity: 0.3 }, bloom: { radius: 22, strength: 0.5 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Print Registration",
+    // A hard, unblurred, fully-opaque black offset stroke behind the artwork —
+    // the misaligned-plate look a print run leaves when its colour separations
+    // don't quite line up. gaussianBlur:0 and shadow.blur:0 keep the double
+    // edge crisp rather than soft, which is the whole joke of the look.
+    description: "A hard black double-strike offset from the artwork, the way a misregistered print plate leaves a crisp ghost edge instead of a soft shadow.",
+    props: {
+      ink: "#000000", fill: SVG_FILL_OFF, preserveAspect: true,
+      stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      shadow: { dx: 6, dy: 6, blur: 0, color: "#000000", opacity: 1 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+    },
+  },
+  {
+    name: "Ink Stamp",
+    description: "A slightly soft, saturated red monochrome — the over-inked, faintly-bled impression a rubber stamp leaves rather than a clean printed mark.",
+    props: {
+      ink: "#8a0f1a", fill: "#8a0f1a", preserveAspect: true,
+      stroke: "#8a0f1a", strokeWidth: 0, cornerRadius: 0, opacity: 0.82,
+      shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 1.5, gaussianBlur: BLUR_OFF,
+    },
+  },
+];
+
 export const svgPlugin = {
   type: "svg",
   ephemeral: EPHEMERAL.NONE,
@@ -304,6 +467,7 @@ export const svgPlugin = {
     ...props("opacity"),
     ...bundle("effects"),
   ],
+  presets: SVG_PRESETS,
   /**
    * Near-pure function (the RETURNED IR is a pure function of state; the adapter
    * memoizes the parse as a side effect). State → display-list commands (local

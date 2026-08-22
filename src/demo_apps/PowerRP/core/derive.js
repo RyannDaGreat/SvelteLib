@@ -41,6 +41,7 @@
 
 import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
+import { describeOwner, isConfigurationError, throwMessage } from "./paint_containment.js";
 import { boxCenter, unionRect, unmirroredLocal, unsignedState } from "./geometry.js";
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 import { allPaintModifierPoints, paintCapableKeys } from "./paint_handles.js";
@@ -49,7 +50,13 @@ import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 // THE NODE-GRAPH SEAM (see deriveRenderTree). One-way: nodeflow.js imports nothing
 // from this module, so the port/type/connection layer stays independently testable
 // in bare node with no derivation in the picture.
-import { EXEC_KEY, evaluateNodeGraph, inputRefs, portLayout } from "./nodeflow.js";
+import { EXEC_KEY, evaluateNodeGraph, inputRefs, portLayout, resolveNode, topoOrder } from "./nodeflow.js";
+// THE FRAME DOMAIN — per-frame triggers (core/exec_frame.js). Its step is driven from
+// deriveRenderTree, the one pass that produces the picture; see the call site for why
+// running several times per frame is safe rather than merely tolerated.
+import { firedWireKeys, stepFrameDomain } from "./exec_frame.js";
+import { beginSimulationStep, cameraMaxTimestep } from "./simulation_history.js";
+import { particleTime } from "../render_gpu/particle_clock.js";
 
 /**
  * Query (reads the registry; reports once on a refused pair). THE MORPH
@@ -530,6 +537,65 @@ export function deriveRenderTree(state, registry, project = "") {
   // guarded on a plugin actually declaring ports — so every existing document
   // derives byte-identically, with the very same state objects.
   const nodeValues = evaluateNodeGraph(items, registry).values;
+  // ── THE FRAME DOMAIN'S ONE DRIVER (core/exec_frame.js) ─────────────────────
+  // Per-frame triggers step HERE, at the same seam the node graph resolves, for the
+  // reason stated just above about the graph itself: a node's readout and the wire
+  // feeding it must not be one frame apart, and this is the pass that produces the
+  // picture. A Schmitt trigger's pulse and the counter's new tally therefore reach
+  // the canvas on the frame they happened.
+  //
+  // CALLING IT FROM A FUNCTION THAT RUNS SEVERAL TIMES PER FRAME IS SAFE, AND THAT
+  // IS THE WHOLE POINT OF THE DESIGN RATHER THAN AN OVERSIGHT. `stepFrameDomain`
+  // reads `prev` and writes `cur` in core/simulation_history.js's two tables, which
+  // roll ONLY when the clock moves — so the 2-3 derives web/CanvasView.svelte
+  // performs on a hover produce the identical answer and leave the identical table
+  // (pinned by tests/execframe_test.js's Δt = 0 check). A frozen consumer — a
+  // thumbnail, the minimap, a PNG export — writes nothing at all, structurally.
+  //
+  // AND IT COSTS A DECK WITHOUT ONE NOTHING: `stateUsesFrameDomain` is a scan for a
+  // plugin declaring `frameStep` and returns before allocating anything, so every
+  // document that predates this derives byte-identically.
+  // `beginSimulationStep`, NOT `simulationTimestep`, and the difference is the whole
+  // mechanism rather than a choice between two spellings of "how long is this frame".
+  // MEASURED: with `simulationTimestep` the deck never ticked. That function OBSERVES
+  // the clock and never ROLLS the history tables (its own docblock is explicit —
+  // "Query→value (observes the clock; never rolls the history)"), so `prev` was never
+  // published, every node read `firstStep` as true forever, and every latch sat at its
+  // initial condition while the clock ran. `beginSimulationStep` is the one that rolls
+  // `prev ← cur` — and it rolls ONLY when the clock has moved, which is precisely what
+  // makes calling it from a function that runs several times per frame correct.
+  const frame = stepFrameDomain(items, registry, beginSimulationStep(particleTime(), cameraMaxTimestep(state)));
+  // WHICH PINS PULSED, published for `deriveWires` to colour with. It is a module
+  // cell rather than a return value because `deriveRenderTree` returns a NODE LIST
+  // and every one of its ~20 callers destructures it as one; widening that signature
+  // to thread a second value would touch every pixel consumer in the app, including
+  // files other lanes hold open. The cell is written by the pass that computed it and
+  // read by `deriveWires` moments later in the same walk — and it is REPLACED, never
+  // mutated, so a reader either sees this frame's set or the previous one's, never a
+  // half-built one. A deck with no frame nodes writes the same frozen empty set every
+  // time, so nothing that predates this can observe the cell at all.
+  lastFiredWires = frame.pulses > 0 ? firedWireKeys(frame.fired) : NO_FIRED_WIRES;
+  for (const [id, outputs] of Object.entries(frame.outputs)) {
+    // MERGED OVER the graph's own answer rather than replacing it: a frame node may
+    // publish some ports statically (a threshold readout) and some per-step (a
+    // tally), and every reader downstream — the display's `nodePorts`, an equation
+    // reading `= counter.out` — should see one set of values.
+    if (nodeValues[id]) nodeValues[id] = { ...nodeValues[id], outputs: { ...nodeValues[id].outputs, ...outputs } };
+  }
+  // AND THE CONSUMERS' INPUTS ARE RE-RESOLVED, because merging an output is only half
+  // of it. `evaluateNodeGraph` above ran BEFORE the step, so a display wired to a
+  // counter still holds the tally as it was at the START of this frame — MEASURED in
+  // the browser: the counter climbed 0 → 1 → 2 while the display beside it read 0
+  // forever, which looks exactly like a broken display rather than a stale read.
+  // Re-resolving in topological order lets this frame's values propagate the length of
+  // the chain, and it is skipped entirely when nothing stepped.
+  if (Object.keys(frame.outputs).length > 0) {
+    for (const id of topoOrder(items).order) {
+      if (frame.outputs[id] || !nodeValues[id]) continue; // a stepper keeps what it published
+      const re = resolveNode(items, registry, id, (srcId) => nodeValues[srcId]?.outputs);
+      if (re) nodeValues[id] = re;
+    }
+  }
   // `active` is a universal widget property (default true). Delete in the UI
   // keyframes active:false — the item KEEPS its identity and properties and
   // simply isn't derived on slides where it's inactive (this is how objects
@@ -1566,6 +1632,57 @@ export function constraintPull(mp, state, desired) {
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}).map((m) => m.id) // ["fill-grad-center"]
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: "#f00"}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}) // [] (a solid fill earns no beads)
  */
+/**
+ * Near-pure function (reportOnce logs to console and remembers the key). THE
+ * HANDLE-TIME CONTAINMENT BOUNDARY — this plugin's own `modifierPoints(state)`,
+ * or an EMPTY LIST plus a loud report if it throws.
+ *
+ * This is the twin of render_gpu/ports.js's emit-time boundary, and it exists
+ * because the two paths had different blast radii for the SAME bad state
+ * (R7-31). A plugin throw inside `emit()` has been contained since that seam
+ * was written — the item draws an error box and the rest of the scene paints.
+ * The handle path had NO such boundary: `nodeModifierPoints` is called BARE
+ * from web/CanvasView.svelte and web/app.svelte.js, so a throwing
+ * `modifierPoints` became an app-level pageerror. Measured on the pptxPreset
+ * widget, that was the difference between an error box and the editor going
+ * down on SELECTING an item — 81 of 187 PowerPoint presets, because those are
+ * the ones that also declare adjust handles.
+ *
+ * HANDLES ARE AN AFFORDANCE, SO DEGRADING TO NONE IS HONEST. An empty list
+ * means the item shows no yellow diamonds — it is still selectable, movable,
+ * resizable and deletable, so the user retains every route to fix or remove
+ * it. That is strictly better than the alternative on offer, which is no
+ * editor at all. The throw is NOT swallowed: the item and the message are
+ * named on the console, once per node+message (this runs every frame), and the
+ * real stack is logged so a determinism bug stays diagnosable.
+ *
+ * A BACKEND-CONFIGURATION failure escapes untouched — the same line
+ * emitNode and paintNodeRun both draw: that class of error is the caller's
+ * wiring, broken for the whole surface, and must not be reported per-item.
+ *
+ * @param {object} node - a derive render node (carries .plugin/.state)
+ * @returns {object[]} the plugin's modifier points, or [] if it threw
+ *
+ * @example pluginModifierPoints({plugin: {}, state: {}}) // [] (no modifierPoints declared)
+ * @example pluginModifierPoints({plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}, state: {}}) // [{id: "a", x: 1, y: 2}]
+ * @example // a throwing plugin costs its own handles, not the app
+ * @example pluginModifierPoints({itemId: "i1", type: "pptxPreset", plugin: {modifierPoints: () => { throw new Error("bad adj"); }}, state: {}}) // []
+ */
+function pluginModifierPoints(node) {
+  try {
+    return node.plugin.modifierPoints?.(node.state) ?? [];
+  } catch (e) {
+    if (isConfigurationError(e)) throw e;
+    const msg = throwMessage(e);
+    const who = describeOwner({ itemId: node.itemId, type: node.type, state: node.state });
+    if (reportOnce(
+      `derive:modifierPoints:${node.itemId}:${msg}`,
+      `PowerRP: item ${who} failed to compute its EDIT HANDLES — ${msg}. It is shown without handles; the item is still selectable and editable. Fix or delete that item to restore them.`,
+    )) console.error(e); // the real stack, once — a determinism bug must stay diagnosable
+    return [];
+  }
+}
+
 export function nodeModifierPoints(node) {
   // THE GRADIENT BEADS ARE DERIVED, NOT OPTED INTO (core/paint_handles.js). They
   // are a function of the PAINT, not the shape, so they are appended here for
@@ -1579,7 +1696,7 @@ export function nodeModifierPoints(node) {
   // beads land on its ink with no per-plugin sign handling, which is exactly the
   // thing a single derive seam buys over seven spreads.
   const rows = [
-    ...(node.plugin.modifierPoints?.(node.state) ?? []),
+    ...pluginModifierPoints(node),
     ...allPaintModifierPoints(node.state, paintCapableKeys(node.plugin)),
   ];
   return rows.map((m) => {
@@ -1676,8 +1793,30 @@ export function nodePortAnchors(node) {
  * WIRES ARE NOT WIDGETS (user ruling): this returns plain geometry records, never
  * render nodes, and nothing here ever enters the item map.
  *
+ * ── THE FLASH IS AN ARGUMENT, NOT A LOOKUP (per-frame triggers) ─────────────
+ * > *"On frames where triggers fire, the wires connecting them should change color
+ * > to show that something happened."* (user, 2026-08-12)
+ *
+ * `firedKeys` is the set of `"<fromItem>.<fromPort>"` that pulsed THIS frame —
+ * `core/exec_frame.firedWireKeys(...)` builds it from the frame domain's step. A wire
+ * whose source pin is in the set carries `fired: true`, and
+ * `core/node_chrome.wireOps` paints it in the flash colour.
+ *
+ * IT IS PASSED IN RATHER THAN READ, and that keeps this function PURE: whether a
+ * trigger fired is a fact about a simulation STEP, and a `deriveWires` that consulted
+ * the ambient history table would produce different geometry on two derives of one
+ * frame — the exact thing `core/exec_frame.js` is shaped to prevent one level up.
+ * Passing `undefined` (every existing caller) stamps nothing and returns the same
+ * records it always did, so nothing that predates the frame domain changed.
+ *
+ * DERIVED, NEVER STORED: `plugins/node_display.js` states the rule and
+ * `plugins/node_button.js` the sharp version — *"a moment is not a value"*. A
+ * `fired` leaf in the document would be ephemeral state written to disk.
+ *
  * @param {object[]} nodes - derived render nodes
- * @returns {object[]} [{from: {item, port, x, y}, to: {item, port, x, y}, type}]
+ * @param {Set<string>} [firedKeys] - "<item>.<port>" for every exec pin that pulsed
+ *   this frame (core/exec_frame.firedWireKeys), or undefined for none
+ * @returns {object[]} [{from: {item, port, x, y}, to: {item, port, x, y}, type, color?, fired?}]
  *
  * @example deriveWires([]) // []
  * @example // a→b on a number port: one wire, colored by the SOURCE type
@@ -1685,7 +1824,28 @@ export function nodePortAnchors(node) {
  * @example // AN EXEC WIRE IS STORED ON THE OTHER SIDE and draws identically:
  * @example deriveWires([{itemId: "a", world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80, exec: {then: {item: "b", port: "run"}}}, plugin: {ports: () => ({outputs: [{key: "then", type: "exec"}]})}}, {itemId: "b", world: {x: 200, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({inputs: [{key: "run", type: "exec"}]})}}])[0].type // "exec"
  */
-export function deriveWires(nodes) {
+/** The empty fired set, shared — so a deck with no frame nodes allocates nothing and
+ *  every reader gets one identity to compare against. */
+const NO_FIRED_WIRES = Object.freeze(new Set());
+
+/** Which exec pins pulsed on the most recent `deriveRenderTree` pass. Written there,
+ *  read by `deriveWires` — see the write site for why this is a cell rather than a
+ *  return value, and why replacing (never mutating) it is what keeps it safe. */
+let lastFiredWires = NO_FIRED_WIRES;
+
+/**
+ * Query. The exec pins that pulsed on the most recent derive — what `deriveWires`
+ * colours with when no set is passed explicitly.
+ *
+ * @returns {Set<string>} "<item>.<port>" keys, empty when nothing fired
+ *
+ * @example // firedWiresThisFrame().size // 0 on a deck with no per-frame triggers
+ */
+export function firedWiresThisFrame() {
+  return lastFiredWires;
+}
+
+export function deriveWires(nodes, firedKeys = lastFiredWires) {
   const anchorsByItem = new Map();
   for (const n of nodes ?? []) {
     if (typeof n.plugin?.ports !== "function") continue;
@@ -1697,9 +1857,15 @@ export function deriveWires(nodes) {
     // The wire is the colour of its SOURCE bead: the type's, or the port's own
     // `color` when it declared one (carried here so core/node_chrome.wireOps and
     // the exporters paint the cable the colour of the socket it leaves).
+    // `fired` is stamped ONLY when true, so a wire on a frame with no pulse — which
+    // is every wire on every frame of every deck that predates the frame domain — is
+    // the byte-identical record it always was, with no new key. `color` follows the
+    // same rule: absent unless the port declared one.
+    const fired = firedKeys?.has(`${from.item}.${from.port}`) ? { fired: true } : null;
     wires.push({
       from: { ...from, x: src.x, y: src.y }, to: { ...to, x: dst.x, y: dst.y }, type: src.type,
       ...(src.color !== undefined ? { color: src.color } : {}),
+      ...fired,
     });
   };
   for (const n of nodes ?? []) {

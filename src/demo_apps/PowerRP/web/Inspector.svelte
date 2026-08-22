@@ -36,7 +36,7 @@
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
-  import { appRankItems } from "./searchRank.js";
+  import { appRankItems, appRankGrouped } from "./searchRank.js";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import NumericField from "./NumericField.svelte";
@@ -54,6 +54,8 @@
   import LabelDivider from "./LabelDivider.svelte";
   import GalleryPopup from "./GalleryPopup.svelte";
   import MultiSelectModeToggle from "./MultiSelectModeToggle.svelte";
+  import Vector2Pad from "./Vector2Pad.svelte";
+  import Vector2Field from "./Vector2Field.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
@@ -63,10 +65,16 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
-  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
+  // `rowKindOf` is imported AS `rowKind`: the nine call sites below read better
+  // with the short name, and the alias keeps this file's local vocabulary while the
+  // BODY comes from core. It replaces a hand-written copy of that body (and with it
+  // the raw `RETIRED_ROW_KINDS` import, which existed only to feed that copy) —
+  // see core/properties.js's rowKindOf for why the read is single-sourced.
+  import { CUSTOM_CATEGORY, PROPS, rowKindOf as rowKind, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage, withCompoundRows, colorCompoundRow, ASPECT_LOCK_KEY, aspectLockedPair } from "../core/properties.js";
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_DEFAULT, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
+  import { VEC2_ROW_KIND, paintColorPath } from "../core/vector_values.js";
   import { EXEC_CAT, NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleExecTargets, compatibleSources, detachPairs, inputRefs, isNodeRef, nodeInputLabel, wirePairsFor } from "../core/nodeflow.js";
   import { OUTPUTS_CAT, outputPropertyRows } from "../core/output_properties.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
@@ -351,9 +359,33 @@
    */
   function sectionPaths(cat, opts) {
     if (opts?.keyframes === false || opts?.disabled) return [];
-    if (opts?.multi) return sectionKeyPaths(cat.rows, rowItemIds, writeKey);
+    // A COMPOUND IS NOT A PATH — flatten to its LEAVES first. `xy` is a grouping
+    // id, not a stored slot, so a section bubble that took it literally would
+    // keyframe ["items", id, "xy"] and silently stop keyframing x and y at all.
+    const rows = leafRows(cat.rows);
+    if (opts?.multi) return sectionKeyPaths(rows, rowItemIds, writeKey);
     if (opts?.itemId == null) return [];
-    return sectionKeyPaths(cat.rows, () => [opts.itemId], writeKey);
+    return sectionKeyPaths(rows, () => [opts.itemId], writeKey);
+  }
+
+  /**
+   * Pure function. Flattens a row list to its LEAF rows, descending through every
+   * compound at ANY depth (core/properties.js's arbitrary-depth rule; nothing
+   * here counts levels).
+   *
+   * THIS IS THE ONE ANSWER TO "WHICH REAL PROPERTIES DOES THIS STAND FOR", and
+   * both consumers need exactly it: a SECTION bubble reads the leaves of every
+   * row in the category, and a COMPOUND's own diamond reads the leaves under that
+   * one node. Sharing it is what makes those two diamonds agree — a compound
+   * showing "all" inside a section showing "some" is then arithmetic, not a bug.
+   *
+   * @example leafRows([{key: "opacity"}]).map((r) => r.key) // ["opacity"]
+   * @example // a compound contributes its children, never its own id:
+   * @example leafRows([{key: "xy", compound: true, children: [{key: "x"}, {key: "y"}]}]).map((r) => r.key)
+   * @example // ["x", "y"]
+   */
+  function leafRows(rows) {
+    return rows.flatMap((r) => (r.compound ? leafRows(r.children) : [r]));
   }
 
   /**
@@ -520,7 +552,7 @@
    *     >>> // groupRows([{key:"ghostCount",category:"custom"}], null, "Lens Flare")
    *     >>> // → [{id:"custom",title:"Lens Flare settings",rows:[…ghostCount]}]
    */
-  function groupRows(rows, state = null, widgetTitle = null) {
+  function groupRows(rows, state = null, widgetTitle = null, channelState = null) {
     const buckets = new Map();
     for (const row of rows) {
       if (state && typeof row.visibleWhen === "function" && !row.visibleWhen(state)) continue;
@@ -538,22 +570,82 @@
       title: id === CUSTOM_CATEGORY
         ? customCategoryTitle(widgetTitle)
         : CATEGORY_TITLES[id] ?? (id.charAt(0).toUpperCase() + id.slice(1)),
-      rows: buckets.get(id),
+      // COMPOUND ROWS ARE FOLDED HERE, AT THE ONE SEAM EVERY PANEL SHARES
+      // (workstream COMPOUND_; core/properties.js's COMPOUND ROWS header holds
+      // the reasoning). Folding after bucketing rather than before is what makes
+      // it safe: a compound's leaves all declare the same category (they are one
+      // property in the author's head), so grouping first means a compound can
+      // never straddle two sections — and the fold sees exactly the rows this
+      // section will render, including the ones `visibleWhen` just dropped.
+      // A widget missing any leaf keeps its plain rows, unchanged.
+      //
+      // COLOUR CHANNEL CHILDREN ARE GENERATED IN THE SAME BREATH (workstream
+      // VECUI_, R7-36's grammar over R7-38's addresses). The two seams answer
+      // different questions and compose in that order: withCompoundRows FOLDS
+      // several declared rows into one, and channelExpanded GIVES one row
+      // children it never declared. Running the fold first means a colour row
+      // that some future compound absorbs is expanded as that compound's CHILD,
+      // which is the arbitrary-depth rule already in force.
+      //
+      // OPT-IN PER CALL SITE, not a global: only the SINGLE-SELECTION panel
+      // passes `channelState`. The multi panel declines because its selected
+      // paints may be different kinds (no single answer to "does this have a
+      // colour"), and the creation/transition panels have no stored paint to ask.
+      rows: channelState ? channelExpanded(withCompoundRows(buckets.get(id)), channelState) : withCompoundRows(buckets.get(id)),
     }));
   }
 
   /**
-   * Pure function. True iff this row RESTACKS to the panel's full width, i.e. it
-   * has no label⟷value boundary at --a-label-frac for a divider to mark.
+   * Pure function. A row list with every colour row that HAS an addressable
+   * colour turned into its channel compound, against ONE item's raw state.
    *
-   * Two kinds do: a LIST row (app.css `.row.row-list` — the list gets its own
-   * full-width second line) and a PAINT row (`:has(.gradient-presets)` — the
-   * gradient stack's mode strip, preset library and stops list span the panel).
-   * Both are declared by the ROW, which is why this is answerable here without
-   * touching the DOM — the earlier attempt measured offsetTop at runtime and kept
-   * racing the category's mount (see LabelDivider's header).
+   * ── THE ABSENCE RULE IS ENFORCED HERE, AND IT IS A QUESTION ABOUT THE VALUE ──
+   * "For paints whose kind has no addressable colour the disclosure is ABSENT,
+   * not disabled-and-lying." WHICH KINDS those are is core's (`paintColorPath` —
+   * off/material/crossfade answer null), but WHICH KIND THIS PAINT IS RIGHT NOW
+   * is a fact about the stored value, not about the row declaration. So
+   * core/properties.js's generator decides what a colour row COULD have, and this
+   * decides whether THIS item's paint actually does.
    *
-   * @param {{kind: string, paint?: boolean}} row An inspector row def.
+   * A paint the author switches to Off therefore LOSES its triangle rather than
+   * keeping a dead one, and switching back restores it — the control tracks the
+   * value, which is the whole point of not rendering a disabled lie.
+   *
+   * RECURSES INTO COMPOUNDS, so a colour row nested inside a future compound
+   * still gets its channels (the arbitrary-depth rule; nothing counts levels).
+   */
+  function channelExpanded(rows, state) {
+    return rows.map((row) => {
+      if (row.compound) return { ...row, children: channelExpanded(row.children, state) };
+      const node = colorCompoundRow(row);
+      if (!node) return row;
+      // A PAINT is asked about its own value; a PLAIN colour row always has one
+      // (its value IS the colour), so it never consults paintColorPath. An ABSENT
+      // paint keeps its channels — the slot simply has not been written yet, and
+      // its default is a solid colour.
+      if (!row.paint) return node;
+      const paint = valueAt(state, writeKey(row));
+      return paint !== undefined && paintColorPath(paint) === null ? row : node;
+    });
+  }
+
+  /**
+   * Query (reads the viewer-local `compoundOpen` map — see the compound branch).
+   * True iff this row RESTACKS to the panel's full width, i.e. it has no
+   * label⟷value boundary at --a-label-frac for a divider to mark.
+   *
+   * Two kinds do unconditionally: a LIST row (app.css `.row.row-list` — the list
+   * gets its own full-width second line) and a PAINT row
+   * (`:has(.gradient-presets)` — the gradient stack's mode strip, preset library
+   * and stops list span the panel). Both are declared by the ROW, which is why
+   * those are answerable without touching the DOM — the earlier attempt measured
+   * offsetTop at runtime and kept racing the category's mount (see LabelDivider's
+   * header). A COMPOUND row is the third and is the reason this is no longer a
+   * pure function: it restacks only while DROPPED DOWN, which is panel state
+   * rather than a row aspect. It is still answered from a plain map lookup, never
+   * from the DOM, so the racing failure above cannot return.
+   *
+   * @param {{kind: string, paint?: boolean, compound?: boolean}} row An inspector row def.
    * @returns {boolean}
    *
    * @example fullWidthRow({key: "x", kind: "number"})
@@ -569,6 +661,24 @@
    * true
    */
   function fullWidthRow(row) {
+    // AN OPEN COMPOUND IS A THIRD KIND (workstream COMPOUND_). Expanded, it
+    // restacks — a big pad on the parent line and the leaves as their own rows
+    // beneath — so a divider run through it would be the "extending too far
+    // down" complaint this function exists to answer, one feature later. Its
+    // children mount their own divider run instead (see .compound-children).
+    // COLLAPSED it is an ordinary boundary row: label on the left, fields on the
+    // right, exactly the boundary a divider names.
+    // A CHANNEL PARENT IS ASKED ABOUT ITS OWN CONTROL, NOT ABOUT BEING A
+    // COMPOUND (workstream VECUI_). A colour row that gained R/G/B/A children is
+    // still rendering the SAME control it always did in the parent's value cell
+    // (`editor: "self"`), so a PAINT one still needs PaintField's full-width
+    // stack and a plain colour one still keeps the shared value column — exactly
+    // as each did before it had a triangle. Falling through to the generic
+    // compound answer below would have made a collapsed paint compound a
+    // boundary row and run the divider straight through the paint stack, which
+    // is the "extending too far down" complaint this function exists to answer.
+    if (row.compound && row.editor === "self") return fullWidthRow({ ...row, compound: false });
+    if (row.compound) return !!compoundOpen[row.key];
     const kind = rowKind(row);
     return kind === LIST_ROW_KIND || (kind === "color" && !!row.paint);
   }
@@ -631,8 +741,17 @@
   // list is itself a list property the author grows. Read beside the static rows
   // at the same two seams, so a dynamic row is grouped, gated and rendered exactly
   // like a declared one.
+  // THE CHANNEL ARGUMENT IS THE *EVALUATED* STATE, deliberately, and it is the
+  // one place these two states differ in a way that matters here. The question
+  // channelExpanded asks is "what KIND of paint is in this slot" — and for a
+  // paint bound to an equation the raw value is the expression STRING, whose
+  // kind is unanswerable, while the evaluated value is the paint the widget
+  // actually has. Passing raw state would silently drop the triangle from every
+  // equation-bound paint; passing evaluated state asks about the paint that is
+  // really there. (The channel ROWS still write raw dotted paths, as every row
+  // does — this argument only decides whether the disclosure exists.)
   let itemCategories = $derived(
-    sel ? groupRows([...(sel.plugin.inspector ?? []), ...(sel.plugin.dynamicInspector?.(sel.state) ?? []), ...outputPropertyRows(sel.plugin, sel.state)], sel.state, sel.plugin.title ?? null) : []
+    sel ? groupRows([...(sel.plugin.inspector ?? []), ...(sel.plugin.dynamicInspector?.(sel.state) ?? []), ...outputPropertyRows(sel.plugin, sel.state)], sel.state, sel.plugin.title ?? null, sel.state) : []
   );
   let creationCategories = $derived(
     creationState ? groupRows([...(app.registry.get(creationState.type)?.inspector ?? []), ...(app.registry.get(creationState.type)?.dynamicInspector?.(creationState) ?? [])], creationState, app.registry.get(creationState.type)?.title ?? null) : []
@@ -655,6 +774,97 @@
   function toggleCategory(id) {
     collapsed = { ...collapsed, [id]: !collapsed[id] };
     localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed));
+  }
+
+  // ── COMPOUND ROW DISCLOSURE (workstream COMPOUND_, backburner CY) ───────────
+  // A compound's dropped-down state is VIEWER-LOCAL and PERSISTED, for exactly
+  // the reasons the category accordion above is: it is a question about how you
+  // want to look at the panel, not about the document, so it must survive a
+  // selection change and a reload and must NOT be a document edit. Keyed by the
+  // compound's id (`xy`, `wh`) and shared across item types, so opening Position
+  // on one widget leaves it open on the next — the accordion's own rule.
+  //
+  // THE TRIANGLE IS ALWAYS VISIBLE, which is the user's explicit ask ("they're
+  // always visible those arrows") and the one place this differs from the row's
+  // other label chrome (copy-path, help, gallery are hover-only). A disclosure
+  // the author has to discover by hovering is a feature they will never find,
+  // and its state is information — "there is more inside this row" — that a
+  // hover-only glyph withholds until asked.
+  const COMPOUND_OPEN_KEY = "powerrp.inspectorCompoundOpen";
+  let compoundOpen = $state(loadCompoundOpen());
+  function loadCompoundOpen() {
+    try {
+      const raw = localStorage.getItem(COMPOUND_OPEN_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      console.warn("PowerRP: bad inspectorCompoundOpen setting, ignoring:", e);
+      return {};
+    }
+  }
+  function toggleCompound(key) {
+    compoundOpen = { ...compoundOpen, [key]: !compoundOpen[key] };
+    localStorage.setItem(COMPOUND_OPEN_KEY, JSON.stringify(compoundOpen));
+  }
+
+  /**
+   * Query. The two axes a compound's `pad2d` editor drags, resolved to the full
+   * state path each one writes. Null when the compound declares no pad or does
+   * not have exactly two leaves — a pad is a 2-vector control by construction,
+   * so a 3-vector compound gets its rows and no pad rather than a pad that
+   * silently ignores a third axis.
+   *
+   * The paths go through `writeKey`, so a compound over derived rows would write
+   * the real slots (the cx/cy rule) with no special case here.
+   */
+  function padAxes(node, itemId) {
+    if (node.editor !== "pad2d" || itemId == null) return null;
+    const leaves = leafRows(node.children);
+    if (leaves.length !== 2) return null;
+    return leaves.map((row) => ({ row, path: ["items", itemId, ...writeKey(row).split(".")] }));
+  }
+
+  // ── THE ASPECT CHAIN LOCK (backburner AF) ──────────────────────────────────
+  // The lock is an ordinary per-item boolean leaf (core/properties.js
+  // ASPECT_LOCK_KEY), so reading and writing it needs no new app API — it is the
+  // same setPreview/commitPreview pair every property row uses, and it undoes
+  // like one.
+
+  /** Query. Is this item's width/height chain locked? Absent is OFF, which is
+   *  what makes every pre-feature document byte-identical. */
+  function aspectLocked(state) {
+    return state?.[ASPECT_LOCK_KEY] === true;
+  }
+
+  /** Command. Toggles the chain, one undo unit. */
+  function toggleAspectLock(state, itemId) {
+    if (itemId == null) return;
+    app.setPreview([[["items", itemId, ASPECT_LOCK_KEY], !aspectLocked(state)]]);
+    app.commitPreview();
+  }
+
+  /**
+   * Query. The extra write a locked chain implies when ONE of w/h is edited: the
+   * OTHER axis's path and its ratio-preserving value, or null when the chain is
+   * off, this is not a w/h row, or either side is not a plain number.
+   *
+   * WHY IT DECLINES ON A NON-NUMBER RATHER THAN GUESSING. If the other axis holds
+   * an EQUATION, writing a literal over it would destroy an expression the author
+   * wrote — ColorField's standing "would overwrite the equation" discipline. The
+   * edited axis still commits; only the chained write is withheld, so the lock
+   * degrades to doing nothing rather than to doing damage.
+   *
+   * The arithmetic itself is core's (`aspectLockedPair`), shared with the canvas
+   * resize gesture so a dragged handle and a typed number cannot disagree.
+   */
+  function aspectChainWrite(key, value, state, itemId) {
+    if (itemId == null || (key !== "w" && key !== "h")) return null;
+    if (!aspectLocked(state) || typeof value !== "number") return null;
+    const before = { w: state?.w, h: state?.h };
+    if (typeof before.w !== "number" || typeof before.h !== "number") return null;
+    const after = aspectLockedPair(key, value, before);
+    const other = key === "w" ? "h" : "w";
+    if (after[other] === before[other]) return null;
+    return [["items", itemId, other], after[other]];
   }
 
   // ── Equation discoverability (path tooltip + copy-path) ───────────────────────
@@ -760,22 +970,12 @@
     return isNodeRef(ref) ? `${ref.item} ${ref.port}` : "";
   }
 
-  /**
-   * Pure function. The CANONICAL control kind for a row (core/properties.js
-   * ROW_KINDS). A current name passes straight through; a RETIRED spelling maps
-   * to its replacement, so a plugin row still carrying the old name gets its
-   * REAL control instead of falling through this dispatcher's catch-all text
-   * input — which is how a boolean would silently become a text box mid-
-   * migration. The alias table is single-sourced in core: deleting an entry
-   * there stops that spelling working here, with no edit in this file.
-   *
-   * @example rowKind({kind: "boolean"}) // "boolean"
-   * @example rowKind({kind: "checkbox"}) // "boolean" (retired V1 spelling)
-   * @example rowKind({kind: "number"}) // "number"
-   */
-  function rowKind(row) {
-    return RETIRED_ROW_KINDS[row.kind] ?? row.kind;
-  }
+  // `rowKind` — the CANONICAL control kind for a row — is core/properties.js's
+  // `rowKindOf`, imported under that name at the top of this file. A current kind
+  // passes straight through; a RETIRED spelling maps to its replacement, so a plugin
+  // row still carrying the old name gets its REAL control instead of falling through
+  // this dispatcher's catch-all text input — which is how a boolean would silently
+  // become a text box mid-migration.
 
   /**
    * Pure function. The REAL state key a row reads/writes/keyframes through —
@@ -863,21 +1063,45 @@
   // the general fix; tests/node_input_row_probe.js asserts this seam and those two
   // functions agree PAIR FOR PAIR, so they cannot drift apart later.
 
-  /** Live preview while typing/dragging a field — viewport re-renders in real
-   * time BEFORE commit (manifest rule); Enter/blur commits; Escape reverts. */
-  function previewField(key, kind, raw) {
-    const value = coerce(kind, raw);
-    if (kind === "number" && Number.isNaN(value)) return;
-    app.setPreview([[["items", pickedItemId, ...key.split(".")], value]]);
+  /**
+   * The setPreview pairs one field edit writes: the row's own value, plus any
+   * COMPANION keys the row declares for that value.
+   *
+   * A `companion(value)` row hook returns [[key, value], ...] — coupled writes
+   * that belong in the SAME preview, and therefore the SAME undo unit, as the
+   * edit that caused them (the aspect-chain lock's seam, generalized from
+   * NumericField to the plain-select path). It is DECLARATIVE: this function asks
+   * the ROW, never the widget type, so no plugin knowledge lands in the panel.
+   *
+   * The codeblock `theme` row is today's caller — a VS Code theme is background
+   * plus token colours, so picking one writes `fill` alongside `theme` (user
+   * ruling, 2026-08-12). A later manual Fill edit still wins by ordinary property
+   * order; this is the APPLY path, not load-time or render precedence.
+   */
+  function fieldPairs(key, value, companion) {
+    const pairs = [[["items", pickedItemId, ...key.split(".")], value]];
+    for (const [companionKey, companionValue] of companion?.(value) ?? [])
+      pairs.push([["items", pickedItemId, ...companionKey.split(".")], companionValue]);
+    return pairs;
   }
 
-  function commitField(key, kind, raw) {
+  /** Live preview while typing/dragging a field — viewport re-renders in real
+   * time BEFORE commit (manifest rule); Enter/blur commits; Escape reverts.
+   * Previews the companion writes too, so the hover picture is the one the click
+   * will commit. */
+  function previewField(key, kind, raw, companion = null) {
+    const value = coerce(kind, raw);
+    if (kind === "number" && Number.isNaN(value)) return;
+    app.setPreview(fieldPairs(key, value, companion));
+  }
+
+  function commitField(key, kind, raw, companion = null) {
     const value = coerce(kind, raw);
     if (kind === "number" && Number.isNaN(value)) {
       app.cancelPreview();
       return;
     }
-    app.setPreview([[["items", pickedItemId, ...key.split(".")], value]]);
+    app.setPreview(fieldPairs(key, value, companion));
     app.commitPreview();
   }
 
@@ -920,6 +1144,14 @@
    * coercion plan per item and commits once — the same one-undo-unit promise, by
    * a fold instead of a preview. Ineligible items (the camera) are skipped there
    * with their reason; the panel says so above the rows. */
+  // KNOWN BOUND — A COMPANION WRITE IS SINGLE-SELECTION ONLY, and it is stated
+  // rather than silently dropped. This path fans ONE value to N items through
+  // app.unifySelection, whose contract is one key; a row's `companion` hook would
+  // need a second fan-out to ride the same undo unit. So selecting twelve code
+  // blocks and picking a theme writes `theme` to all twelve and leaves their
+  // fills alone — the pre-ruling behaviour, which is coherent (nothing is half
+  // applied) but is NOT the single-item behaviour. Widening unifySelection to
+  // take pairs is the fix when a second companion row exists to justify it.
   function commitMulti(key, kind, raw) {
     if (key === "type") {
       app.cancelPreview();
@@ -1036,6 +1268,38 @@
   // picker that drops it when a deck is emptied down to one object would be the
   // same disappearing act at a smaller scale.
   const ALWAYS_SEARCHABLE = 0;
+
+  // The threshold for an ORDINARY select row — one whose options the plugin
+  // DECLARES (blendMode, curve, the pptx shape roster), as opposed to the
+  // document-sized sets above. The box shows when the option count EXCEEDS this.
+  //
+  // WHY A THRESHOLD AT ALL, when the ruling says "make it the default". Because
+  // the ruling's complaint is a 187-option list with no way to search it, and
+  // "always" would answer that by putting a text field over `curve`'s four
+  // entries — where the search box is TALLER THAN THE LIST IT FILTERS, steals
+  // the arrow keys' starting position, and asks the author to read a control
+  // that can only ever narrow four rows to three. The ruling is that nobody
+  // should have to REMEMBER to make a big list searchable; it is not that a
+  // 2-option enum needs a search field. The seam below satisfies it either way,
+  // so the constant is free to be right about small lists.
+  //
+  // 12, AND THE NUMBER IS MEASURED, not felt. Over all 772 declared-option
+  // select rows in the plugin roster (189 distinct keys): 397 rows sit at 1-4
+  // options, 351 sit at 13+, and the ENTIRE 5-12 span holds 24. So the app's
+  // real distribution is bimodal with a near-empty valley between the two modes,
+  // and any cut inside that valley separates the same two populations — the
+  // choice of 12 over 8 changes behaviour for 5 rows, all of them audio enums.
+  // Landing the cut at the FAR EDGE of the valley is what makes it robust: it is
+  // the point where moving it by one row changes nothing, so the constant does
+  // not need revisiting every time a plugin adds an option.
+  //
+  // 12 IS ALSO THE POINT WHERE SCANNING STOPS WORKING, which is the reason to
+  // prefer the valley's top to its bottom. Up to about a dozen rows the whole
+  // menu is one eyeful and the fastest path to an option is to LOOK at it;
+  // past that the list outruns a glance and typing beats scanning. The library
+  // default (8) is a reasonable generic guess at the same boundary; this app can
+  // do better than a guess because it can count its own rows.
+  const SELECT_SEARCH_THRESHOLD = 12;
 
   // The row currently in equation ENTRY from the ƒ button (no equation stored
   // yet), the row whose input holds focus (its draft is live), and that row's
@@ -1864,6 +2128,170 @@
      to it would COMMIT A TRANSITION TYPE ON HOVER. So the two created-item call
      sites opt in by name and the transition/not-yet-created ones simply do not.
      null (the default) = no hover preview, exactly as before. -->
+<!-- A COMPOUND ROW (workstream COMPOUND_, backburner CY; core/properties.js's
+     COMPOUND ROWS header is the doctrine). ONE parent row standing for several
+     leaf rows that the document already stores separately:
+
+       ▸ Position  [X] [Y] [pad]   ◆     collapsed
+       ▾ Position  [ big pad  ]    ◆     expanded, with X and Y as ordinary rows
+         X  [ 120 ]               ◆      beneath it
+         Y  [  40 ]               ◆
+
+     THE TRIANGLE IS ALWAYS VISIBLE and it PUSHES THE LABEL RIGHT — both are the
+     user's words verbatim ("triangles that indicate dropdown next to the property
+     name, which push the property name to the right a little (they're always
+     visible those arrows)"). The nudge is real layout, not decoration: it is what
+     makes a compound's label visibly a level above its children's.
+
+     IT RECURSES, so a compound whose child is another compound renders through
+     THIS SAME SNIPPET at the deeper indent — the user asked for sub-subproperties
+     and the architecture is the answer rather than a plan to rewrite it later.
+     `depth` is the ONLY thing that varies; no branch counts levels.
+
+     THE DIAMOND IS SectionKeyframeControls, THE SECTION BUBBLE ITSELF — not a
+     lookalike. The user's own framing is "you know how sections can be none, some
+     or all for keyframes? Same for these properties that have subproperties", so
+     the same component reads the same tri-state over this node's leaf paths, with
+     the same HALF→ALL ruling and the same one-undo-unit toggle. A second
+     implementation would be a second set of rules to keep in step. -->
+<!-- THE ONE ROW DISPATCH. A category renders rows through here rather than
+     calling propRow directly, so "is this a compound?" is asked in exactly one
+     place — the mistake this file has made before is a second branch that never
+     learns about a row aspect (see propRow's multi-selection note). Every caller
+     that renders a LIST of rows should call this; propRow stays the snippet for a
+     row already known to be a leaf. -->
+{#snippet anyRow(row, state, opts)}
+  {#if row.compound}
+    {@render compoundRow(row, state, opts, 0)}
+  {:else}
+    {@render propRow(row, state, opts)}
+  {/if}
+{/snippet}
+
+{#snippet compoundRow(node, state, opts, depth)}
+  {@const itemId = opts.itemId ?? null}
+  {@const open = !!compoundOpen[node.key]}
+  {@const leaves = leafRows(node.children)}
+  <!-- The leaf paths this node's diamond speaks for. Built through the SAME
+       sectionPaths gates the category bubble passes (a transition's config rows
+       and a not-yet-created item's grayed rows keyframe nothing), by handing it a
+       category-shaped object — so a compound can never claim a keyframing power
+       the rows beneath it visibly lack. -->
+  {@const kfPaths = sectionPaths({ rows: leaves }, opts)}
+  {@const axes = padAxes(node, itemId)}
+  <div class="row compound-row" class:compound-open={open} style="--compound-depth: {depth}">
+    <span class="row-label-chrome compound-label">
+      <!-- ALWAYS VISIBLE (never the hover-only reveal its chrome siblings use):
+           a disclosure the author must hover to discover is one they will not
+           find, and "there is more inside this row" is information the glyph is
+           there to carry at rest. -->
+      <Tooltip text={open ? `Collapse ${node.label} into one row` : `Expand ${node.label} into ${leaves.map((r) => r.label).join(" and ")}`}>
+        <button
+          class="compound-twisty"
+          aria-expanded={open}
+          aria-label={`${open ? "Collapse" : "Expand"} ${node.label}`}
+          onclick={() => toggleCompound(node.key)}
+        >
+          <iconify-icon icon={open ? "mdi:menu-down" : "mdi:menu-right"} width="14" height="14"></iconify-icon>
+        </button>
+      </Tooltip>
+      {#if node.help}
+        <Tooltip text={node.help}>
+          <button class="help-btn" aria-label={`Help: ${node.label}`}>
+            <iconify-icon icon="mdi:help-circle-outline" width="13" height="13"></iconify-icon>
+          </button>
+        </Tooltip>
+      {/if}
+      <span class="label">{node.label}</span>
+    </span>
+    <div class="compound-value">
+      <!-- COLLAPSED shows the leaves' fields INLINE plus the small pad — the
+           user's `> [X] [Y] [dragpad]`. EXPANDED shows the big pad alone here and
+           the leaves as their own full rows below — the user's `v [DragPad]`.
+           A compound with no pad editor simply shows its children inline when
+           collapsed and nothing here when open. -->
+      <!-- `editor: "self"` — A CHANNEL PARENT KEEPS ITS OWN CONTROL, open or
+           closed (core/properties.js colorCompoundRow). R7-36 asks for exactly
+           this on a colour: the triangle drops down into R/G/B/A, and the WHOLE
+           colour is still edited by the picker that was always there. So the
+           parent renders THE ROW ITSELF rather than its children inline — the
+           children are addresses over that one value, not fields that would
+           reconstitute it, and showing four numbers where the swatch belongs
+           would replace the colour editor with its own decomposition. -->
+      {#if node.editor === "self"}
+        {@render valueControl(node, state, {
+          itemMode: opts.keyframes !== false && !opts.disabled,
+          disabled: !!opts.disabled,
+          onpreview: opts.onpreview, oncommit: opts.oncommit, itemId,
+          resolvedMax: typeof node.max === "function" ? node.max(state) : (node.max ?? null),
+          hoverPreview: opts.hoverPreview,
+          writePaths: opts.multi ? multiPaths(writeKey(node)) : null,
+        })}
+      {:else if !open}
+        {#each leaves as leaf (leaf.key)}
+          {@render valueControl(leaf, state, {
+            itemMode: opts.keyframes !== false && !opts.disabled,
+            disabled: !!opts.disabled,
+            onpreview: opts.onpreview, oncommit: opts.oncommit, itemId,
+            resolvedMax: typeof leaf.max === "function" ? leaf.max(state) : (leaf.max ?? null),
+            hoverPreview: opts.hoverPreview,
+            writePaths: opts.multi ? multiPaths(writeKey(leaf)) : null,
+          })}
+        {/each}
+      {/if}
+      {#if axes && !opts.disabled && opts.keyframes !== false && !opts.multi}
+        <Vector2Pad {app} {axes} large={open} label={node.label} />
+      {/if}
+      <!-- THE ASPECT CHAIN (backburner AF), on the compound that declares it and
+           nowhere else: a chain is a statement about the RATIO of two leaves, so
+           it belongs on the row that owns both. Its glyph is the equation lock
+           chain's family (mdi:link / mdi:link-off), so a reader who knows one
+           knows this one. -->
+      {#if node.aspectLock && itemId != null && !opts.disabled && opts.keyframes !== false && !opts.multi}
+        {@const locked = aspectLocked(state)}
+        <Tooltip text={locked
+          ? `Width and height are locked to their current ratio — editing either writes the other. Click to unlock.`
+          : `Lock width and height to their current ratio, so editing either writes the other and a resize drag keeps the proportions.`}>
+          <button
+            class="compound-chain"
+            class:chain-locked={locked}
+            aria-pressed={locked}
+            aria-label={`${locked ? "Unlock" : "Lock"} aspect ratio`}
+            onclick={() => toggleAspectLock(state, itemId)}
+          >
+            <iconify-icon icon={locked ? "mdi:link" : "mdi:link-off"} width="15" height="15"></iconify-icon>
+          </button>
+        </Tooltip>
+      {/if}
+    </div>
+    {#if sectionBubbleApplies(kfPaths)}
+      <span class="kf-controls">
+        <SectionKeyframeControls {app} paths={kfPaths} title={node.label} />
+      </span>
+    {:else}
+      <span class="kf-controls" aria-hidden="true"></span>
+    {/if}
+  </div>
+  {#if open}
+    <!-- THE CHILDREN, each rendered by the ORDINARY row machinery — so a leaf
+         inside a compound keeps its equation field, its own keyframe diamond, its
+         copy-path chrome, its interp strip and its undo unit by BEING an ordinary
+         row, not by having any of those re-implemented here. That is the same
+         property the interp strip buys by rendering through propRow, and it is
+         why "compounds are pure grouping" is true of the UI and not only of the
+         storage. A nested compound recurses into THIS snippet one level deeper. -->
+    <div class="compound-children" style="--compound-depth: {depth + 1}">
+      {#each node.children as child (child.key)}
+        {#if child.compound}
+          {@render compoundRow(child, state, opts, depth + 1)}
+        {:else}
+          {@render propRow(child, state, opts)}
+        {/if}
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit, itemId = null, pathState = null, hoverPreview = null, multi = null })}
   <!-- ITEM MODE (keyframes && !disabled): equation-aware NumericField + keyframe
        diamonds, writing item property keyframes. Otherwise PLAIN MODE: a not-yet-
@@ -2402,6 +2830,15 @@
         step={row.step ?? null}
         centerAxis={row.centerAxis ?? null}
         value={row.interpParamOf ? row.default : undefined}
+        companion={(stored) => {
+          // THE ASPECT CHAIN LOCK (backburner AF). Returns the OTHER axis's pair
+          // when this is a w/h row on a chained item, and [] otherwise — which is
+          // every other row in the app, byte-identically to before. It rides
+          // NumericField's `companion` seam so the coupled write is in the SAME
+          // preview and therefore the SAME undo unit as the edit that caused it.
+          const chained = aspectChainWrite(writeKey(row), stored, state, itemId);
+          return chained ? [chained] : [];
+        }}
       />
     {:else if disabled}
       <!-- Grayed display of a not-yet-created item: read the value straight
@@ -2518,9 +2955,9 @@
          "morph from widget" over every property at arbitrary depth.
            "items"  — every eligible widget in the doc (a bento/telescope target).
            "retype" — every type THIS widget can become (core/retype.retypeChoices).
-         Enum/grouped selects (blendMode's liked family sections, curve, …) stay
-         the plain Dropdown: they are short and `optionGroups` caption inserts
-         don't survive a flat fuzzy filter. Every branch shares every other prop. -->
+         EVERY OTHER SELECT ROW IS SEARCHABLE TOO — the `{:else}` branch below is
+         a SearchableDropdown, so there is now no branch here that is not one.
+         Every branch shares every other prop. -->
     {#if row.optionsFrom === "items"}
       <SearchableDropdown
         rankFn={appRankItems}
@@ -2569,12 +3006,26 @@
            writes it until the author picks a mode. Filling it with a defaults
            entry instead would touch every document on load, which is exactly
            what that promise forbids. -->
-      <Dropdown
-        onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
+      <!-- THE DEFAULT SELECT CONTROL IS SEARCHABLE (user ruling, R7-40: "We should
+           make the default drop down that we use in this app. Probably should be
+           searchable. Shape for example, for the PowerPoint shape has so many
+           options, but Claude didn't even know or think to make it a searchable
+           drop down. So perhaps that should be the default so that Claude is in
+           the future, don't have to remember that").
+           THE RULING IS ABOUT THE SEAM, NOT THE SHAPE ROW. Making pptx_preset's
+           187 options searchable one row at a time is the fix that has to be
+           remembered again for every next big list; making the ROW RENDERER
+           searchable is the fix that cannot be forgotten, because a plugin author
+           declares `kind: "select"` and inherits it without knowing this exists.
+           So this is the one seam and there is no per-row opt-in to get wrong. -->
+      <SearchableDropdown
+        rankFn={row.optionGroups ? appRankGrouped : appRankItems}
+        minItemsForSearch={SELECT_SEARCH_THRESHOLD}
+        onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v, row.companion) : undefined}
         oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
         items={selectRowItems(row)}
         value={valueAt(state, row.key) ?? row.absentValue}
-        onchange={(v) => oncommit(row.key, "select", v)}
+        onchange={(v) => oncommit(row.key, "select", v, row.companion)}
       />
     {/if}
   {:else if kind === "asset"}
@@ -2706,6 +3157,24 @@
         {disabled}
       />
     </span>
+  {:else if kind === VEC2_ROW_KIND}
+    <!-- A `vec2` ROW (core/vector_values.js VEC2_ROW_KIND): ONE slot holding an
+         [x, y] tuple, edited as two boxes plus the drag pad — R7-36's collapsed
+         `[X] [Y] [pad]` grammar.
+
+         NOT THE COMPOUND ROW, and the difference is storage, not looks: a
+         COMPOUND groups the `x` and `y` rows a widget already declares and
+         writes two leaf paths, while this row's value IS the tuple and writes
+         one. Both reach Vector2Pad, which is why they look identical and why
+         neither re-implements the other's gesture. -->
+    <Vector2Field
+      {app}
+      path={["items", pickedItemId, ...row.key.split(".")]}
+      paths={writePaths}
+      label={row.label}
+      row={row}
+      disabled={disabled}
+    />
   {:else if kind === NODE_INPUT_ROW_KIND}
     <!-- A NODE WIDGET'S INPUT PORT (core/nodeflow.js): which output of which item
          is wired into it. The user's ruling, 2026-08-03: "none of these nodes seem
@@ -3131,12 +3600,12 @@
             <div class="cat-row-run">
               {@render labelDivider()}
               {#each run.rows as row (row.key)}
-                {@render propRow(row, state, opts)}
+                {@render anyRow(row, state, opts)}
               {/each}
             </div>
           {:else}
             {#each run.rows as row (row.key)}
-              {@render propRow(row, state, opts)}
+              {@render anyRow(row, state, opts)}
             {/each}
           {/if}
         {/each}

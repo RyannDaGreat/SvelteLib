@@ -32,7 +32,7 @@ import { arrowPlugin } from "../plugins/arrow.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { textPlugin } from "../plugins/text.js";
 import { cameraPlugin } from "../plugins/camera.js"; // newDocument() always contains THE camera
-import { anchorPointPlugin } from "../plugins/anchor_point.js";
+import { emptyPlugin } from "../plugins/empty.js";
 import { plaintextPlugin } from "../plugins/plaintext.js"; // a plain STRING slot — the string-transition target
 import { polygonPlugin } from "../plugins/polygon.js"; // a DECLARED LIST — an equation leaves() cannot see
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js"; // pin the presentation clock for `= time` tests
@@ -866,13 +866,13 @@ test("closest_to_rim: unknown widget / non-rim widget are loud entry errors", ()
   const { errors } = capturedErrorsResult(state);
   assert.ok([...errors.values()].some((m) => /Unknown widget|has no item/.test(m)), `got: ${JSON.stringify([...errors])}`);
 });
-test("anchor_point widget: its `pt` anchor is a referencable movable reference point", () => {
+test("empty widget: its `pt` anchor is a referencable movable reference point (the id legacy anchor_point decks bound to)", () => {
   const anchorReg = createRegistry();
-  anchorReg.register(anchorPointPlugin);
+  anchorReg.register(emptyPlugin);
   anchorReg.register(arrowPlugin);
   const state = {
     items: {
-      ap: { ...anchorPointPlugin.defaults, x: 100, y: 200, w: 20, h: 20, name: "My Anchor" },
+      ap: { ...emptyPlugin.defaults, x: 100, y: 200, w: 20, h: 20, name: "My Anchor" },
       ar: { ...arrowPlugin.defaults, from: { x: 0, y: 0 }, to: { x: "@ap_pt.x", y: "@ap_pt.y" } },
     },
   };
@@ -881,7 +881,7 @@ test("anchor_point widget: its `pt` anchor is a referencable movable reference p
   approx(s.items.ar.to.x, 110); // anchor pt = center = x + w/2
   approx(s.items.ar.to.y, 210);
   // Paints nothing (invisible), is a ghost, and the display slug is my_anchor_pt.
-  assert.deepEqual(anchorPointPlugin.emit(s.items.ap), []);
+  assert.deepEqual(emptyPlugin.emit(s.items.ap), []);
   assert.equal(displayToStored("my_anchor_pt.x + 5", state), "@ap_pt.x + 5");
 });
 

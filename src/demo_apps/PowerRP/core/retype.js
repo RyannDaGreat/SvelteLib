@@ -68,25 +68,12 @@
 
 import { keyframed } from "./document.js";
 import { getPath } from "./deltas.js";
-import { RETIRED_ROW_KINDS } from "./properties.js";
-
-/**
- * Pure function. The CANONICAL row kind for an inspector row: a retired
- * spelling resolves to its replacement, so two plugins that spell the same
- * control differently still compare EQUAL. Mirrors web/Inspector.svelte's own
- * rowKind — both read the one alias table in core/properties.js.
- *
- * @param {object} row - an inspector row ({key, kind, ...})
- * @returns {string} the canonical kind
- *
- * @example canonicalRowKind({kind: "number"})
- * 'number'
- * @example canonicalRowKind({kind: "checkbox"})
- * 'boolean'
- */
-export function canonicalRowKind(row) {
-  return RETIRED_ROW_KINDS[row.kind] ?? row.kind;
-}
+// The canonical row-kind read is core/properties.js's `rowKindOf` — the one
+// resolver over the one alias table. This file used to re-declare it as
+// `canonicalRowKind`, a third copy of a two-line body; it was exported but never
+// imported anywhere, so the export bought nothing and the duplication cost the
+// usual thing (its copy threw on a null row where the original answered).
+import { rowKindOf } from "./properties.js";
 
 /**
  * Pure function. A plugin's inspector rows indexed by their stored KEY, with
@@ -107,7 +94,7 @@ export function canonicalRowKind(row) {
 export function rowsByKey(plugin) {
   const out = new Map();
   for (const row of plugin.inspector ?? [])
-    if (row.key != null && !out.has(row.key)) out.set(row.key, { ...row, kind: canonicalRowKind(row) });
+    if (row.key != null && !out.has(row.key)) out.set(row.key, { ...row, kind: rowKindOf(row) });
   return out;
 }
 
@@ -331,7 +318,7 @@ export function retypedItem(doc, slideIndex, itemId, newType, folded, registry) 
  *     COLLECTION of its sibling metaballs, not just its own state.
  *
  * Over the live 96-type roster this excludes exactly five: camera, group,
- * cropbox, anchor_point, metaball. tests/retype_test.js pins that set against the
+ * cropbox, empty, metaball. tests/retype_test.js pins that set against the
  * roster, so a new scene-structural type cannot silently join the menu.
  *
  * @param {object} plugin - a registered plugin

@@ -24,6 +24,7 @@
  */
 
 import { ease } from "./interpolators.js";
+import { clamp01Or0 as clamp01 } from "./unit_interval.js";
 
 /** Matplotlib MaxNLocator's "nice" step multiples — the multiples humans read
  *  fastest (digest 01, trap #2). A step is one of these times a power of ten. */
@@ -36,15 +37,16 @@ export const MAX_TICKS = 1000;
 
 /**
  * Pure function. Clamps a value to the unit interval [0, 1] (missing/NaN → 0) —
- * the reveal/alpha guard shared with progress_bar's own clamp01.
+ * the reveal/alpha guard. THE SHARED fail-closed clamp (core/unit_interval.js
+ * `clamp01Or0`), re-exported under this name so the graph plugins keep importing
+ * it from here. This used to be a `v ?? 0` copy, which handled an absent value but
+ * passed NaN straight through; the shared one refuses every non-finite input.
  *
  * @example clamp01(0.25) // 0.25
  * @example clamp01(1.5) // 1
  * @example clamp01(-3) // 0
  */
-export function clamp01(v) {
-  return Math.max(0, Math.min(1, v ?? 0));
-}
+export { clamp01 };
 
 /**
  * Pure function. Parses a range SPEC into `{min, max, step}`. The spec is the

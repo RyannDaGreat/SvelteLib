@@ -137,6 +137,17 @@ export function quadToCubic(p0, q, p2) {
  * and feeding a curve-less subpath to the aligner would pair a real contour
  * against nothing.
  *
+ * A DRAW COMMAND AFTER `Z` RESTARTS A SUBPATH AT THE PEN, which is the SVG rule
+ * this parser was missing (R7-31). Per SVG 1.1 §8.3.3, `Z` ends the current
+ * subpath and the current point becomes the initial point of that subpath; a
+ * following segment command then begins a NEW subpath there — no second `M` is
+ * required. Six vendored PowerPoint presets exercise exactly that grammar
+ * (`accentCallout1/2/3`, `accentBorderCallout1/2/3`, whose paths genuinely read
+ * `moveTo, close, lnTo`), and because `flush()` nulls `cur`, the `L` branch used
+ * to dereference null and take the whole morph down with
+ * `Cannot read properties of null (reading 'curves')`. The vendoring is
+ * faithful; the grammar here was short one case.
+ *
  * Args:
  *   d (string): SVG path data, any valid grammar
  *
@@ -151,6 +162,11 @@ export function quadToCubic(p0, q, p2) {
  *     3
  *     >>> pathDToSubpaths("M0 0L10 0L5 8Z")[0].closed
  *     true
+ *     >>> // L after Z restarts at the pen (the closed subpath's start), no M needed
+ *     >>> pathDToSubpaths("M0 0L10 0L5 8ZL20 20").length
+ *     2
+ *     >>> pathDToSubpaths("M0 0L10 0L5 8ZL20 20")[1].start
+ *     [ 0, 0 ]
  *     >>> pathDToSubpaths("")
  *     []
  */
@@ -169,6 +185,12 @@ export function pathDToSubpaths(d) {
     if (cur && cur.curves.length) out.push({ ...cur, winding: shoelaceWinding(cur) });
     cur = null;
   };
+  // A DRAW COMMAND WITH NO OPEN SUBPATH OPENS ONE AT THE PEN. Called by L/C/Q
+  // rather than inlined three times so the SVG "segment after Z" rule has ONE
+  // statement — and so a fourth segment kind added later cannot forget it. After
+  // a `Z` the pen sits at the closed subpath's start (the `Z` branch puts it
+  // there), so the restarted subpath begins exactly where SVG says it does.
+  const restart = () => { if (!cur) cur = { start: [pen[0], pen[1]], curves: [], closed: false }; };
   while (i < toks.length) {
     const cmd = toks[i++];
     if (cmd === "M") {
@@ -177,14 +199,17 @@ export function pathDToSubpaths(d) {
       cur = { start: [pen[0], pen[1]], curves: [], closed: false };
     } else if (cmd === "L") {
       const p1 = [toks[i++], toks[i++]];
+      restart();
       cur.curves.push(lineToCubic(pen, p1));
       pen = p1;
     } else if (cmd === "C") {
       const c = [toks[i++], toks[i++], toks[i++], toks[i++], toks[i++], toks[i++]];
+      restart();
       cur.curves.push(c);
       pen = [c[4], c[5]];
     } else if (cmd === "Q") {
       const q = [toks[i++], toks[i++]], p2 = [toks[i++], toks[i++]];
+      restart();
       cur.curves.push(quadToCubic(pen, q, p2));
       pen = p2;
     } else if (cmd === "Z") {

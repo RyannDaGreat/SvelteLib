@@ -735,16 +735,32 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       break;
     }
     case "polyline": {
+      // OFF ink (parsePaint → null) means there is nothing to draw, the same guard
+      // the fill-only ops carry: applyPaint would index a null as an rgba array.
+      if (!cmd.color) break;
       const path = buildPath(CanvasKit, cmd.points, false);
-      const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity, null, aa);
+      // A GRADIENT NEEDS THE OP'S LOCAL BOUNDS (the objectBoundingBox a ramp maps
+      // over) and the CTM (a DITHERED ramp samples its threshold in device space).
+      // Both were `null` while this op's ink was parseColor'd, because a solid
+      // needs neither — the same two arguments every other builder's stroke passes.
+      const bounds = pointsBounds(cmd.points);
+      // The `null` cmd and identity `1` divisor are the values this call already
+      // implied before those arguments were reached: applyStrokeSpace stamps
+      // strokeScreenSpace only onto ops with a `stroke` field, and a polyline
+      // carries `color`/`width`, so it is skipped BY CONSTRUCTION — passing the op
+      // here would be the one way to start honouring a flag it can never carry.
+      const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity, bounds, aa, null, 1, canvas.getTotalMatrix());
       // THE POLYLINE OP'S OWN CONTRACT, not a widget knob — read from ir.js so the
       // SVG and PDF exporters cannot spell it differently (they read the same two
       // names). No `cmd` is passed to strokePaint above for the same reason: this
       // op's corners are fixed by the op, so a stamped strokeJoin must not reach it.
       p.setStrokeCap(capEnum(CanvasKit, POLYLINE_CAP));
       p.setStrokeJoin(skJoin(CanvasKit, POLYLINE_JOIN));
-      canvas.drawPath(path, p);
-      path.delete(); p.delete();
+      // withPaint, not a bare delete: a gradient ink stashes its shader on the
+      // paint for disposal, and the hand-rolled cleanup this replaced would have
+      // leaked one per frame the moment a polyline could carry a gradient.
+      withPaint(CanvasKit, p, (paint) => canvas.drawPath(path, paint));
+      path.delete();
       break;
     }
     case "polygon": {
@@ -3987,13 +4003,27 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
   // the BLURRED silhouette — a blurred widget casts a blurred shadow and blooms
   // blurrily, the same physical consistency the feather already has.
   //
-  // THE INNER SHADOW IS THE ONE EXCEPTION and it is deliberate: drawInnerShadow
-  // builds its recess from `contentImg`'s alpha through coverage blends on its own
-  // surface, with no filter seam to thread. It therefore follows the SHARP
-  // silhouette and is then drawn over a blurred widget, which is visible only as a
-  // crisper recess than the body it sits in. Cheap to accept, expensive to fix
-  // (a second full pass), and the combination — an inner shadow on a widget that
-  // is itself blurred to illegibility — is not a look anyone reaches for.
+  // THE INNER SHADOW USED TO BE AN EXCEPTION, AND THE EXCEPTION WAS THE BUG (user,
+  // 2026-08-12: "Why does inner shadow not respond to the blur effect?"). It has no
+  // filter seam to thread because it does not composite through a paint at all —
+  // drawInnerShadow builds its recess from `contentImg`'s ALPHA through coverage
+  // blends (DstOut the offset shape, DstIn the original) on its own surfaces. So it
+  // followed the SHARP silhouette and was drawn over a blurred widget: a crisp
+  // recess cut into a soft body, which reads as the blur knob simply not applying to
+  // it. The docblock here previously called that "cheap to accept"; it is not
+  // acceptable, because it makes a universal effect silently partial.
+  //
+  // THE FIX IS TO BLUR THE SILHOUETTE, NOT TO ADD A FILTER: drawInnerShadow now
+  // takes a `silhouette` image — the shape its two coverage blends read — separately
+  // from nothing else, and we hand it the BLURRED content. Both the field punch and
+  // the interior clip then use the same soft edge the widget itself is painted with,
+  // so the recess softens WITH the body instead of against it. blurredImageOf is the
+  // same ImageFilter.MakeBlur the widget's own composite uses, so the two silhouettes
+  // agree. At sigma 0 we pass `contentImg` ITSELF (no copy, no surface) ⇒ the
+  // unblurred path is byte-identical and costs nothing.
+  //
+  // The extra pass is one surface the size of the source REGION, paid ONLY when a
+  // widget has BOTH blur and an inner shadow on.
   const blurSigma = cmd.blur * scale;
   const blurred = (inner) => blurredFilter(CanvasKit, blurSigma, inner);
 
@@ -4054,7 +4084,14 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
     // recess. Drawn AFTER the widget (over it) and clipped to its silhouette, so
     // it never spills outside; UNDER bloom (bloom is a glow of the widget).
     if (cmd.innerShadow) {
-      drawInnerShadow(CanvasKit, canvas, contentImg, cmd.innerShadow, scale, rctx, region.x0, region.y0);
+      // The silhouette the recess is cut from is the BLURRED content when the blur
+      // is on, so the recess follows the same soft edge the widget above was just
+      // painted with. At sigma 0 this IS contentImg — no allocation, byte-identical.
+      const silhouette = blurSigma > 0
+        ? blurredSilhouette(CanvasKit, rctx, contentImg, blurSigma)
+        : contentImg;
+      drawInnerShadow(CanvasKit, canvas, silhouette, cmd.innerShadow, scale, rctx, region.x0, region.y0);
+      if (silhouette !== contentImg) silhouette.delete();
     }
 
     // BLOOM (on top): the content's own Gaussian-blurred copy × strength, ADD.
@@ -4457,9 +4494,42 @@ function featherEdges(CanvasKit, ctx, contentImg, feather) {
 }
 
 /**
+ * Query→build. The widget's silhouette softened by the universal BLUR effect, for
+ * the inner shadow's coverage blends to read (σ in DEVICE px; caller deletes).
+ *
+ * NOT `blurredImageOf`, and the difference is load-bearing: that helper is the
+ * glass/backdrop blur and is hardcoded to TileMode.Clamp, which EXTENDS the edge
+ * pixels outward — correct for a backdrop crop that fills its whole surface, and
+ * wrong for a silhouette, because it would invent alpha past the shape and hand
+ * the inner shadow coverage the widget does not have. DECAL treats outside as
+ * transparent, which is what the widget's own composite uses (blurredFilter), so
+ * this silhouette and the painted body agree edge for edge. featherEdges makes the
+ * same choice for the same reason.
+ */
+function blurredSilhouette(CanvasKit, ctx, contentImg, sigma) {
+  const surf = ctx.makeSurface(ctx.deviceW, ctx.deviceH);
+  if (!surf) throw new Error("paintIR(skia): makeSurface for inner-shadow silhouette returned null");
+  const c = surf.getCanvas();
+  c.clear(CanvasKit.Color4f(0, 0, 0, 0));
+  const p = new CanvasKit.Paint();
+  const filt = CanvasKit.ImageFilter.MakeBlur(sigma, sigma, CanvasKit.TileMode.Decal, null);
+  p.setImageFilter(filt);
+  c.drawImage(contentImg, 0, 0, p);
+  surf.flush();
+  const out = surf.makeImageSnapshot();
+  p.delete();
+  filt.delete();
+  surf.dispose();
+  return out;
+}
+
+/**
  * Command (draws on `canvas` at the device root). Composites an INNER SHADOW into
- * the widget's own silhouette from its offscreen render `contentImg` (whose alpha
- * IS the shape). The recipe, using only coverage blends (no ImageFilter branch):
+ * the widget's own silhouette from `contentImg` (whose alpha IS the shape). When
+ * the universal blur is on, the caller passes the BLURRED silhouette here — both
+ * steps below read this image's alpha, so the recess softens with the body rather
+ * than staying crisp inside it. The recipe, using only coverage blends (no
+ * ImageFilter branch):
  *
  *   1. FIELD = fill the surface with opaque shadow color, then DstOut the shape
  *      OFFSET by (dx, dy) — leaving shadow color everywhere EXCEPT the offset
@@ -4474,7 +4544,9 @@ function featherEdges(CanvasKit, ctx, contentImg, feather) {
  * object. `scale` = world.scale·zoom·dpr (world length → device px), so dx/dy/blur
  * match the drop shadow's device scaling.
  *
- * @param contentImg - the widget's offscreen render over the effect SOURCE REGION (alpha = shape)
+ * @param contentImg - the silhouette to cut the recess from: the widget's offscreen
+ *                     render over the effect SOURCE REGION (alpha = shape), already
+ *                     BLURRED by the caller when the universal blur is on
  * @param inner - {dx, dy, blur, color:[r,g,b,a], opacity} (world-unit dx/dy/blur)
  * @param scale - world→device length factor
  * @param ctx - {makeSurface, deviceW, deviceH} sized to the source REGION, not the device

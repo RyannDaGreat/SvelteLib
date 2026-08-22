@@ -39,9 +39,15 @@ if (PUBLIC_HOST && !APP_PORT)
 const HTTPS = TLS_CERT
   ? { cert: readFileSync(TLS_CERT), key: readFileSync(TLS_KEY) }
   : undefined;
-const HMR = PUBLIC_HOST
-  ? { host: PUBLIC_HOST, protocol: HTTPS ? "wss" : "ws", clientPort: APP_PORT }
-  : undefined;
+// POWERRP_NO_REFRESH (run_server.sh --no-refresh) disables HMR outright so file
+// churn (e.g. agents committing) never reloads a live editing session — the same
+// hmr:false the render-job worker uses to protect an in-flight render
+// (cli/render_job.js:306). false must win over the PUBLIC_HOST shape.
+const HMR = process.env.POWERRP_NO_REFRESH
+  ? false
+  : PUBLIC_HOST
+    ? { host: PUBLIC_HOST, protocol: HTTPS ? "wss" : "ws", clientPort: APP_PORT }
+    : undefined;
 
 export default defineConfig({
   root,

@@ -81,6 +81,36 @@ const PRESETS = [
     description: "A big rolling tear slab and large block jumps with minimal colour effects — a violent horizontal rip.",
     props: { intensity: 1.0, rgbSplitPx: 2, splitMode: "horizontal", blockCount: 12, maxShiftPx: 60, density: 0.5, tearRate: 5, jitterPx: 1, tearHeight: 0.28, tearSpeed: 1.2, dropout: 0.05, wobbleAmp: 0, wobbleFreq: 10, wobbleSpeed: 2, corrupt: 0.08, posterize: 0, pixelate: 0, scanlineDepth: 0.08, grain: 0.05, glow: 0.05, burstRate: 7, burstThreshold: 0.4, tint: "#ffffff" },
   },
+  {
+    name: "VHS Tracking",
+    description: "The picture rolling out of tracking on a worn tape deck: strong analog wobble low down the frame, a slow rolling tear where the head switch shows, and heavy scanlines — closer to a mistracking VCR than VHS Glitch's steadier warm transfer.",
+    props: { intensity: 0.9, rgbSplitPx: 2, splitMode: "horizontal", blockCount: 10, maxShiftPx: 4, density: 0.15, tearRate: 3, jitterPx: 5, tearHeight: 0.09, tearSpeed: 0.25, dropout: 0.02, wobbleAmp: 9, wobbleFreq: 8, wobbleSpeed: 3, corrupt: 0.01, posterize: 0, pixelate: 0, scanlineDepth: 0.45, grain: 0.14, glow: 0.08, burstRate: 2, burstThreshold: 0.6, tint: "#f0ead6" },
+  },
+  {
+    name: "RGB Split",
+    description: "The chromatic-aberration extreme, isolated: the widest colour-channel separation in the set at full intensity, with almost none of the other failure modes running — a pure red/blue fringe rather than a busy composite of effects.",
+    props: { intensity: 1.0, rgbSplitPx: 9, splitMode: "horizontal", blockCount: 6, maxShiftPx: 0, density: 0, tearRate: 1, jitterPx: 0, tearHeight: 0.01, tearSpeed: 0.1, dropout: 0, wobbleAmp: 0, wobbleFreq: 10, wobbleSpeed: 1, corrupt: 0, posterize: 0, pixelate: 0, scanlineDepth: 0, grain: 0.02, glow: 0, burstRate: 1, burstThreshold: 0.9, tint: "#ffffff" },
+  },
+  {
+    name: "Sync Loss",
+    description: "The picture tearing loose from its own sync pulse: a huge slab-height tear rolling fast and continuously (no burst gating — burstThreshold near 0 keeps it running), the whole frame shuddering rather than intermittently glitching.",
+    props: { intensity: 1.0, rgbSplitPx: 3, splitMode: "horizontal", blockCount: 8, maxShiftPx: 20, density: 0.4, tearRate: 4, jitterPx: 4, tearHeight: 0.45, tearSpeed: 2.2, dropout: 0.04, wobbleAmp: 6, wobbleFreq: 6, wobbleSpeed: 8, corrupt: 0.02, posterize: 0, pixelate: 0, scanlineDepth: 0.2, grain: 0.08, glow: 0.05, burstRate: 3, burstThreshold: 0.05, tint: "#ffffff" },
+  },
+  {
+    name: "Compression Artifacts",
+    description: "Blocky macroblock breakdown from an over-compressed stream: heavy pixelation, coarse posterized colour steps and a fine grid-aligned block glitch, but no tearing or wobble — a codec falling apart, not a cable coming loose.",
+    props: { intensity: 0.85, rgbSplitPx: 1, splitMode: "horizontal", blockCount: 24, maxShiftPx: 5, density: 0.35, tearRate: 6, jitterPx: 0, tearHeight: 0.02, tearSpeed: 0.1, dropout: 0.02, wobbleAmp: 0, wobbleFreq: 10, wobbleSpeed: 1, corrupt: 0.05, posterize: 5, pixelate: 24, scanlineDepth: 0, grain: 0.03, glow: 0, burstRate: 4, burstThreshold: 0.7, tint: "#ffffff" },
+  },
+  {
+    name: "Dead Pixel Rain",
+    description: "A near-dead panel: maximum dropout and channel corruption spraying blank and swapped-colour blocks continuously across a mostly-static frame, with the split/tear/wobble knobs left at zero so the failure reads as pixels, not motion.",
+    props: { intensity: 1.0, rgbSplitPx: 0, splitMode: "horizontal", blockCount: 40, maxShiftPx: 0, density: 0.85, tearRate: 16, jitterPx: 0, tearHeight: 0.01, tearSpeed: 0, dropout: 0.55, wobbleAmp: 0, wobbleFreq: 10, wobbleSpeed: 1, corrupt: 0.5, posterize: 0, pixelate: 0, scanlineDepth: 0, grain: 0.3, glow: 0, burstRate: 12, burstThreshold: 0.1, tint: "#ffffff" },
+  },
+  {
+    name: "Interlace Ghosting",
+    description: "A dense fine-pitch scanline structure with a soft glow bleeding between the lines — an interlaced CRT field mismatch, thin and textural rather than a violent corruption event.",
+    props: { intensity: 0.6, rgbSplitPx: 1.2, splitMode: "horizontal", blockCount: 60, maxShiftPx: 1, density: 0.05, tearRate: 2, jitterPx: 0.3, tearHeight: 0.02, tearSpeed: 0.15, dropout: 0.01, wobbleAmp: 1, wobbleFreq: 60, wobbleSpeed: 2, corrupt: 0, posterize: 0, pixelate: 0, scanlineDepth: 0.6, grain: 0.05, glow: 0.35, burstRate: 1, burstThreshold: 0.85, tint: "#d9e8ff" },
+  },
 ];
 
 export const glitchPlugin = {

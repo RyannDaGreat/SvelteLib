@@ -515,15 +515,16 @@ try {
 
   /** Reads every RENDERED `.palette-item` row and checks it against `pool` (the
    *  array of command entries this level is showing — passed in explicitly
-   *  rather than re-derived, because some submenus, e.g. select-by-type, splice
-   *  their `children` array directly without ever going through
-   *  commands.add()/get() — App.svelte's refreshTypeSelectCommands, documented
-   *  at App.svelte:1081 as deliberate ("the command registry has no `remove`,
-   *  so anything per-document must be a submenu CHILD"). Those leaves are
-   *  legitimately absent from commands.all()'s flat map; that is correct
-   *  architecture, not a gap to route around, so this reads the SAME pool
-   *  object CommandPalette.svelte itself renders from (`parent.children` or
-   *  `topLevel`) rather than re-deriving one from the registry. */
+   *  rather than re-derived from the registry, so this reads the SAME pool object
+   *  CommandPalette.svelte itself renders from: `parent.children` or `topLevel`).
+   *
+   *  THIS USED TO CITE select-by-type AS THE REASON, and that reason is gone
+   *  (R7-42): its children were spliced in per palette open without going through
+   *  commands.add(), so they were legitimately absent from commands.all(). There
+   *  is no longer ANY per-document submenu — the by-type type argument is
+   *  gathered in the palette's picker stage, whose options are not commands at
+   *  all. Passing the pool explicitly is kept anyway, because reading what the
+   *  component renders from is the stronger check either way. */
   function rowsAgainstPool(pool) {
     return page.evaluate((poolIds) => {
       const byId = new Map(poolIds.map(([id, hasChildren]) => [id, hasChildren]));
@@ -609,9 +610,11 @@ try {
       if (!clicked) { await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; }); return; }
     }
     // The pool THIS level renders from: topPool for [], else the LAST clicked
-    // command's live `children` (read fresh — select-by-type-style submenus
-    // splice theirs per open, so a snapshot taken before the clicks could be
-    // stale by the time we get here).
+    // command's live `children`, read FRESH rather than from a snapshot taken
+    // before the clicks. (The submenu that made freshness load-bearing —
+    // select-by-type, which re-spliced its children on every palette open — is
+    // gone as of R7-42. Reading fresh costs one evaluate and keeps this correct
+    // for any future submenu built the same way.)
     const pool = path.length
       ? await page.evaluate((id) => {
           const c = window.__powerrp_app.commands.get(id);
@@ -629,12 +632,12 @@ try {
     for (const childId of submenuRowIds) await drillAndSweep([...path, childId]);
   }
 
-  // Drive it from every ROOT submenu the flat sweep found. select-by-type /
-  // deselect-by-type rebuild their `children` from typesOnSlide() (App.svelte
-  // refreshTypeSelectCommands, run reactively whenever the palette opens) —
-  // that reads the SLIDE's widget types, not the current selection, and the
-  // demo fixture's slide always has some, so they are populated here and swept
-  // like any other submenu rather than special-cased out.
+  // Drive it from every ROOT submenu the flat sweep found. Every submenu here is
+  // now a STATIC one: R7-42 removed the last per-document pair (select-by-type /
+  // deselect-by-type, whose children were rebuilt from typesOnSlide() on every
+  // palette open), so nothing in this sweep can change shape underneath it while
+  // it drills. Those two are still swept — as ordinary leaf COMMANDS now, since
+  // they carry `run` and no `children`.
   for (const submenuId of azSweep.submenuIds) {
     if (!topPoolIds.has(submenuId)) continue; // reached transitively as a descendant of another root submenu
     await drillAndSweep([submenuId]);

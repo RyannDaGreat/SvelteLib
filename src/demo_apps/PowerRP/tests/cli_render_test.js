@@ -157,7 +157,17 @@ const irFor = (connected) => {
   const state = evaluatedStateAt(doc, 0, 1, wireRegistry);
   return sceneIR(deriveRenderTree(state, wireRegistry, doc.meta?.name ?? ""));
 };
-const wireCurves = (ir) => ir.filter((o) => o.op === "path" && String(o.d).startsWith("M ")).length;
+// A WIRE IS IDENTIFIED BY POSITION, NOT BY SHAPE. sceneIR emits the wire layer at
+// SCENE level, before the first node's pushTransform. This used to count every path
+// op whose `d` starts with "M ", which was true only while NO NODE EMITTED A PATH —
+// an accident of the roster that workstream NODECHROME_ ended by giving every card a
+// vector family MARK. That mark is a path starting with "M " too, so the old filter
+// counted node emblems as cables (10 in a three-wire patch).
+const wireCurves = (ir) => {
+  const firstNode = ir.findIndex((o) => o.op === "pushTransform");
+  const sceneLevel = firstNode === -1 ? ir : ir.slice(0, firstNode);
+  return sceneLevel.filter((o) => o.op === "path" && String(o.d).startsWith("M ")).length;
+};
 assert.equal(wireCurves(irFor(true)), 6, "three wires × (halo + wire) must be in the CLI's own display list");
 assert.equal(wireCurves(irFor(false)), 0, "an unwired patch must contribute no wire ops at all");
 

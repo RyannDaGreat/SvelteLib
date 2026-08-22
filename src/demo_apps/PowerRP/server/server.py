@@ -332,6 +332,208 @@ def video_duration_seconds(video_path):
     return seconds
 
 
+# -- ANIMATED GIFs ARE VIDEOS, AND THE CONVERSION HAPPENS AT IMPORT ----------
+#
+# THE DEFECT (user, verbatim): "how does our powerrp handle gifs? as videos
+# hopefully?" -- measured answer at the time: NO. `.gif` is in IMAGE_EXTS here
+# and in every client twin, so an animated GIF became an IMAGE widget, whose
+# paint path is `createImageBitmap` -> ONE bitmap. The deck showed a FROZEN FIRST
+# FRAME with nothing to say it had frozen: no error, no badge, and an animation
+# the author watched play in Finder simply did not move on the canvas.
+#
+# WHY TRANSCODE RATHER THAN TEACH THE PAINT PATH TO DECODE GIF: `<video>` cannot
+# play a GIF -- there is no browser element that decodes it as a timed stream --
+# so "as videos" is not a classification change, it is a FORMAT change. The
+# alternatives were decoding GIF frames ourselves into a filmstrip (an N-frame
+# image pyramid, RAM proportional to the whole animation, and a second timing
+# implementation beside the video path's) or shipping a GIF decoder to the
+# client. One ffmpeg call at IMPORT produces an ordinary mp4, which every part of
+# this app -- player, deterministic scrubber, video export, the render job, the
+# PDF/SVG raster fallbacks -- already handles with no new code at all.
+#
+# AT IMPORT, NOT AT PAINT: the transcode is one-time and its OUTPUT is a stored
+# asset, so nothing in a render path ever shells out. That also keeps the four
+# kinds of state honest -- an mp4 sibling is ordinary property state, whereas a
+# decode-on-demand GIF would put an ffmpeg process inside a frame's critical path.
+#
+# A SINGLE-FRAME GIF IS LEFT ALONE, byte-identical to before this feature: it is
+# a still picture that happens to be GIF-encoded, an IMAGE widget is the correct
+# widget for it, and wrapping it in a one-frame mp4 would cost quality and lose
+# transparency for nothing. `gif_frame_count` is what tells the two apart.
+#
+# TRANSPARENCY IS LOST, and that is a REAL and stated cost: yuv420p h264 has no
+# alpha, so an animated GIF with transparent pixels gains a black (matte)
+# background. It is accepted because the animation is the point of an animated
+# GIF and yuv420p is what plays everywhere; a still GIF -- the case where
+# transparency is most often load-bearing -- is never touched.
+
+# ffmpeg's mp4 encoder requires EVEN pixel dimensions with yuv420p chroma
+# subsampling, and GIFs are routinely odd-sized. The same `scale` idiom
+# encode_export_mp4 uses (round each axis DOWN to even) rather than a pad: a pad
+# would invent up to one row/column of border pixels the author never drew,
+# whereas dropping the last row of a GIF is a sub-pixel crop nobody can see.
+GIF_EVEN_DIMS_FILTER = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+
+# Quality of the transcoded mp4. 18 is visually lossless for the flat-colour,
+# hard-edged content GIFs typically hold; the source is already palette-quantised
+# to <=256 colours, so a lower CRF would spend bytes preserving nothing.
+GIF_TRANSCODE_CRF = 18
+
+
+def gif_frame_count(gif_path):
+    """
+    Query (reads the file via ffprobe). Number of frames in a GIF -- 1 for a
+    still, >1 for an animation. THE ONE QUESTION that decides whether an uploaded
+    .gif becomes a video asset or stays an image.
+
+    Distinct from video_frame_count only in its ERROR SENTENCES, which is why it
+    is a separate function rather than a call to it: a GIF that fails to probe is
+    an UPLOAD that must be reported to the user in terms of the file they dropped,
+    not a "video" they never mentioned.
+
+    Args:
+        gif_path (str): absolute path to the .gif
+
+    Returns:
+        int: frame count (>=1)
+
+    Raises:
+        RuntimeError: ffprobe missing, or the file is not a decodable GIF.
+
+    Examples:
+        >>> # gif_frame_count("/tmp/spinner.gif")  -> 24   (animated)
+        >>> # gif_frame_count("/tmp/logo.gif")     -> 1    (a still picture)
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-count_frames", "-show_entries", "stream=nb_read_frames",
+             "-of", "default=noprint_wrappers=1:nokey=1", gif_path],
+            capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
+        ).stdout.strip()
+    except FileNotFoundError:
+        raise RuntimeError("ffprobe not found on PATH — install ffmpeg (brew install ffmpeg)")
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"ffprobe failed on {os.path.basename(gif_path)}: {exc.stderr.strip()}")
+    if not out.isdigit() or int(out) < 1:
+        raise RuntimeError(f"{os.path.basename(gif_path)} has no decodable frames (ffprobe: {out!r})")
+    return int(out)
+
+
+def transcode_gif_to_mp4(gif_path, mp4_path):
+    """
+    Command (runs ffmpeg, writes mp4_path). Convert an animated GIF into an
+    h264/yuv420p MP4 that a `<video>` element can play.
+
+    NO LOOP METADATA IS WRITTEN, deliberately: a GIF's loop count is a property of
+    the FILE, but in PowerRP looping is a WIDGET PROPERTY the author sets and
+    keyframes. Carrying the GIF's own loop flag into the container would create a
+    second, invisible authority over the same behaviour.
+
+    Args:
+        gif_path (str): source .gif
+        mp4_path (str): destination .mp4 (overwritten)
+
+    Raises:
+        RuntimeError: ffmpeg missing, or the encode failed (message carries
+            ffmpeg's own stderr tail — never a silent fallback to the still image).
+
+    Examples:
+        >>> # transcode_gif_to_mp4("/tmp/spinner.gif", "/tmp/spinner.mp4")
+        >>> # -> writes a playable mp4 with EVEN dimensions (11x7 GIF -> 10x6 mp4)
+    """
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", gif_path,
+             "-vf", GIF_EVEN_DIMS_FILTER,
+             "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-crf", str(GIF_TRANSCODE_CRF), "-movflags", "+faststart",
+             "-loglevel", "error", mp4_path],
+            capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg not found on PATH — install ffmpeg (brew install ffmpeg)")
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"ffmpeg GIF→MP4 transcode failed for "
+                           f"{os.path.basename(gif_path)}: {exc.stderr.strip()[-500:]}")
+
+
+def gif_mp4_sibling_name(gif_filename):
+    """
+    Pure function. The mp4 basename for a transcoded GIF: the GIF's stem with an
+    .mp4 extension. The STEM IS KEPT so the pair sorts together in the asset
+    library and the author can see what the video came from; de-collision against
+    what is already on disk is unique_asset_name's job, as for any upload.
+
+    Args:
+        gif_filename (str): the stored .gif basename
+
+    Returns:
+        str: the wanted .mp4 basename (before de-collision)
+
+    Examples:
+        >>> gif_mp4_sibling_name("spinner.gif")
+        'spinner.mp4'
+        >>> gif_mp4_sibling_name("my.logo.GIF")
+        'my.logo.mp4'
+    """
+    return os.path.splitext(gif_filename)[0] + ".mp4"
+
+
+def transcode_uploaded_gif(name, gif_filename):
+    """
+    Command (probes, may run ffmpeg, may write a second asset). The GIF half of an
+    upload, run AFTER the .gif itself is safely stored.
+
+    Returns the `transcode` block of the upload reply, which is ALWAYS present for
+    a .gif so the client never has to infer why nothing happened:
+
+        {"animated": False, "frames": 1}
+            -- a still GIF. Nothing was written; it stays an image asset.
+        {"animated": True, "frames": 24, "name": "spinner.mp4", "url": "/asset/…"}
+            -- an animated GIF. The mp4 sibling exists and the client should
+               insert a VIDEO widget backed by it.
+
+    A FAILURE RAISES rather than returning a third shape. The stored .gif is
+    already on disk either way, but an upload that produced a frozen picture where
+    the user expected motion must SAY SO — the HTTP layer turns this into a 500
+    naming ffmpeg's stderr, never a quiet degradation to the still image.
+
+    Args:
+        name (str): project name
+        gif_filename (str): the FINAL stored basename of the .gif
+
+    Returns:
+        dict: the reply block described above.
+
+    Raises:
+        RuntimeError: ffprobe/ffmpeg missing or failing.
+
+    Examples:
+        >>> # transcode_uploaded_gif("Deck", "spinner.gif")
+        >>> # {'animated': True, 'frames': 24, 'name': 'spinner.mp4',
+        >>> #  'url': '/asset/Deck/spinner.mp4'}
+    """
+    d = assets_dir(name)
+    gif_path = os.path.join(d, gif_filename)
+    frames = gif_frame_count(gif_path)
+    if frames < 2:
+        return {"animated": False, "frames": frames}
+    mp4_name = unique_asset_name(name, gif_mp4_sibling_name(gif_filename))
+    mp4_path = os.path.join(d, mp4_name)
+    try:
+        transcode_gif_to_mp4(gif_path, mp4_path)
+    except RuntimeError:
+        # A HALF-WRITTEN mp4 is worse than none: it would list as a playable video
+        # asset and fail at paint time. Removed so the loud error is the ONLY
+        # outcome of a failed transcode. The exception continues to propagate.
+        if os.path.exists(mp4_path):
+            os.remove(mp4_path)
+        raise
+    return {"animated": True, "frames": frames, "name": mp4_name,
+            "url": f"/asset/{urllib.parse.quote(name)}/{urllib.parse.quote(mp4_name)}"}
+
+
 def _extract_indices(video_path, indices, out_dir, frame_h=None, frame_w=None):
     """
     Command. Extract the given frame INDICES from a video to
@@ -3127,8 +3329,23 @@ class Handler(BaseHTTPRequestHandler):
         if not data:
             return self._error(400, "empty upload body")
         final = save_asset(name, filename, data)
-        self._json({"ok": True, "name": final,
-                    "url": f"/asset/{urllib.parse.quote(name)}/{urllib.parse.quote(final)}"})
+        reply = {"ok": True, "name": final,
+                 "url": f"/asset/{urllib.parse.quote(name)}/{urllib.parse.quote(final)}"}
+        # AN ANIMATED GIF GETS AN MP4 SIBLING (see transcode_uploaded_gif). The
+        # .gif is stored FIRST and unconditionally — it is the user's file and it
+        # belongs in the library whatever ffmpeg then does — and the `transcode`
+        # block tells the client which widget to insert. A failure is a 500 naming
+        # ffmpeg's stderr, NOT a reply that quietly omits the block: the client
+        # would read that as "still image" and silently insert the frozen picture
+        # this feature exists to prevent.
+        if os.path.splitext(final)[1].lower() == ".gif":
+            try:
+                reply["transcode"] = transcode_uploaded_gif(name, final)
+            except RuntimeError as exc:
+                return self._error(500, f'"{final}" was stored in the asset library, but PowerRP could '
+                                        f'not check whether it animates or convert it to a playable '
+                                        f'video: {exc}')
+        self._json(reply)
 
     def _handle_thumb_store(self, name, filename, parsed):
         # Persist a client-rendered thumbnail PNG for an asset (manifest #25).

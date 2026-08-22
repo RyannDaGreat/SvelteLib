@@ -53,6 +53,10 @@ import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { rect, text } from "../render_gpu/ir.js";
 import { highlightCode, languageOptions, KINDS } from "../core/codeHighlight.js";
+import {
+  CODE_PALETTES, CODE_THEME_IDS, CODE_THEME_LABELS, DEFAULT_CODE_THEME,
+  codeTheme, codeThemeProps, kindColor,
+} from "../core/code_themes.js";
 
 /**
  * JetBrains Mono advance ratio: every glyph advances 0.6·em. MEASURED from the
@@ -77,38 +81,17 @@ export const CODE_LINE_HEIGHT = 1.2;
  */
 export const TAB_WIDTH = 4;
 
-/**
- * Built-in code color palettes (hex per token kind). emit() is DOM-free so it
- * cannot read app.css --a-code-* CSS vars; these palettes MIRROR those tokens so
- * the GPU/PDF render matches what the CSS palette would show. `dark` is the
- * default (a dark editor palette, readable over the default dark box fill on any
- * app theme); `light` suits a light box fill. `bg`/`gutter` are the box fill and
- * the line-number color. Colors are a muted, professional set (no neon) — the
- * app's non-garish convention. PENDING USER RATIFICATION (a visual choice).
- */
-export const CODE_PALETTES = {
-  dark: {
-    bg: "#1e222a", gutter: "#5c6370",
-    plain: "#c8ccd4", keyword: "#c678dd", string: "#98c379", comment: "#7f848e",
-    number: "#d19a66", function: "#61afef", property: "#e5c07b", punct: "#abb2bf",
-  },
-  light: {
-    bg: "#fbfbfa", gutter: "#a0a1a7",
-    plain: "#383a42", keyword: "#a626a4", string: "#50a14f", comment: "#a0a1a7",
-    number: "#986801", function: "#4078f2", property: "#c18401", punct: "#383a42",
-  },
-};
-
-/** Pure function. The color hex for a token kind in a palette, falling back to
- * `plain` for any unknown kind (defensive — the highlighter only emits KINDS,
- * but a future kind must degrade to readable text, not vanish).
- *
- * @example kindColor("keyword", CODE_PALETTES.dark) // "#c678dd"
- * @example kindColor("mystery", CODE_PALETTES.dark) // "#c8ccd4" (falls back to plain)
- */
-export function kindColor(kind, palette) {
-  return palette[kind] ?? palette.plain;
-}
+// THE PALETTE TABLE LIVES IN core/code_themes.js (R7-41). It began as two
+// literals here; it is now sixteen — the two ORIGINAL palettes, frozen byte for
+// byte, plus fourteen vendored from the real published VS Code themes with a
+// provenance + licence record each. That table and its rules are core business,
+// not plugin business, so this file keeps ONE seam: codeTheme(id) → palette.
+// Re-exported because tests and any future consumer import them from here.
+// (Imported AND re-exported, not `export … from`: this file uses CODE_PALETTES
+// and codeTheme itself, and a bare re-export creates no local binding — the
+// silent-missing-name hazard the app's CLAUDE.md records, which a green build
+// would not catch.)
+export { CODE_PALETTES, kindColor, codeTheme, codeThemeProps, CODE_THEME_LABELS, CODE_THEME_IDS };
 
 /**
  * Pure function. Expands leading + interior tabs in a line to spaces on the mono
@@ -203,8 +186,70 @@ export function layoutCodeDraws(lines, opts) {
   return draws;
 }
 
+/**
+ * CODE BLOCK PRESENTATION-CONTEXT PRESETS (R7-39 presets law).
+ *
+ * A code block's presets are NOT color themes — `theme` already covers that in
+ * two rows. They are PRESENTATION CONTEXTS: the same source shown as a slide
+ * headline snippet vs. a printed handout vs. a terminal transcript vs. a
+ * pocket-sized footnote. Each row is a real, recognizable venue for reading
+ * code, not an arbitrary knob combination.
+ *
+ * NEVER `code`, NEVER `language` (per the task brief): a preset is a look, and
+ * this widget's `language` is DOCUMENT STATE the author chose (it drives both
+ * the canvas highlighter and the Monaco modal's coloring per the header above)
+ * — a preset overwriting it would silently relabel the author's own code.
+ *
+ * THE VISIBILITY CONSEQUENCE IS PART OF THE DESCRIPTION. Long lines
+ * character-truncate rather than wrap (module header), so fontSize/padding
+ * are not purely cosmetic — a bigger font or fatter padding shows FEWER
+ * columns of the same source. Every row whose fontSize/padding meaningfully
+ * changes how much code is visible says so.
+ *
+ * EVERY ROW SETS THE SAME NINE KEYS (overlay semantics — app.applyPreset
+ * writes exactly `props`, so a key one row omits keeps whatever the
+ * previously-hovered row left behind): theme, fontSize, lineNumbers, padding,
+ * cornerRadius, fill, stroke, strokeWidth, opacity. codeblock does NOT carry
+ * the shared effects bundle (no `bundle("effects")` in its inspector, no
+ * effects in its defaults — it is a box, but not an effects-capable one), so
+ * there is no shadow/bloom/blur identity for this family to restate; the nine
+ * keys above are the widget's ENTIRE visual-identity surface outside code and
+ * language.
+ *
+ * THE ORDER IS THE CONTENT: the everyday slide/doc/terminal trio first, then
+ * the print and review contexts, then the size extremes (footnote, chalk
+ * talk), then the two "framed application window" looks last.
+ */
+const PRESETS = [
+  { name: "Slide Snippet", description: "A short snippet blown up for a slide headline: large type, generous padding, no line-number gutter to steal width — but at this size a wide line hits the truncation edge sooner, so keep the pasted excerpt short.",
+    props: { theme: "dark", fontSize: 22, lineNumbers: false, padding: 24, cornerRadius: 10, fill: CODE_PALETTES.dark.bg, stroke: "#3a3f4b", strokeWidth: 1, opacity: 1 } },
+  { name: "Documentation Listing", description: "A numbered listing for a manual or README figure: a warm cream paper background, modest type, a full gutter so a reader can say \"see line 14\".",
+    props: { theme: "light", fontSize: 13, lineNumbers: true, padding: 14, cornerRadius: 4, fill: "#f2e9d5", stroke: "#8a7a52", strokeWidth: 1, opacity: 1 } },
+  { name: "Terminal", description: "A shell transcript: square corners, black-on-near-black chrome, tight padding and no gutter — a terminal shows no line numbers of its own.",
+    props: { theme: "dark", fontSize: 13, lineNumbers: false, padding: 6, cornerRadius: 0, fill: "#0c0e12", stroke: "#000000", strokeWidth: 0, opacity: 1 } },
+  { name: "Printed Handout", description: "Paper-ready body text for something an audience holds: stark white theme, small dense type, numbered, a thin cool-grey hairline border sized for print rather than screen glow — noticeably smaller and tighter than Documentation Listing so more of a long file fits on the page.",
+    props: { theme: "light", fontSize: 9, lineNumbers: true, padding: 8, cornerRadius: 2, fill: "#ffffff", stroke: "#7d8592", strokeWidth: 0.5, opacity: 1 } },
+  { name: "Diff Review Pane", description: "A code-review pane look: dark, numbered so comments can anchor to a line, a visible border framing it as one panel among several in a review UI.",
+    props: { theme: "dark", fontSize: 13, lineNumbers: true, padding: 10, cornerRadius: 6, fill: "#1a1d23", stroke: "#454b57", strokeWidth: 1.5, opacity: 1 } },
+  { name: "Tiny Footnote", description: "A citation-sized aside quoting a line or two of code inline with prose: tiny type in a pale rose-tinted box, minimal padding, no gutter — fits the least code of any row here, by design.",
+    props: { theme: "light", fontSize: 9, lineNumbers: false, padding: 4, cornerRadius: 3, fill: "#f7ecec", stroke: "#c99494", strokeWidth: 0.5, opacity: 1 } },
+  { name: "IDE Window", description: "A faux editor pane: rounded like an app window, a bold visible frame in a distinct slate-blue, numbered gutter — the \"screenshot of my editor\" read, without an actual screenshot.",
+    props: { theme: "dark", fontSize: 13, lineNumbers: true, padding: 16, cornerRadius: 16, fill: "#232840", stroke: "#5865b3", strokeWidth: 3, opacity: 1 } },
+  { name: "Chalk Talk", description: "A whiteboard-teaching size: dark, oversized type, airy padding for a room to read from the back — the least code visible per line of any dark-theme row, on purpose.",
+    props: { theme: "dark", fontSize: 26, lineNumbers: false, padding: 30, cornerRadius: 8, fill: "#14171c", stroke: "#2a2f38", strokeWidth: 1, opacity: 1 } },
+  { name: "Ticker / One-Liner", description: "A single running line of code as a marquee-style caption: minimal padding on every side, no gutter, no rounding — reads as a strip, not a panel.",
+    props: { theme: "dark", fontSize: 15, lineNumbers: false, padding: 3, cornerRadius: 0, fill: "#000000", stroke: "#333333", strokeWidth: 0.5, opacity: 1 } },
+  { name: "Card Embed", description: "A code excerpt embedded as its own elevated card among other slide content: fully rounded corners, a pale blue-tinted fill and a saturated accent border so it reads as a distinct card rather than a plain paper listing.",
+    props: { theme: "light", fontSize: 13, lineNumbers: true, padding: 16, cornerRadius: 20, fill: "#e2edfb", stroke: "#2f68c4", strokeWidth: 2, opacity: 1 } },
+  { name: "Ghost Overlay", description: "A translucent code fragment meant to float over other slide content without fully blocking it: reduced opacity, minimal border, so the code reads as a watermark-like layer.",
+    props: { theme: "dark", fontSize: 14, lineNumbers: false, padding: 12, cornerRadius: 8, fill: "#1e222a", stroke: "#3a3f4b", strokeWidth: 0.5, opacity: 0.55 } },
+  { name: "High-Contrast Review", description: "An accessibility-forward look for a live walkthrough: light theme with a pale mint tint, larger type than Documentation Listing, a heavy near-black border so the panel stays legible under projector glare.",
+    props: { theme: "light", fontSize: 16, lineNumbers: true, padding: 18, cornerRadius: 4, fill: "#eaf5ec", stroke: "#0e1210", strokeWidth: 2, opacity: 1 } },
+];
+
 export const codeblockPlugin = {
   type: "codeblock",
+  presets: PRESETS,
   ephemeral: EPHEMERAL.NONE,
   title: "Code Block",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
@@ -233,7 +278,7 @@ export const codeblockPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     fill: CODE_PALETTES.dark.bg, stroke: "#3a3f4b", strokeWidth: 1,
     code: "function greet(name) {\n  return `Hello, ${name}!`;\n}",
-    language: "javascript", fontSize: 14, lineNumbers: true, padding: 12, theme: "dark",
+    language: "javascript", fontSize: 14, lineNumbers: true, padding: 12, theme: DEFAULT_CODE_THEME,
     ...defaults("cornerRadius", "opacity"), // filled below with code-specific overrides
     cornerRadius: 6,
   },
@@ -271,7 +316,23 @@ export const codeblockPlugin = {
     { key: "language", label: "Language", kind: "select", options: languageOptions().map((o) => o.value), optionLabels: Object.fromEntries(languageOptions().map((o) => [o.value, o.label])), category: "text", help: "Which language's syntax colors to apply. Pick Plain text for no highlighting; an unknown language also renders plain." },
     { key: "fontSize", label: "Font size", kind: "number", min: 0, category: "text", help: "Monospace font size for the code, in canvas units. Line height and column width scale with it." },
     { key: "lineNumbers", label: "Line numbers", kind: "boolean", category: "text", help: "Show a dimmed line-number gutter down the left edge." },
-    { key: "theme", label: "Code theme", kind: "select", options: Object.keys(CODE_PALETTES), category: "formatting", help: "The syntax color palette. Dark suits a dark box fill (the default); Light suits a light fill." },
+    // THE THEME ROSTER IS DERIVED, never transcribed: options come from the
+    // table's own key order and labels from its own label map, so adding a theme
+    // in core/code_themes.js reaches this dropdown with no edit here.
+    //
+    // THE ROW WRITES THE BACKGROUND TOO (user ruling, 2026-08-12: "a VS Code
+    // theme is background + token colors; a Solarized Light pick that leaves the
+    // box charcoal fails the plain meaning"). `companion` is the row-level
+    // declaration of that coupled write — the same seam the aspect-chain lock
+    // rides — so picking a theme stages {theme, fill} in ONE preview and lands as
+    // ONE undo unit. It is DECLARATIVE and generic: the Inspector consults the
+    // row, never the widget type, so no codeblock knowledge leaks into the panel.
+    //
+    // THIS IS THE APPLY PATH ONLY. Load-time and render precedence are untouched
+    // (emit() still reads `s.fill ?? palette.bg`), so a stored fill still wins and
+    // an existing deck is byte-identical until someone actually touches this row —
+    // and a manual Fill edit AFTERWARDS still wins, by ordinary property order.
+    { key: "theme", label: "Code theme", kind: "select", options: CODE_THEME_IDS, optionLabels: CODE_THEME_LABELS, category: "formatting", companion: (id) => [["fill", codeTheme(id).bg]], help: "The syntax color palette: the app's two classic palettes plus fourteen from popular VS Code themes (Dracula, Monokai, Nord, Solarized, GitHub, Gruvbox, Tokyo Night, Catppuccin and more). Picking one also sets Fill to that theme's own background, as one undo step — edit Fill afterwards to override it. Existing blocks keep their current fill until you pick a theme here." },
     { key: "padding", label: "Padding", kind: "number", min: 0, category: "formatting", help: "Inner space between the box edge and the code, in canvas units." },
     ...bundle("strokedBox"),
     ...props("opacity"),
@@ -291,7 +352,10 @@ export const codeblockPlugin = {
     const w = s.w ?? 0, h = s.h ?? 0;
     const cornerRadius = s.cornerRadius ?? 0;
     const opacity = s.opacity ?? 1;
-    const palette = CODE_PALETTES[s.theme] ?? CODE_PALETTES.dark;
+    // THE ONE THEME SEAM. codeTheme() falls back to the default palette for an
+    // unknown id, so a deck naming a theme this build lacks renders readable code
+    // rather than throwing (its own rule — see core/code_themes.js).
+    const palette = codeTheme(s.theme);
     // The box background (fill + optional border + rounding).
     const box = rect({
       x: 0, y: 0, w, h, cornerRadius,

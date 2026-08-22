@@ -235,7 +235,7 @@ test("6. an anchor a plugin placed itself is never projected — the plugin mean
   // Each of these is a SEMANTIC anchor: a point that matters for what the widget
   // IS, not for where its edge is. The lens flare's is the light itself, which is
   // usually nowhere near the rim.
-  for (const [type, id] of [["demo_lens_flare", "light"], ["demo_god_rays", "light"], ["cursor", "hotspot"], ["pdf_packet", "staple"], ["anchor_point", "pt"]]) {
+  for (const [type, id] of [["demo_lens_flare", "light"], ["demo_god_rays", "light"], ["cursor", "hotspot"], ["pdf_packet", "staple"], ["empty", "pt"]]) {
     const plugin = registry.get(type);
     const state = { ...plugin.defaults, w: W, h: H };
     const wrapped = plugin.anchors(state).find((a) => a.id === id);

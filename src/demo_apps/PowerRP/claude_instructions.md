@@ -6200,6 +6200,430 @@ Absent `recent` renders NOTHING and leaves the layout byte-identical, so a consu
 does not opt in cannot tell the prop exists: `.cp` became a ROW whose single child is the
 column it always was.
 
+### R7-29 INTERP CONTROLS SHOW WHEN NON-DEFAULT (user, 2026-08-12) — NOT BUILT
+
+> *"I think I have the rule that we need for whether or not we show visibility in Terp.
+> Right now it just collapses every single time I switch widgets. Not very helpful. But
+> then again, it doesn't make sense to always show visible in Terp. Here's how we should
+> be doing it. Any in Terp option should show in the event that it's non-default.
+> Non-default."*
+
+(Claude's reading, secondary to the quote: "visibility in Terp" = the visibility-interp
+control; "Any in Terp option" generalizes the rule to EVERY interp strip. THE RULE: an
+interp control renders open whenever its stored value differs from the row's default,
+regardless of the manual open/closed toggle. Manual expansion stays available for
+default-valued rows; switching selection may collapse only the default-valued ones.
+Mechanism today, per the 2026-08-12 triage: `interpOpenKeys` is keyed by (row, OWNER
+item), so every selection change resets the open state — that keying is the "collapses
+every single time I switch widgets" complaint. Fix shape: shown = manuallyOpened ||
+storedInterp !== rowDefault. Note this rule also covers the G7 triage finding — the
+not-yet-created-on-this-slide branch passes `keyframes: false` and hides interp entirely;
+under this rule a non-default interp must show there too.)
+
+### R7-30 DOCUMENT SIZE VS CAMERA SIZE (user question, 2026-08-12) — OPEN DECISION
+
+> *"I heard: (notably: no document-size GUI exists at all — every doc is 1280×720 unless
+> JSON-edited). ---> Why isn't this decided by the size of the camera?"*
+
+(Claude's answer, 2026-08-12, secondary to the quote and verified against code that day:
+it MOSTLY IS. `core/document.js defaultCameraState(meta)` seeds the camera's rect FROM
+`meta.slideW/H` (`x:0, y:0, w: slideW, h: slideH`), and `web/cameraFrame.js:189` uses meta
+only as "the camera-rect fallback". So the live view IS the camera's keyframable rect;
+`meta.slideW/H` survives as (a) the creation-time seed, (b) the no-camera fallback, (c)
+the pre-fold reference read by consumers that need a size WITHOUT folding the document —
+`newDocument`, the pptx import/export geometry, render defaults. The HH-audit gap is
+therefore precisely that the REFERENCE has no GUI and never follows the camera after
+creation. Two candidate shapes, undecided: (A) camera-is-truth — delete meta's authority,
+size := the camera's base (slide-1) rect, pre-fold consumers fold slide 0 to read it;
+makes document size property state, so "one document size" becomes a convention about the
+base slide. (B) meta-stays-truth — the camera Inspector gains Document Size rows that
+read/write `meta.slideW/H`, the `Max timestep` literal-row precedent (`plugins/camera.js:242`)
+for camera-as-home-of-globals. B is the cheap consistent move; A is the pure one with the
+keyframability wrinkle. No ruling yet — the user asked WHY, and has not chosen a shape.)
+
+### R7-31 PPTX PRESET SHAPES CRASH (user bug report, 2026-08-12) — UNDER INVESTIGATION
+
+> *"All powerpoint shapes crash....like when I select any shape other than a default
+> powerpoint shape, it crashes...why? And are you sure you understand the intricies of how
+> powerpoint shapes are parametrized + where their handles are? ."*
+
+(Triage id DS. DIAGNOSED 2026-08-12, fix NOT yet applied — full report in the session
+transcript; scratch probes under the session scratchpad pptx_crash/.
+
+ROOT CAUSE — STALE `adj` KEYS SURVIVE A PRESET SWITCH. The `preset` Inspector row is an
+ordinary select writing ONE leaf; `state.adj` keeps the previous preset's guide names, and
+`core/pptx/preset_geometry.js:290 foldGuides` LOUDLY refuses an adj name absent from the
+new preset's avLst. Every insert ships `adj:{adj:16667}` (roundRect's key), which only 39
+of 187 presets declare — so 148/187 THROW on switch. Two blast radii, counts close
+(81+67=148): the emit() path is contained by ports.js:530 (error box); the
+modifierPoints() path is UNCAUGHT — core/derive.js:1582 nodeModifierPoints is called bare
+from CanvasView.svelte:5073 and app.svelte.js:1679, so the 81 presets that also declare an
+ahLst crash the app on SELECTING the item. That uncaught path is the user's "crashes".
+ESCALATION: `adjFromHandleDrag` deliberately returns the FULL effective adj, so ONE handle
+drag writes every current-preset key into state.adj — after dragging star5, 185/187
+presets fail INCLUDING default roundRect; the document state is poisoned and unrecoverable
+from the UI. KNOWN AND WRITTEN OFF: tests/preset_widget_probe.js:172-181 documents this
+exact throw, then creates fresh items and concludes "not a defect" — the probe passes by
+avoiding the row's only purpose.
+SECOND, INDEPENDENT BUG: accentCallout1/2/3 + accentBorderCallout1/2/3 crash morphPaths
+(`null.curves`, core/morph_payload.js:180) — their vendored paths genuinely contain
+`moveTo, close, lnTo` and pathDToSubpaths misses the L-after-Z restart (SVG restarts at
+the last M). The vendoring is faithful; the parser grammar is short one case.
+FIX SKETCH (verified in concept, 187/187 clean under a maximally-poisoned adj):
+(1) filter `effectiveAdjOf` to keys the target preset's avLst declares — fixes render,
+handles, AND already-poisoned documents, no migration, keeps foldGuides loud for genuine
+wiring bugs; (2) contain nodeModifierPoints like emit; (3) optionally reset adj on preset
+write (note commitPreview's leaf-walk makes `adj:{}` a no-op); (4) pathDToSubpaths:
+L/C/Q with cur===null restarts a subpath at the pen; (5) retarget the probe to SWITCH the
+preset on an existing item.
+PARAMETRIZATION UNDERSTANDING — VERIFIED SOLID, with named thin spots: all 17 gdLst
+operators implemented and used; the four Office-vs-ECMA deviations (sqrt→abs, mod→3D
+magnitude, at2→atan2, trig in 60,000ths) correctly followed; 120/187 shapes carry 243
+handle instances (220 ahXY, 23 ahPolar), bounds resolved as guide NAMES; inversion good —
+252 of 260 steerable axes <0.01px, the 8 outliers legitimate bound clamps. THIN: ahPolar
+monotonicity asserted empirically not derived; **cxnLst is not vendored at all** (zero
+connection sites — connector snapping to PowerPoint's own attachment points is absent);
+no silhouette hitTest (bbox only); the L-after-Z grammar gap; flip handled upstream by
+the negative-extents contract (geometryOf guards w<=0).)
+
+### R7-32 VIDEO THUMBNAILS FOR PPTX FIDELITY (user, 2026-08-12) — NOT BUILT
+
+> *"Note: for powerpoint, they have thumbnail files for their videos to be shown before
+> playing. Right now, we have no concept of that. To faithfully translate videos from pptx
+> to ours, we have to have an optional thumbnail parameter on videos - that has a toggle
+> between whetehr we show the thumbnail image or show the video"*
+
+(Triage id DT. Claude note, secondary: in OOXML the poster IS in the deck — the video
+`p:pic`'s `blipFill` is the poster image beside the `videoFile` relationship; our importer
+currently keeps the video and drops the poster. Shape: optional `thumbnail` asset leaf on
+video widgets + a boolean toggle choosing thumbnail-vs-video display; importer populates
+both from the pptx.)
+
+### R7-33 GIFS (user question, 2026-08-12) — ANSWERED, FEATURE OPEN
+
+> *"how does our powerrp handle gifs? as videos hopefully?"*
+
+(Triage id DU. Measured answer 2026-08-12: NO — every gif lands in the IMAGE pipeline
+(`server.py IMAGE_EXTS`, `web/assetRef.js:43`, `AssetField.svelte:297` all class .gif as
+image), so it renders as a frozen first frame via createImageBitmap. No video-registry
+path accepts .gif — and none can, since `<video>` does not play gifs. Real routes if
+wanted: server-side ffmpeg transcode gif→mp4 at import (deterministic, house-style), or a
+Chromium ImageDecoder-based animated-image path. `videoExport.js:16` mentions animated-GIF
+only as a hypothetical EXPORT encoder — unrelated direction.)
+
+### R7-34 PER-FRAME TRIGGER / CONTROL-FLOW NODES, BLUEPRINTS-STYLE (user, 2026-08-12) — RESEARCH RUNNING
+
+> *"I'd like to have some basic nodes. Like, ones with triggers - where a trigger is a
+> per-frame thing that happens, and has control flows - EXACTLY like unreal blueprints
+> control flows. please have an agent research all of those - so we can have something like
+> a schmitt trigger reading from a boolean node that on transition to high might trigger a
+> thing. But unlike unreal and more like axoloti we should be able to double click a
+> special kind of node - a custom node - to open a modal that edits a property in that
+> custom logic node widget, which is a javascript code spec for its inputs and outputs. A
+> demo would be time node, going into a modulo 2 node, and an is == 0 and is== to a number==1
+> nodes, then feed that into a schmitt trigger, which feeds into a node that hooks into a
+> set global var node, that sets the var to a value upon triggering, which in this case is
+> that var node's read output connected to a ++ node, so it increments once every 2 seconds,
+> connected to a number display node. On frames where triggers fire, the wires connecting
+> them should change color to show that something happened."*
+
+(Triage id DV. RESEARCH DONE 2026-08-12 →
+DUMP/refs/blueprints_control_flow_research.md (1000 lines). Key conclusions:
+· Per-frame triggers are a SECOND EVALUATION DOMAIN, not a loosening of exec_flow.js —
+  simulated state wearing an exec pin; all machinery (simulation_history,
+  stridedShardRefusal, withSimulationFrozen) already exists and prices it.
+· ~25-node Unreal catalog classified by ONE question — does it remember between
+  invocations? — every claim marked official/inferred/conflicting. Two corrections the
+  research forced: Select does NOT short-circuit (evaluates every connected input);
+  latency is decided by the CONTAINER.
+· Axoloti verified against Java source + 462 factory .axo files; two ideas stolen:
+  DECLARED ports (gen~'s inferred ports silently delete wires on typos) and the
+  code.krate/code.srate rate split — exactly the proposed compute/step shape.
+· FINDING 1: synth/dsp.js ALREADY HAS schmittStep(value, armed) → {fired, armed} — the
+  exact pure shape needed; only STORAGE is new. core/ must not import synth/**
+  (live_control.js:234-236) — MOVE the function down, do not copy it.
+· FINDING 2 — LANDMINE: documentIsSimulated scans equation SOURCE TEXT for @/dt, so a
+  simulated NODE (Schmitt/Counter/Delay plugin) is invisible to it →
+  stridedShardRefusal returns null → a strided shard renders a PLAUSIBLE WRONG video on
+  a green exit. Must be fixed IN THE SAME CHANGE that adds any stateful node.
+· §6.2 OPEN USER QUESTION: the demo as drawn is a CYCLE (var → ++ → set-var → var).
+  Recommended shape: the counter node OWNS its state (simulated), the global var is a
+  PUBLICATION of it — same picture, no cycle. Awaiting user ruling before building.
+· §6.6 names the two doctrine paragraphs that become wrong the day this ships (the
+  on_threshold two-sample argument; the exec accumulation-inexpressible law) — revert
+  them in the same commit, per the house revert-the-doctrine rule.)
+
+### R7-35 TWO PROD CRASH REPORTS (user, 2026-08-12, bundle index-CysiSHpk) — OPEN
+
+> *"BUG: this happens before I even add a node, just hovering over the command palette:
+> Uncaught Error: https://svelte.dev/e/effect_update_depth_exceeded
+>     at k_t (index-CysiSHpk.js:2:3286)
+>     at pSt (index-CysiSHpk.js:2:20367)
+>     at DQ.kI (index-CysiSHpk.js:2:16623)
+>     at DQ.kI (index-CysiSHpk.js:2:17733) [×7 more]
+> index-CysiSHpk.js:2 Uncaught Error: demo patch "vcv-ambient-drone": node "vessek"
+> (audio_vcv_vessek) has no knob "p1" — neither "p1" nor "audioP1" is one of its defaults
+>     at eet (index-CysiSHpk.js:3727:373584)
+>     at Object.build (index-CysiSHpk.js:3780:676)
+>     at hue (index-CysiSHpk.js:3780:3607)
+>     at Object.run (index-CysiSHpk.js:3780:3034)
+>     at r5.runCommand (index-CysiSHpk.js:8124:89111)"*
+
+(Triage ids DW + DX. DW: effect_update_depth_exceeded ON PALETTE HOVER, pre-node — same
+error class as the CF boot crash (bumpPressEpoch, an effect subscribing to a counter it
+bumps); new instance, palette-hover path. DX: the patch/spec drift class the F13 triage
+caveat predicted — `vcv-ambient-drone` references knob `p1` on `audio_vcv_vessek` whose
+spec no longer declares it; loud error is correct behavior, the DATA is wrong; sweep all
+patches against their specs. Neither investigated yet — awaiting user pick.)
+
+### R7-38 VECTORS ARE FIRST-CLASS VALUES (user, 2026-08-13, verbatim — OVERRULES the
+### R7-36 build's RGB refusal and corrects both prior Claude interpretations)
+
+> *"That was the wrong chouce. xy is a 2-vector. It would be fill.color.r not fill.r.
+> color is a 3-vec. fill.color can be a variable. It can be interp'd. same with xy.
+> did you not do that?"*
+
+(Claude's reading, secondary. THE RULING: vector values are REAL VALUES, not UI
+grouping. (1) Component paths NEST UNDER THE VECTOR — `fill.color.r`, never flat
+`fill.r` — so the radial-radius collision the R7-36 build refused on was an argument
+against a shape the user never asked for. (2) `color` is a 3-vec; a paint's color slot
+is addressable as one (`fill.color`, components .r/.g/.b). (3) `xy` (and wh) are
+2-vecs: addressable whole (`= other.xy`), while x/y remain the stored scalar leaves —
+the vector is the address, storage need not change for transforms. (4) A WHOLE VECTOR
+can be bound to a variable (color-kind vars exist since CX; fill.color = myColor) and
+is interpolated as a vector (the tuple plain-lerp branch is the precedent). (5) The
+R7-36 compound-row UI (triangles, tri-state diamonds, dragpad) stays — it now sits
+over real vector addresses. Both earlier Claude positions are superseded: the
+dotted-flat-path recommendation AND the interp-mode-instead refusal. Costs the
+refusal priced (hex-spelling round-trip loss under migration) are accepted collateral
+of this ruling where unavoidable; untouched documents still load via loud migration.)
+
+R7-38a NAMING AMENDMENT (user, 2026-08-13, verbatim): *"thing.xy.x is stupid sounding.
+it should be like .pos.x or .pos.y , or .color.r .color.g .color.b and .color.a etc"*
+— so the position 2-vec is `pos` (`.pos.x`/`.pos.y`), never `xy`; color carries FOUR
+components including alpha (`.color.r/.g/.b/.a`). The w/h vector's name was not given:
+`size` (`.size.w`/`.size.h`) is Claude's parallel gap-fill, pending user confirmation.
+Forwarded to the live VEC_ agent mid-build.
+
+R7-38b VECTOR ALGEBRA AMENDMENT (user, 2026-08-13, verbatim): *"2-vec is essentially a
+struct - and we might have others in the future. for example, they might also implement
+artithemtic operators like numpy so i can do a.pos=b.pos+c.pos and all math ops like sin
+cos etc operate on them like numpy would elementwise. We gotta make that happen"*
+(Claude's reading, secondary: the vector kinds are instances of a GENERAL struct value
+type — more kinds will come, so the machinery must not hardcode pos/size/color. Equation
+algebra gets NUMPY SEMANTICS: vec⊕vec elementwise for + − * / etc; scalar⊕vec
+broadcasts; SAFE_MATH functions (sin, cos, abs, …) map elementwise over vector
+arguments; `a.pos = b.pos + c.pos` is a legal whole-vector property equation.
+Mismatched lengths REFUSE with a sentence — NumPy's shape error, spoken — never a
+silent truncation or zero-fill. All inside the existing jail; determinism untouched.)
+
+R7-38c GENERALITY AMENDMENT (user, 2026-08-13, verbatim, two consecutive messages):
+*"same with 3-vec or n-vec. we might also have matrices in the future too these are just
+special cause they have names lol its a named-3vec but we might have arbitrary tensors
+in the future too"* / *"or even dicts or other datasetrcutre"*
+(Claude's reading, secondary: pos/size/color are NAMED n-vecs — special only in that
+their components carry names (x/y, w/h, r/g/b/a) — thin naming tables over a general
+POSITIONAL n-vec value. The value architecture must leave room for rank>1 (matrices,
+arbitrary tensors) and non-numeric structures (dicts, other data structures) as
+ADDITIONS, not rewrites: algebra keyed on "numeric tensor", component naming as a
+layer, nothing hardcoding arity 2/3/4 or rank 1. TODAY'S BUILD SCOPE IS UNCHANGED —
+pos/size/color ship now; tensors/dicts are future-proofing, not deliverables.)
+
+### R7-44 ONE NODE CHROME CLASS (user, 2026-08-13, verbatim, with a screenshot of a
+### band-less Schmitt Trigger beside a properly-banded Audio VCV node)
+
+> *"why is the text title on the audio nodes fine but schmitt trigger not? Why are
+> they not all the same class? That sounds like bad class management"*
+
+(Claude's reading, secondary: every node — audio, frame-domain exec (schmitt/
+increment/set_var/compare/time/custom), midi, control — renders its header/chrome
+through ONE shared machinery: the standardized band (family color + vector glyph +
+title) and the programmatic port/knob layout the audio wave built. The frame-domain
+nodes shipped through a thinner path with body-floating titles; that second path is
+retired, not restyled. → backburner EV, agent launched 2026-08-13.
+R7-44a (user, verbatim, immediately after): *"DRY issues"* — read as naming the general
+disease, not just this instance. A read-only DRY AUDIT of the app launched (the presets-
+audit pattern: flag list, prioritized, evidence per finding) → backburner EW.)
+
+### R7-43 HTML2IMAGE MUST RENDER ON AUTHORING GESTURES (user, 2026-08-13, verbatim,
+### with a screenshot of the placeholder card)
+
+> *"wtf is this bullcrap? where's the rendering? what the fuq do u mean press capture?
+> that sounds like ephemeral state?"*
+
+(Claude's reading, secondary. TWO answers: (1) The ephemeral accusation is wrong in a
+reassuring direction — the capture is a STORED asset (property state; exports, CLI,
+reload all reproduce it) BECAUSE the html never executes at playback; the placeholder
+means "no capture asset exists yet." (2) The UX is overruled: the explicit-Capture-only
+flow was a Claude-authored consent stance whose correct half is "DOCUMENT ARRIVAL never
+executes script" and whose wrong half taxed the author's own gestures. NEW BOUNDARY:
+AUTHORING GESTURES AUTO-RENDER — widget insert, preset application, Monaco save each
+trigger capture immediately, no button; opening a deck containing uncaptured html still
+shows the placeholder with an explicit render affordance (arrival ≠ consent). The
+Capture command survives as the re-render affordance. → backburner ET, agent launched.)
+
+R7-43a AMENDMENT (user, 2026-08-13, verbatim): *"i don't want to have to press
+capture. it should be automatic in every way, when the html property changes so
+shohuld that."* — THE TRIGGER IS THE PROPERTY, not a gesture list. Whenever the
+widget's html (or capture dimensions) differs from what the stored capture was
+rendered from, the editor re-captures automatically — including on OPENING a deck
+whose html doesn't match its capture. This supersedes the arrival≠consent half above;
+the sandbox (opaque origin, foreign-subresource refusal, capture-only frame) is the
+containment that makes it acceptable, and playback/CLI still consume only the stored
+asset, so determinism is untouched. The Capture command survives only as a manual
+re-render nudge. Debounce/serialize per widget; an equation-driven html is captured
+at settle, bound stated honestly.
+
+R7-43b VOCABULARY (user, 2026-08-13, verbatim): *"wtf even is 'capture'?"* — the word
+is implementation jargon (render-once-and-store) and LEAVES EVERY USER-FACING SURFACE:
+command titles, placeholder/status copy, Inspector row labels ("Render width/height"),
+docs the user reads. The manual nudge is titled "Re-render HTML" (with "capture" kept
+only as a hidden search alias). Internal identifiers (captureW/H keys, htmlCapture.js)
+may keep the term as a term of art — the user never sees keys.
+
+### R7-42 SELECT-BY-TYPE IS ONE COMMAND, NOT N (user, 2026-08-13, verbatim, with a
+### palette screenshot showing "PowerPoint Shape (1) — Select by Widget Type" rows
+### surfacing under the search "add")
+
+> *"I don't know why this command exists. Like, how is this a command? I thought select
+> by widget type is a command and that would be a sub command."*
+
+(Claude's reading, secondary: the per-type generated palette entries
+(refreshTypeSelectCommands minting one Select/Deselect row per widget type on the
+slide) are the wrong shape. THE RULING: "Select by Widget Type" and "Deselect by
+Widget Type" are each ONE command whose type argument is gathered in a SECOND STAGE
+(a searchable picker — composes with R7-40's searchable-dropdown default). The
+generation machinery goes away entirely — which also deletes the effect-loop hazard
+class f4b11012 had to untrack. General principle, interpretation only: the palette
+holds ACTIONS; per-instance parameters belong to a picker stage, not to minted
+commands. → backburner EQ, fix agent launched 2026-08-13.)
+
+### R7-41 CODEBLOCK COLOR THEMES (user, 2026-08-13, verbatim)
+
+> *"The code block widget would benefit from having more color themes. Usually editors
+> have color themes, right? Why don't we choose all the popular ones from VS Code and
+> put that in there? Have an agent work on that."*
+
+(Claude's reading, secondary: extend codeblock's `theme` (today exactly dark|light)
+with the popular VS Code themes — real vendored token palettes with license/provenance
+(One Dark Pro, Dracula, Monokai, Solarized pair, GitHub pair, Nord, Gruvbox, Tokyo
+Night, Night Owl, Catppuccin, …), mapped onto the widget's actual token classes;
+legacy "dark"/"light" byte-identical. Agent launched 2026-08-13 → backburner EO;
+coordinates with the live codeblock preset writer by building the theme table in its
+own module and touching plugins/codeblock.js only after that writer's commit lands.)
+
+### R7-40 SEARCHABLE DROPDOWNS BY DEFAULT + PPTX SHAPES LOOK BROKEN (user, 2026-08-13, verbatim)
+
+> *"We should make the default drop down that we use in this app. Probably should be
+> searchable. Shape for example, for the PowerPoint shape has so many options, but
+> Claude didn't even know or think to make it a searchable drop down. So perhaps that
+> should be the default so that Claude is in the future, don't have to remember that.
+> Where did you get your information about how PowerPoint shapes are drawn? A lot of
+> them look pretty fucked up. Perhaps you should have VLMs look at it. Like a lot of
+> these shapes just look very broken. Once you choose a random 10 of them and see if
+> you can confirm or deny. But yeah, how did you determine how these shapes work?
+> Where did your information come from?"*
+
+(Claude's readings, secondary: (1) STANDING RULE — the app's DEFAULT select row is a
+searchable dropdown (SearchableDropdown already exists for the item picker; make it
+the default so nobody has to remember) → backburner EH, sequenced after VEC_ releases
+Inspector.svelte. (2) Shape provenance, answered: geometry defs are VENDORED FROM
+LIBREOFFICE's presetShapeDefinitions (77fce359), evaluated by our own guide-formula
+implementation following Office's four measured deviations from ECMA-376 prose; the
+DS sweep verified THROW-FREE and handle inversion, NEVER visual correctness — the
+look-right-blind gap (DP) precisely. (3) Visual verification directive → backburner
+EI: seeded random 10, our render vs the d8f59104 headless-PowerPoint reference
+renders, vision-judged confirm/deny + defect classes; agent launched 2026-08-13.)
+
+### R7-39 THE PRESETS LAW + FIRST WAVE FEEDBACK (user, 2026-08-13, verbatim)
+
+> *"The disabling of next and previous keyframes for ones that don't have it seems not
+> to have transferred to the overall ones such as the ones that are small. The small
+> version didn't seem to have inherited this. This leads me to believe that they're not
+> sharing the same base class or it was implemented in the wrong level. Perhaps it
+> should be applied to the parent. I haven't looked at the code though. To be honest,
+> I'm not really sure what the issue is. Please tell the agent thought. The code is not
+> the same. [...] Anyway, scaling and rotation should also have options to only move
+> objects. There should be an option for that. I forgot to mention there should be a
+> toggle option for that too. Add that to the back burner. Basically, Blender has an
+> option for that too called origins only. The HTML to image widget. Why is it called
+> HTML capture? I don't know. There's no fucking... There's no... What? Why are there no
+> presets? Everything we're making should have presets. Have another agent go back over
+> all the widgets that don't have decent unique presets and flag them and then launch
+> sonnet subagents for each one that give intelligent, thoughtful, unique and diverse
+> presets for each one. Probably at least 10 presets for each. This should be a general
+> thing. I thought we always do this but maybe you forgot. Cool. Empties work. Maybe
+> they should have axes though. Here's that advanced option that says only visible in
+> viewer or something. [...] The empties look better though. Good job. HTML to image
+> should be an actual thing. [...] I don't know how to test this because it's very
+> boring looking right now. Because there's no presets."*
+
+(Claude's readings, secondary: (1) THE PRESETS LAW IS STANDING — every widget ships
+with intelligent, thoughtful, unique, diverse presets, ≥10 each; audits enforce it;
+new widgets are not done without them. (2) Keyframe-arrow disabling (AW) missed a
+second, smaller arrow surfacing — the two variants do not share the availability code;
+fix at the SHARED level, per the user's parent-level instinct → backburner ED.
+(3) Blender-style "origins only" toggle for s/r (transform positions of objects
+without transforming their content) → backburner EE. (4) html_capture is the wrong
+name: it is the HTML-TO-IMAGE widget, and its default insert must not be boring →
+backburner EF. (5) Empties: approved; ideas parked — visible axes as ink + the
+advanced only-visible-in-editor option (ties to CZ) → noted on AM.)
+
+### R7-37 THE BACKBURNER FILE + THE 2026-08-13 BUILD WAVE (user, verbatim)
+
+> *"Do and plan the bugs and crashes  I mentioned, all of those bugs and crashes listed
+> (the serious ones that crash the program). And also do agent for each parenthesis
+> (AA,AB,AC), (AF, CY, CX), (AI, AJ, AM - which replaces anchor widget and looks like
+> blender empty), (AW, AV), (CE, CF, CG), (CR), DS-DX bugs fix them chose how to By the
+> way, this outline, this big list, I'd like that to be in a file with all these tasks,
+> and we're going to call it backburner.txt. The manifest can reference it, and it should
+> literally only have abbreviated things like this, so that you can just save this
+> instead of it being ephemeral. I like the way you did it here, so that I can just read
+> the text file, like with all the letters of AS and stuff. Yeah."*
+
+**APP/backburner.txt IS THE CANONICAL TASK LIST** — one abbreviated line per item, IDs
+AA..DX (and growing), statuses [ ]/[~]/[x]/[?]/[>]. Update lines in place, never delete,
+new items get fresh IDs at the bottom. The 2026-08-12 chat report and .claude_todo.md
+verdicts section hold the full evidence behind each line. Launched 2026-08-13 as 13
+parallel agents: groups (AA,AB,AC) (AF,CY,CX) (AI,AJ,AM) (AW,AV) (CE,CF,CG) (CR) +
+singles DS DT DU DV DW DX CH. Orchestrator choices where the user delegated ("chose how
+to"): DV builds the §6.2 counter-owns-state shape (no var write-read cycle); DU takes
+the server-ffmpeg transcode-on-import route with loud static-mode honesty; CH (dbl-click
+text crash) rides the wave as one of "the serious ones that crash the program".
+
+### R7-36 COMPOUND PROPERTIES: DROPDOWNS, SUB-KEYFRAMES, DRAG PADS (user, 2026-08-12) — NOT BUILT
+
+> *"For some properties, we should be able to have dropdowns. We already do this for
+> things like gradients btw. For like colors etc, we can have triangles that indicate
+> dropdown next to the property name, which push the property name to the right a little
+> (they're always visible those arrows) and so colors can be dropped down into R,G,B and
+> then the color would actually be a compount keyframe (you know how sections can be none,
+> some or all for keyframes? Same for these properties that have subproperties. We might
+> even have sub-subproperties so leave the architecture clean to implement that in the
+> future. For now, XY and HW are 2-vectors, RGB is a 3-vecrtor, and XY can be controlled
+> similar to rot in that if not dropped down we might have a drag pad where we click and
+> drag that pad to move the x and y values which are like > [X] [Y] [dragpad] unless
+> dropped down then it would be like  v [DragPad] \n [X] [Y]"*
+
+(Claude's reading, secondary to the quote. This is triage id CY made concrete.
+THE DESIGN: (1) rows with subproperties carry an ALWAYS-VISIBLE disclosure triangle
+before the label, nudging the label right. (2) The compound row's keyframe diamond is
+TRI-STATE — none/some/all over its children, exactly the existing section-keyframe
+grammar (core/section_keyframes.js) applied at property granularity. (3) Nesting must be
+ARCHITECTURALLY UNBOUNDED — sub-subproperties later; do not hardcode depth 2. (4) First
+compounds: XY (2-vec), WH (2-vec), RGB (3-vec). (5) XY gets a 2D DRAG PAD, the rot-dial
+analogue: collapsed row = `▸ [X] [Y] [pad]`; expanded = `▾ [pad]` with X and Y rows
+beneath. OPEN ARCHITECTURAL FORK, flagged not decided: x/y and w/h are ALREADY separate
+delta leaves, so their compounds are pure Inspector grouping; COLOR today is ONE hex-string
+leaf, so independent R/G/B keyframes require real component paths — the house precedent is
+BUNDLES.transform's dotted leaves ("rotationAnchor.x"/"rotationAnchor.y",
+core/properties.js:2363), i.e. store color as dotted component paths rather than
+synthesizing fake sub-keyframes over a string leaf; that implies a color-leaf migration
+(loud, via repairedDocument) and a paint/equation story per component. Also note synergy:
+the WH compound row is the natural home for triage AF (aspect chain lock), and this
+whole item composes with R7-29 (interp shows when non-default) since both are Inspector
+row-chrome laws.)
+
 ## ROUND 8 (user, 2026-08-21): THE VISUAL NODE
 
 ### The ask (verbatim where it matters)
@@ -6340,6 +6764,22 @@ port opts in, presets), `tests/visual_node_probe.js` (browser: beads in port
 colours on the overlay, the multi-wire Inspector control, real double-click into
 the diamond's text with the caret between its beads, typing + Escape commit).
 Doctests on every new pure function.
+
+THE VISUAL NODE IS EXEMPT FROM THE ONE-CARD CENSUS, EXPLICITLY. R7-44's
+`tests/node_chrome_unify_test.js` sweeps every registered port-declaring widget and
+asserts it emits `familyCard`'s rect body / header band / title / family mark / family
+rim. That ruling was about WORKING nodes wearing a band-less copy of the card by
+accident; the visual node has "a customizable name, colour and shape (card, rounded /
+chamfered rectangle, circle or oval, diamond, triangle)" by the user's own ask, so a
+diamond cannot be a rect body and an author-picked header colour cannot be a family.
+Found at the merge of the two branches (2026-08-21): the census reds on `visual_node`
+in five places. Resolved in the test, not the widget — the roster it sweeps skips
+`visual_node` by name with this reason beside it, and a positive check takes its
+place: at the default card shape the strip title sits at `titleLineTop()`, at
+`NODE_TITLE_SIZE`, bold — the exact defect the census was filed for — because the
+widget builds its card from the same chrome constants rather than a third copy.
+The census's source-level backstop scans `plugins/node_*.js` by filename, so
+`visual_node.js` was never in it; that is the same exemption, stated there too.
 
 ### Known bounds / follow-ups
 

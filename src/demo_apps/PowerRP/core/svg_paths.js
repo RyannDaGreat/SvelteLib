@@ -95,8 +95,9 @@
  * that is what plain unstyled strokes have always done here.
  */
 
-import { num, PATH_DECIMALS } from "./shapes.js";
+import { num, PATH_DECIMALS, EXACT_DECIMALS } from "./shapes.js";
 import { fitBox } from "./geometry.js";
+import { clamp01Or1 as clamp01 } from "./unit_interval.js";
 
 // Circle→cubic-bezier control-arm length as a fraction of the radius (the
 // standard 4-arc circle approximation): a quarter arc's off-tangent control
@@ -1205,10 +1206,12 @@ function foldPaintAlpha(paint, opacityAttr) {
   return Number.isFinite(a) ? applyAlpha(paint, a) : paint;
 }
 
-/** Pure helper. Clamp to [0,1], NaN → 1. */
-function clamp01(n) {
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 1;
-}
+/* `clamp01` here is core/unit_interval.js's `clamp01Or1`, imported at the top of
+   this file under that name. Failing to 1 is load-bearing and NOT a stylistic
+   choice: in SVG an absent or unparseable opacity attribute means FULLY OPAQUE, so
+   an unreadable one must not erase the artwork the file says to draw. The sibling
+   copies of "clamp01" fail to 0 instead, which is why the shared pair is named for
+   its contract rather than unified into one function. */
 
 // ── SHARED SVG-SOURCE HELPERS ────────────────────────────────────────────────
 // These three lived in plugins/mermaid.js, which made them unreachable by any
@@ -1244,15 +1247,75 @@ export function pathsToSvgSrc(paths, viewBox) {
 }
 
 /**
- * Pure function. The bounding rect of a set of flattened paths, measured from
- * their baked `d` coordinates. Used to frame a connector or the leftover ink,
- * which — unlike a node — has no owning element with a box.
+ * Pure function. `d` reduced to ONE explicit run per drawing command —
+ * `[["M",x,y], ["L",x,y], ["C",…6], ["Q",…4], ["Z"]]`, ABSOLUTE, in the order
+ * drawn. THE one normalized reading of path data in this codebase.
  *
- * A COORDINATE HULL, not a true path hull: it takes every numeric pair in the
- * `d` as a point, so an off-curve bezier control point can push the rect
- * slightly past the ink. That over-estimates and never under-estimates, which is
- * the safe direction — the widget's box is a frame, and a frame that is a little
- * large clips nothing.
+ * ── WHY IT LIVES HERE, AND WHAT IT REPLACED ──────────────────────────────────
+ * This was `render_gpu/pdf_backend.js`'s, and pdf_backend now imports it — the
+ * direction the dependency rule requires (core/ never imports render_gpu/, and
+ * this is geometry, which is core's). It was ALWAYS built on this module's
+ * `transformPathD` + `tokenizePathD`, so moving it moves nothing but the export.
+ *
+ * The reason it had to be shared rather than merely relocated is that
+ * `pathsBounds`/`pathPoints` below were a COMMAND-BLIND regex scrape of every
+ * number in the string, and that is not a reading of path data at all — it took
+ * a relative `l 10,0` as the absolute point (10,0), and an arc's `rx,ry` and
+ * `rot,large-arc` as two POINTS. MEASURED, before the fix:
+ * `pathsBounds([{d: "M 0,0 l 10,0 l 0,10 l -10,0 Z"}])` → `{x:-10,y:0,w:20,h:10}`
+ * for a unit square at the origin (truth `{0,0,10,10}`), and
+ * `"M 0,0 A 5,5 0 0 1 10,0"` → `w:5` where the ink spans 10. Both consumers
+ * (core/shatter.js, plugins/mermaid.js) FRAME a widget with that rect, so a
+ * wrong box is a clipped or mispositioned piece, silently.
+ *
+ * The docblock on the old pair called itself "an over-estimate that never
+ * under-estimates" — true of reading a control point as a vertex, and NOT true
+ * of misreading the grammar, which errs in both directions. Normalizing removes
+ * the second class entirely and leaves only the first, which is stated honestly
+ * on `pathPoints`.
+ *
+ * Args:
+ *   d (string): any SVG path data string (M L H V C S Q T Z A, abs+rel)
+ *   decimals (number|"exact"|undefined): precision handed to transformPathD;
+ *     undefined keeps core/shapes.js PATH_DECIMALS. `pdf_backend` passes its own
+ *     PDF_PATH_DECIMALS so normalization cannot round below what it writes, and a
+ *     MEASURING caller passes EXACT_DECIMALS so it rounds not at all.
+ *
+ * Returns:
+ *   Array<Array<string|number>>: one run per command
+ *
+ * @example normalizedRuns("M0 0L10 10Z") // [["M",0,0],["L",10,10],["Z"]]
+ * @example normalizedRuns("M0 0L10 0 20 10").length // 3 (the implicit repeat is its own run)
+ * @example normalizedRuns("M0 0H10") // [["M",0,0],["L",10,0]] (H is baked to an absolute L)
+ * @example normalizedRuns("M0 0l10 0") // [["M",0,0],["L",10,0]] (relative resolved to absolute)
+ */
+export function normalizedRuns(d, decimals = undefined) {
+  const runs = [];
+  for (const t of tokenizePathD(transformPathD(d, matIdentity(), decimals))) {
+    if (typeof t === "string") runs.push([t]);
+    else runs[runs.length - 1].push(t);
+  }
+  return runs;
+}
+
+/**
+ * Pure function. The bounding rect of a set of flattened paths, measured from
+ * their `d` coordinates. Used to frame a connector or the leftover ink, which —
+ * unlike a node — has no owning element with a box.
+ *
+ * A CONTROL-POINT HULL, not a true path hull: it is the hull of `pathPoints`,
+ * so an off-curve bezier handle can push the rect slightly past the ink. That
+ * over-estimates and never under-estimates, which is the safe direction — the
+ * widget's box is a frame, and a frame that is a little large clips nothing.
+ * (It used to also be able to UNDER-estimate, by misreading the grammar; see
+ * `normalizedRuns` for the measurements.)
+ *
+ * EMPTY IS null, NOT A ZERO RECT — the contract both callers already branch on
+ * (`if (!bounds) continue`), and the one that can be checked: a zero rect is
+ * indistinguishable from a real degenerate path, so it would make "nothing to
+ * frame" silently look like "a hairline at the origin". `render_gpu/pdf_backend.js
+ * svgPathBounds` keeps the zero rect instead, because its consumers use it as a
+ * gradient objectBoundingBox where a null would need a branch at every site.
  *
  * @param {Array<{d: string}>} paths
  * @returns {{x: number, y: number, w: number, h: number}|null} null when empty
@@ -1261,6 +1324,9 @@ export function pathsToSvgSrc(paths, viewBox) {
  * { x: 10, y: 20, w: 20, h: 40 }
  * @example pathsBounds([{d: "M0 0L10 0"}, {d: "M-5 3L2 9"}])
  * { x: -5, y: 0, w: 15, h: 9 }
+ * @example // a RELATIVE square at the origin: 10x10, not 20x10 offset to -10
+ * pathsBounds([{d: "M 0,0 l 10,0 l 0,10 l -10,0 Z"}])
+ * { x: 0, y: 0, w: 10, h: 10 }
  * @example pathsBounds([])
  * null
  */
@@ -1276,29 +1342,42 @@ export function pathsBounds(paths) {
 }
 
 /**
- * Pure function. Every coordinate PAIR in a path `d`, as points — the polyline
- * reading of a baked path.
+ * Pure function. Every ABSOLUTE point a path `d` names — anchors AND bezier
+ * control points, in drawn order. The polyline reading of a path.
  *
- * An APPROXIMATION for curves, deliberately and knowingly: a cubic's control
- * points are read as vertices, so a curved route's polyline bulges toward its
- * handles. Both consumers here tolerate that — a bounding rect only has to
- * contain the ink, and a label offset only has to be near the route's middle —
- * and the alternative is a full path flattener for two callers that do not need
- * one.
+ * IT READS THE GRAMMAR, not the digits: `normalizedRuns` bakes relative
+ * commands, H/V, S/T reflection and arcs to absolute M/L/C/Q/Z first, so a
+ * lowercase `l`, an implicit repeat and an `A`'s five non-coordinate arguments
+ * can no longer be mistaken for points (they all were — see `normalizedRuns`).
  *
- * @param {string} d - an SVG path data string
+ * CONTROL POINTS COUNT, deliberately: a cubic's handles are returned as points,
+ * so a curved route's polyline bulges toward them. Both consumers tolerate that
+ * — a bounding rect only has to CONTAIN the ink, and a label offset only has to
+ * be near the route's middle — and the alternative is a full curve flattener for
+ * two callers that do not need one. A caller that needs points ON the ink must
+ * sample the curves itself (tests/morph_vector_coverage_test.js does, and says
+ * why).
+ *
+ * @param {string} d - an SVG path data string, any grammar
  * @returns {Array<{x: number, y: number}>}
  *
  * @example pathPoints("M10 20L30 60")
  * [ { x: 10, y: 20 }, { x: 30, y: 60 } ]
  * @example pathPoints("M0,0 L10,0 L10,10").length
  * 3
+ * @example // relative, and an arc: the arc's radii/flags are NOT points
+ * pathPoints("M0 0l10 0").at(-1)
+ * { x: 10, y: 0 }
  * @example pathPoints("")
  * []
  */
 export function pathPoints(d) {
-  const nums = (String(d ?? "").match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? []).map(Number);
   const out = [];
-  for (let i = 0; i + 1 < nums.length; i += 2) out.push({ x: nums[i], y: nums[i + 1] });
+  // EXACT_DECIMALS: normalization is a MEASUREMENT step here, so its rounding
+  // would be pure loss — no `d` is written from this. See shapes.js EXACT_DECIMALS.
+  for (const run of normalizedRuns(d, EXACT_DECIMALS)) {
+    const a = run.slice(1);
+    for (let i = 0; i + 1 < a.length; i += 2) out.push({ x: a[i], y: a[i + 1] });
+  }
   return out;
 }

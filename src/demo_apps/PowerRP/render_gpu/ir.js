@@ -1704,6 +1704,60 @@ export function normalizeStrokeSpace(cmdName, src = {}) {
   return { strokeScreenSpace: true };
 }
 
+/**
+ * THE UNIVERSAL SCREEN-SPACE-STROKE SEAM — the fourth member of the applyStroke*
+ * family, and the one that was missing for its whole life.
+ *
+ * User, 2026-08-12: "Im solidly convinced that the screen-space size checkbox for
+ * stroke does jack shit". It did nothing, and the reason was that this function did
+ * not exist. Every OTHER half of the feature was built and correct: the property is
+ * declared on the SHARED bundles (core/properties.js strokedBox/strokedBorder), the
+ * normalizer above is written and tested, the op builders accept the key, and
+ * paint_skia's strokePaint divides by the divisor when the op carries the flag. The
+ * only broken link was that nothing ever put the flag ON an op — so 20 widgets
+ * showed a checkbox wired to nothing.
+ *
+ * WHY A STAMPER AND NOT 20 PLUGIN EDITS: the user's own words when he asked for the
+ * feature were "A boolean on the SHARED bundle, so every stroke-bearing widget gets
+ * it at once". Its three siblings (trim, offset, join) are each stamped onto every
+ * plugin's ops at ONE ports.js seam from state, with no plugin aware of them. This
+ * is that same gesture, and doing it per-plugin would be the design the bundle was
+ * chosen to avoid — plus 20 places for the 21st widget to forget.
+ *
+ * THE OWNERSHIP RULE IS THE SIBLINGS' RULE, VERBATIM: stamp a cmd that owns a
+ * stroke, recurse into an effectSubtree's own content, and NEVER descend into a
+ * cropSubtree's foreign content. The `cmd.stroke != null` guard is also what makes
+ * this safe for the ops that CANNOT honour it — `polyline` (line.js's round-cap
+ * branch) carries its width in `cmd.width` with no `stroke` field, so it is skipped
+ * by construction rather than by a special case.
+ *
+ * IDENTITY SHORT-CIRCUITS TO THE SAME ARRAY REFERENCE, so a widget that never opts
+ * in is byte-identical — the absent-is-legacy contract every stroke extra keeps.
+ *
+ * @param {object} state - the widget's folded state (read for strokeScreenSpace)
+ * @param {object[]} cmds - the ops to stamp
+ * @returns {object[]} cmds, with the flag stamped onto stroked ops (or unchanged)
+ *
+ * @example applyStrokeSpace({}, [{op: "rect", stroke: [0,0,0,1]}])[0].strokeScreenSpace // undefined
+ * @example applyStrokeSpace({strokeScreenSpace: true}, [{op: "rect", stroke: [0,0,0,1], strokeWidth: 2}])[0].strokeScreenSpace // true
+ * @example applyStrokeSpace({strokeScreenSpace: true}, [{op: "rect", fill: [1,0,0,1]}])[0].strokeScreenSpace // undefined (no stroke to scale)
+ */
+export function applyStrokeSpace(state, cmds) {
+  const space = normalizeStrokeSpace("applyStrokeSpace", state ?? {});
+  if (Object.keys(space).length === 0) return cmds;
+  return cmds.map((cmd) => stampStrokeSpace(cmd, space));
+}
+
+/** Pure helper for applyStrokeSpace: the stampStrokeTrim recursion, same
+ *  ownership rule (own stroke + own effect wrapper, never foreign crop content). */
+function stampStrokeSpace(cmd, space) {
+  let out = cmd;
+  if (cmd.stroke != null) out = { ...out, ...space };
+  if (cmd.op === "effectSubtree" && Array.isArray(cmd.content))
+    out = { ...out, content: cmd.content.map((c) => stampStrokeSpace(c, space)) };
+  return out;
+}
+
 export function normalizeStrokeJoin(cmdName, src = {}) {
   const out = {};
   const join = src.strokeJoin;
@@ -2114,12 +2168,52 @@ export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidt
  * Pure function. Stroked polyline (round caps and joins — GPU renders each
  * segment as a capsule, so joins are inherently round).
  *
+ * ITS INK GOES THROUGH parsePaint, LIKE EVERY OTHER GEOMETRY BUILDER'S. This was
+ * the ONE builder still calling parseColor, and the cost was not a missing
+ * feature but a WRONG PICTURE drawn silently. parseColor's contract is to reduce
+ * a paint OBJECT it cannot express to a representative solid — the right answer
+ * for a single-colour consumer (a crop-box border, a shadow tint), but this op is
+ * a widget's real ink, so a gradient stroke collapsed to its FIRST STOP and a
+ * material stroke to "#888888", with no warning at any layer.
+ *
+ * THE SHARPEST PROOF WAS HALF AN ARROW. plugins/arrow.js draws its shaft with
+ * polyline and its heads with polygon/path from the SAME `s.stroke` leaf, so one
+ * gradient rendered two ways in one widget — flat shaft, gradient head. Nine
+ * plugins were affected (line, arrow, elbow_arrow, curved_arrow, fancy_arrow's
+ * rim, tangent_lines, donut's two rims, clock_analog).
+ *
+ * THE SLOT IS STILL NAMED `color`, NOT `stroke`, AND THAT IS DELIBERATE. Renaming
+ * it would be a breaking change to every consumer and to the field-coverage table
+ * for no gain, and `color` is ALREADY a resolved paint slot: render_gpu/ports.js
+ * resolveMaterialFillPaints resolves `cmd.color` for the text op's ink, so a
+ * material or a mid-transition crossfade on a polyline is resolved with no change
+ * there. `null` is accepted and means DRAW NOTHING (parsePaint's OFF), matching
+ * the fill-only ops' existing `if (!cmd.fill)` guards.
+ *
+ * BYTE-IDENTICAL FOR A SOLID: parsePaint delegates a string/array straight to
+ * parseColor, so every existing deck's ops, cache keys and exported bytes are
+ * unchanged — measured across 11 scenes and 11 plugin cases in both exporters.
+ *
  * @example polyline({points: [[0, 0], [10, 0]], width: 2, color: "#000"}).points.length // 2
+ * @example polyline({points: [[0, 0], [10, 0]], width: 2, color: "#f00"}).color // [1, 0, 0, 1] (a solid is byte-identical to the parseColor era)
+ * @example polyline({points: [[0, 0], [10, 0]], width: 2, color: {type: "linearGradient", linear: {stops: [{offset: 0, color: "#000"}, {offset: 1, color: "#fff"}], angle: 0}}}).color.type // "linearGradient" (no longer flattened to its first stop)
  */
 export function polyline({ points, width, color, opacity = 1 }) {
   if (!Array.isArray(points) || points.length < 2) throw new Error(`polyline: need >= 2 points, got ${JSON.stringify(points)}`);
   requireFinite("polyline", { width, opacity });
-  return { op: "polyline", points: points.map(([x, y]) => [x, y]), width, color: parseColor(color), opacity };
+  const paint = parsePaint(color);
+  // A MATERIAL INK IS REFUSED HERE, LOUDLY, AND THAT IS THE HONEST BOUND. The
+  // stroke-material framework (paint_skia drawMaterialStroke) reads an op's
+  // `stroke`/`strokeWidth` and walks `addOpGeometry`, which knows rect/ellipse/
+  // polygon/path — a polyline carries its ink on `color`/`width` and is in
+  // neither list, so a material would reach applyPaint and paint garbage. Widening
+  // that framework to a second slot naming is real work, not a one-line fix, so
+  // the gap is STATED rather than silently mispainted: this is precisely the
+  // silent-collapse failure this builder's parsePaint move exists to end, and
+  // trading a flat "#888888" for a wrong shader would only move it.
+  if (isMaterialPaint(paint))
+    throw new Error(`polyline: a MATERIAL ink is not supported on this op (material "${paint.material?.id}"). Its stroke-material framework reads an op's stroke/strokeWidth and shape geometry, and a polyline carries color/width; draw the geometry as a stroked \`path\` op instead, which the framework already handles.`);
+  return { op: "polyline", points: points.map(([x, y]) => [x, y]), width, color: paint, opacity };
 }
 
 /**

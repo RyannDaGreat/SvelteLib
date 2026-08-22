@@ -189,10 +189,13 @@ const SHAPE_TRANSLATORS = {
       return { widgetType: "rect", state: base, refusals, textState: {} };
     }
     const assetName = ctx.assetNameFor(shapeIR.media.relTarget);
-    if (shapeIR.media.posterRel) ctx.assetNameFor(shapeIR.media.posterRel); // registers the poster into assets/ even though no state field references it yet — see media.js's header
+    // THE POSTER FRAME lands on the widget's `thumbnail`. This same call already
+    // registered the poster into assets/ back when nothing could reference it;
+    // now its return value is the asset name the state points at. `showThumbnail`
+    // stays false on purpose — see core/pptx_translate/media.js's header.
+    const posterAssetName = shapeIR.media.posterRel ? ctx.assetNameFor(shapeIR.media.posterRel) : null;
     if (shapeIR.media.trim) refusals.push(`video "${shapeIR.name}" has a p14:trim (start ${shapeIR.media.trim.stMs}ms, end ${shapeIR.media.trim.endMs}ms) — plugins/video.js has no trim state yet (mapping spec §7 TWEAK); playing the full clip`);
-    refusals.push(`video "${shapeIR.name}" has an authored poster frame — plugins/video.js has no poster-image state yet (mapping spec open question #10, confirmed unresolved in code); the poster PNG was still copied to assets/ but nothing references it`);
-    return { widgetType: "video", state: { x, y, w, h, rotation, ...videoState(ctx.projectName, assetName, shapeIR.media) }, refusals, textState: {} };
+    return { widgetType: "video", state: { x, y, w, h, rotation, ...videoState(ctx.projectName, assetName, shapeIR.media, posterAssetName) }, refusals, textState: {} };
   },
   audio(shapeIR) {
     return { widgetType: null, state: {}, refusals: [`audio shape "${shapeIR.name}" — PowerRP has no standalone audio widget yet (mapping spec §7 NEW-WIDGET) — dropped`], textState: {} };

@@ -33,6 +33,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { schemaAngleRadians } from "../../core/properties.js";
 
 // ── shared prelude (pure SkSL; no uniforms) ───────────────────────────────────
 const PRELUDE = `
@@ -266,7 +267,10 @@ export const STAMP_FILL_PARAMS = [
   { name: "seed", kind: "number", default: 3, help: "Aging seed — changes the patina/rust pattern in the groove deterministically." },
 ];
 
-const DEG2RAD = Math.PI / 180;
+/** Stored angle → radians, reading each row's DECLARED storage unit from the
+ *  schema above rather than restating it here (core/properties.schemaAngleRadians). */
+const toRadians = schemaAngleRadians(STAMP_FILL_PARAMS);
+
 const PROFILE_CODE = { chamfer: 0, round: 1, V: 2 };
 
 /**
@@ -286,7 +290,7 @@ export function stampToUniformParams(p) {
     bevelWidthPct: p.bevelWidth,
     profile: PROFILE_CODE[p.profile] ?? 0,
     emboss: p.emboss ? 1 : -1,
-    lightAngle: p.lightAngle * DEG2RAD,
+    lightAngle: toRadians("lightAngle", p.lightAngle),
     patinaAmount: p.patinaAmount,
     patinaColor: p.patinaColor,
     rustCoverage: p.rustCoverage,

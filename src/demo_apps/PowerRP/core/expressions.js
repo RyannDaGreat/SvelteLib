@@ -151,6 +151,12 @@ import { POINTER_KEYWORDS, pointerInput } from "./pointer_input.js";
 // which is what proves these two modules stay bare-node loadable.
 import { getMaterial, materialIds } from "../render_gpu/skia/materials.js";
 import { getStrokeMaterial, hasStrokeMaterial } from "../render_gpu/skia/stroke_materials.js";
+// VECTORS AS VALUES (R7-38b): the equation host's operators dispatch through
+// these so `b.pos + c.pos` is a vector sum rather than a coercion TypeError.
+import {
+  isNumericTensor, vectorBinaryOp, vectorMapFunction, vectorMapVariadic, makeVector,
+  VECTOR_KINDS, isVectorAxis, vectorFor, vectorToStored, colorChannelValue, paintColorPath, paintColorRefusal,
+} from "./vector_values.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
 //
@@ -1461,7 +1467,11 @@ export function slugMap(state) {
     toId.set(slug, id);
     toSlug.set(id, slug);
   }
-  return { toId, toSlug };
+  // THE DECLARED VARIABLE NAMES ride along so resolveRef can tell a vec2
+  // variable's COMPONENT (`origin.x`) from a typo (`ghost.x`) without a second
+  // argument threaded through every caller. Absent vars ⇒ an empty set, i.e.
+  // exactly the pre-vector behaviour: every dotted non-slug head is unknown.
+  return { toId, toSlug, vars: new Set(Object.keys(state.vars ?? {})) };
 }
 
 /**
@@ -1686,6 +1696,15 @@ export function resolveRef(token, slugs, selfId = null) {
       return { kind: "anchor", itemId: slugs.toId.get(itemSlug), anchorId: head.slice(us + 1), coord: path[0] };
     }
   }
+  // A DOTTED HEAD NAMING A DECLARED VARIABLE is that variable's COMPONENT — how a
+  // vec2 variable is addressed (`= origin.x`). GATED ON THE VARIABLE ACTUALLY
+  // EXISTING, which is what keeps `ghost.x` the loud "Unknown reference" it has
+  // always been (tests/expressions_test.js:191): typo protection at the entry
+  // point is a stronger property than component sugar, so an unknown head must
+  // never be quietly reinterpreted as "a variable I have not met". `slugs.vars`
+  // is OPTIONAL — a caller that passes no variable set (the display mappers,
+  // which only rewrite item refs) behaves exactly as it did before.
+  if (slugs.vars?.has?.(head)) return { kind: "var", name: head, path };
   throw new Error(`Unknown reference "${token}" — no item slug or variable named "${head}"`);
 }
 
@@ -2091,6 +2110,73 @@ const EQ_PREFIX_RE = /^\s*=/;
 export function withMarkerPreserved(src, rewrite) {
   const marker = EQ_PREFIX_RE.exec(src)?.[0] ?? "";
   return marker + rewrite(src.slice(marker.length));
+}
+
+/**
+ * Pure function. Is this VARIABLE's stored value an equation, as opposed to a
+ * literal of a non-numeric kind?
+ *
+ * ── WHY THIS PREDICATE HAD TO EXIST (workstream COMPOUND_, backburner CX) ────
+ * A variable's string value used to be an equation BY FIAT: every string under
+ * `state.vars` was collected as a numeric equation slot, because a variable could
+ * only ever BE a number and the only reason to store a string was to write a
+ * formula. GLOBAL VARIABLE KINDS broke that fiat. A `color` variable stores
+ * "#ffffff" and a `text` variable stores prose — both plain strings, neither an
+ * equation — and the fiat sent them to the numeric evaluator, which reported
+ * `PowerRP expression error at vars.probe_col: evaluates to #ffffff` and replaced
+ * the author's colour with a fallback. MEASURED, on a colour variable created
+ * through the panel; it is why this function is not a tidy-up.
+ *
+ * THE ANSWER IS READ FROM THE VALUE, NOT FROM meta.varKinds, and that is
+ * deliberate rather than a shortcut. `evaluateState` takes a folded STATE and has
+ * no document meta in hand, so consulting the kind map would mean threading it
+ * through the one seam every pixel consumer calls — a large change to fix a
+ * question the value can already answer. It is also the SAFER of the two: the
+ * kind map is viewer-authored metadata that a damaged document can disagree with,
+ * while the value is what the equation engine would actually have to evaluate.
+ * A colour literal is not a valid expression under any kind.
+ *
+ * THE UNIVERSAL "=" ALWAYS WINS, so a colour variable CAN still be bound to a
+ * formula (`= brandColor`) exactly like any other slot — the escape hatch is
+ * untouched. What is excluded is only a bare literal that could never parse as
+ * an expression: a hex colour.
+ *
+ * ── THE `text` KIND IS A KNOWN, NAMED BOUNDARY, NOT A SILENT ONE ────────────
+ * A `text` variable holding prose ("Hello world") is STILL collected as an
+ * equation here and will still report an expression error. That is deliberate
+ * and it is the honest state of the feature rather than a fix pretended at:
+ *   • A bare string in a variable has meant "an equation" for the whole life of
+ *     this engine, and `speed * 2` is exactly such a string. There is no
+ *     predicate that admits `speed * 2` and rejects `Hello world` without
+ *     PARSING, and switching the fiat to a parse test would silently reclassify
+ *     every existing deck's variables — a large behaviour change smuggled in as a
+ *     bug fix, on the one path every pixel consumer calls.
+ *   • The hex case is different in kind, not merely in degree: `#ffffff` is what
+ *     the app ITSELF writes when the author picks a colour, so it is reachable
+ *     with no way to avoid it, and it can never be a valid expression under any
+ *     reading. Prose is at least something the author typed on purpose.
+ * SO: colour, boolean, number and font variables are correct today; a `text`
+ * variable works when its content parses (a bare word, which is the common case
+ * for an id or a font name) and reports loudly when it does not. Closing this
+ * properly means threading `meta.varKinds` into `evaluateState` so the slot's
+ * kind comes from the DECLARATION — the right fix, and a plumbing change through
+ * `web/cameraFrame.evaluationAt` (the one seam that threads `meta.script` for
+ * every pixel consumer) rather than a line here.
+ *
+ * @param {*} value A variable's stored value.
+ * @returns {boolean}
+ *
+ * @example isVarEquation("speed * 2") // true (the legacy bare-string equation)
+ * @example isVarEquation("= brandColor") // true (the universal "=" always wins)
+ * @example isVarEquation("#ffffff") // false (a colour LITERAL, not an equation)
+ * @example isVarEquation("#fff") // false (the 3-digit spelling too)
+ * @example isVarEquation(0.5) // false (a number is not a slot at all)
+ * @example isVarEquation(true) // false
+ */
+export function isVarEquation(value) {
+  if (typeof value !== "string") return false;
+  if (EQ_PREFIX_RE.test(value)) return true;
+  return !isHexColor(value);
 }
 
 /**
@@ -3018,10 +3104,23 @@ function stringSeed(s) {
  * random the evaluator exposes so equations may use randomness without breaking
  * RenderTree = pure(document, alpha).
  *
+ * EXPORTED so core/plugin_assets.js's jail hands plugin assets THIS function
+ * rather than its own. That copy's docblock claimed to mirror this one and did
+ * not: it seeded `(seed|0) + 0x6d2b79f5` and then added the same constant again
+ * on the first call, putting its stream TWO steps ahead of the equation
+ * evaluator's for the same seed. So `random(7)` meant one thing in an equation
+ * and a different thing in a plugin asset — a divergence no test could see,
+ * because both halves were self-consistent and each was only ever compared
+ * against itself.
+ *
+ * @param {number} seed - a uint32 seed
+ * @returns {function(): number} successive uniforms in [0, 1)
+ *
  * @example // const r = mulberry32(1); const a = r(); 0 <= a && a < 1 // true
  * @example // mulberry32(7)() === mulberry32(7)() // true (reproducible)
+ * @example // mulberry32(1)() === mulberry32(2)() // false (a different seed diverges)
  */
-function mulberry32(seed) {
+export function mulberry32(seed) {
   let a = seed >>> 0;
   return function () {
     a = (a + 0x6d2b79f5) | 0;
@@ -3071,9 +3170,32 @@ function refToJs(value) {
  * restricted-grammar tokenizable (a full-JS expression — IIFE/loop/etc.) is
  * returned verbatim.
  *
- * @example toJsExpr("@a1.x + 10") // "$a1.x + 10"
- * @example toJsExpr("#ff0080") // "\"#ff0080\""
- * @example toJsExpr("self.points.3.x / 2") // "self.points[3].x / 2"
+ * ── WHY ARITHMETIC IS EMITTED AS CALLS AND NOT AS JS OPERATORS (R7-38b) ──────
+ * The user's ruling is that a vector is a struct with NumPy algebra:
+ * `a.pos = b.pos + c.pos`. JAVASCRIPT CANNOT EXPRESS THAT WITH `+`. An operand's
+ * `Symbol.toPrimitive` must return a PRIMITIVE, so a `+` whose result is a vector
+ * is not merely unimplemented — it is unrepresentable. MEASURED: returning an
+ * object from the ref proxy's `toPrimitive` throws `TypeError: Cannot convert
+ * object to primitive value` before any of our code runs.
+ *
+ * So an expression CONTAINING AN OPERATOR is emitted from the AST with each
+ * binary/unary op as a CALL into the vector-aware host (`__op` / `__neg`), which
+ * dispatches on whether either operand is a tensor and falls through to ordinary
+ * scalar arithmetic otherwise. PRECEDENCE AND ASSOCIATIVITY ARE THE PARSER'S
+ * ALREADY — the AST encodes them, so emitting from it cannot get them wrong, and
+ * the emitted call tree needs no parentheses of its own.
+ *
+ * THE TOKEN-SPLICE PATH IS KEPT FOR EVERYTHING ELSE, deliberately: a source with
+ * no operator (a bare ref, a literal, a call) emits BYTE-IDENTICALLY to what it
+ * always did, so the overwhelming majority of equations compile down exactly the
+ * same string and this change cannot have perturbed them. A source the restricted
+ * parser cannot handle (the full-JS escape hatch) also stays verbatim — it never
+ * had vector semantics and still does not.
+ *
+ * @example toJsExpr("@a1.x + 10") // "__op(\"+\", $a1.x, 10)"
+ * @example toJsExpr("#ff0080") // "\"#ff0080\"" (no operator: token-splice, unchanged)
+ * @example toJsExpr("self.points.3.x") // "self.points[3].x" (no operator: unchanged)
+ * @example toJsExpr("self.points.3.x / 2") // "__op(\"/\", self.points[3].x, 2)"
  * @example toJsExpr("(function(){return 1})()") // "(function(){return 1})()" (verbatim — not restricted)
  */
 export function toJsExpr(clean) {
@@ -3082,6 +3204,19 @@ export function toJsExpr(clean) {
     toks = tokenize(clean);
   } catch {
     return clean; // full-JS expression: not restricted-tokenizable, leave verbatim
+  }
+  // AN OPERATOR MEANS ARITHMETIC, which must route through the vector-aware host.
+  // Tested on the TOKENS (cheap, and true of exactly the sources that need it);
+  // a source with none takes the historical splice below, byte-identically.
+  if (toks.some((t) => t.kind === "op" && ARITHMETIC_OPS.has(t.value))) {
+    try {
+      return emitJsFromAst(parseExpression(clean));
+    } catch {
+      // Not parseable by the restricted grammar (but tokenizable) — the splice
+      // path is what this source always got, and compileEquationFn is where its
+      // error is reported. Never swallow: we simply do not have a better answer
+      // here, and the caller still fails loudly on a genuine syntax error.
+    }
   }
   let out = "";
   let last = 0;
@@ -3097,6 +3232,43 @@ export function toJsExpr(clean) {
   return out + clean.slice(last);
 }
 
+/** The binary operators whose evaluation must be vector-aware. `?`/`:`/`(`/`)`
+ *  and the comma are grammar, not arithmetic, so they do not force the AST path. */
+const ARITHMETIC_OPS = new Set(["+", "-", "*", "/", "%"]);
+
+/**
+ * Pure function. Emits a JS expression from a restricted-grammar AST, with every
+ * arithmetic operation as a call into the vector-aware host.
+ *
+ * THE ONE ASYMMETRY WORTH KNOWING: a `ref` emits through `refToJs` exactly as the
+ * splice path does, so `@a1.x` and `points.3.x` mangle identically either way —
+ * the two emitters agree about references by SHARING that function rather than by
+ * both remembering the rule.
+ *
+ * @example emitJsFromAst(parseExpression("1 + 2")) // '__op("+", 1, 2)'
+ * @example emitJsFromAst(parseExpression("a * 2 + b")) // '__op("+", __op("*", a, 2), b)'
+ * @example emitJsFromAst(parseExpression("-x")) // '__neg(x)'
+ * @example emitJsFromAst(parseExpression("f(a).x")) // 'f(a).x'
+ * @example emitJsFromAst(parseExpression("a ? b : c")) // '(a ? b : c)'
+ */
+function emitJsFromAst(ast) {
+  switch (ast.kind) {
+    case "num": return String(ast.value);
+    case "str": case "color": return JSON.stringify(ast.value);
+    case "bool": return String(ast.value);
+    case "ref": return refToJs(ast.name);
+    case "neg": return `__neg(${emitJsFromAst(ast.arg)})`;
+    case "bin": return `__op(${JSON.stringify(ast.op)}, ${emitJsFromAst(ast.left)}, ${emitJsFromAst(ast.right)})`;
+    // SHORT-CIRCUITING IS PRESERVED by emitting a real JS conditional rather than
+    // a call — a call would evaluate BOTH branches, which would read `@@` on a
+    // simulation's first step (evalAst's own note) and break every guard equation.
+    case "cond": return `(${emitJsFromAst(ast.test)} ? ${emitJsFromAst(ast.then)} : ${emitJsFromAst(ast.else)})`;
+    case "member": return `${emitJsFromAst(ast.obj)}.${ast.prop}`;
+    case "call": return `${ast.name}(${ast.args.map(emitJsFromAst).join(", ")})`;
+  }
+  throw new Error(`Cannot emit JS for AST node: ${JSON.stringify(ast)}`);
+}
+
 const jsFnCache = new Map(); // clean src → compiled (scope) → value (pure compile; cache-safe)
 
 /**
@@ -3108,7 +3280,16 @@ const jsFnCache = new Map(); // clean src → compiled (scope) → value (pure c
  * `@id`, etc.) rethrows V8's. The `\n` before `)` neutralizes a trailing line
  * comment. Throws on a genuine syntax error (→ the slot fails loud).
  *
+ * THE ARITHMETIC HOST (`__op`/`__neg`) IS BOUND INSIDE the compiled function, so
+ * the returned signature stays `(scope) → value` EXACTLY as before. Every caller
+ * — including core/graph_equation.js's per-sample evaluator, which calls this
+ * with a plain Proxy-free scope — is unchanged and needs to know nothing about
+ * vectors. Binding via the `with(scope)` wrapper's own closure rather than as a
+ * second parameter is what keeps that promise; a second parameter would have
+ * silently passed `undefined` at every existing call site.
+ *
  * @example // compileEquationFn("speed * 2")(scope) evaluates speed*2 against scope
+ * @example // compileEquationFn("b.pos + c.pos")(scope) returns a VECTOR value
  */
 export function compileEquationFn(clean) {
   const cached = jsFnCache.get(clean);
@@ -3121,12 +3302,114 @@ export function compileEquationFn(clean) {
   }
   let fn;
   try {
-    fn = new Function("scope", `with(scope){ return (${toJsExpr(clean)}\n); }`);
+    const body = new Function("scope", "__op", "__neg", `with(scope){ return (${toJsExpr(clean)}\n); }`);
+    fn = (scope) => body(scope, applyArithmetic, negateValue);
   } catch (jsErr) {
     throw restrictedErr ?? jsErr; // prefer the back-compat restricted message
   }
   jsFnCache.set(clean, fn);
   return fn;
+}
+
+/**
+ * Pure function. THE SCALAR arithmetic table — what each operator means on two
+ * numbers, in ONE place so the vector path and the scalar path cannot diverge
+ * about (say) what "%" does.
+ *
+ * @example scalarArithmetic("+", 2, 3) // 5
+ * @example scalarArithmetic("%", 7, 3) // 1
+ */
+function scalarArithmetic(op, a, b) {
+  switch (op) {
+    case "+": return a + b;
+    case "-": return a - b;
+    case "*": return a * b;
+    case "/": return a / b;
+    case "%": return a % b;
+  }
+  throw new Error(`Unknown operator "${op}"`);
+}
+
+/**
+ * Pure function. THE EQUATION HOST'S BINARY OPERATOR — NumPy-style over vectors,
+ * ordinary arithmetic over scalars (R7-38b).
+ *
+ * REF PROXIES ARE RESOLVED FIRST, and that is the subtle part: an operand
+ * arriving from the scope is a lazy proxy whose value only materializes on
+ * coercion, and a vector CANNOT be materialized by coercion (see toJsExpr). So
+ * each side is pulled through `unwrapOperand` before dispatch — which is also
+ * where a scalar ref keeps its historical `Number()` coercion, so `"3" * 2`
+ * behaves exactly as it did.
+ *
+ * A "+" ON TWO STRINGS STAYS CONCATENATION, because it always was: the string
+ * library functions (text_type and friends) compose that way, and quietly turning
+ * it into NaN would break every label equation in every deck.
+ */
+function applyArithmetic(op, left, right) {
+  const a = unwrapOperand(left);
+  const b = unwrapOperand(right);
+  if (isNumericTensor(a) || isNumericTensor(b)) return vectorBinaryOp(op, a, b, scalarArithmetic);
+  if (op === "+" && (typeof a === "string" || typeof b === "string")) return a + b;
+  return scalarArithmetic(op, Number(a), Number(b));
+}
+
+/** Pure function. THE EQUATION HOST'S UNARY MINUS — negates every component of a
+ *  vector, or the number itself. (`-pos` is the vector's reflection.) */
+function negateValue(v) {
+  const x = unwrapOperand(v);
+  return isNumericTensor(x) ? vectorMapFunction((n) => -n, x) : -Number(x);
+}
+
+/**
+ * Pure function. Resolves an operand that may be a lazy REF PROXY to its value,
+ * leaving a plain value alone.
+ *
+ * A proxy is detected by its IS_REF flag and read through `valueOf` — the same
+ * seam arithmetic coercion used to trigger implicitly. This is the ONE place the
+ * implicit coercion the operators used to rely on became explicit, which is what
+ * lets a reference evaluate to a VECTOR at all.
+ */
+function unwrapOperand(v) {
+  return v && typeof v === "object" && v[IS_REF] ? v.valueOf() : v;
+}
+
+/**
+ * Pure function. A function ARGUMENT declared "number" → either a tensor (left
+ * whole, for the elementwise map) or a plain number (coerced as it always was).
+ *
+ * THE COERCION ORDER IS THE POINT: a ref proxy must be resolved BEFORE the
+ * tensor test, because a reference to a vector property is a proxy whose value
+ * is the vector — testing the proxy itself would always say "not a tensor" and
+ * then `Number()` it to NaN. Resolving first is also what records the
+ * dependency, exactly as the plain `Number(arg)` did.
+ */
+function numericOrTensorArg(arg) {
+  const v = unwrapOperand(arg);
+  return isNumericTensor(v) ? v : Number(v);
+}
+
+/**
+ * Pure function. A VECTOR result landing in a COLOUR slot re-spells itself as a
+ * colour; everything else passes through untouched.
+ *
+ * THIS IS THE CLOSING HALF OF `= fill.color * 0.5`. The algebra works in r/g/b/a
+ * channels (a hex string cannot be multiplied), so the value arriving at a
+ * colour slot is a 4-vec while the slot stores hex. The conversion happens AT
+ * THE SLOT BOUNDARY rather than inside the operators, and that placement is the
+ * point: it keeps the algebra kind-agnostic (R7-38c) — no operator ever learns
+ * what a colour is; the SLOT, which already declares its kind, does the one
+ * conversion.
+ *
+ * A WRONG-ARITY VECTOR IS NOT CONVERTED. It falls through unchanged to the
+ * ordinary "is not a valid color value" refusal, loudly, rather than being
+ * padded or truncated into a colour the author never wrote.
+ *
+ * @example colorSpelled(5, "number") // 5 (untouched)
+ * @example colorSpelled("#ff0000", "color") // "#ff0000" (already a colour)
+ */
+function colorSpelled(v, kind) {
+  if (kind !== "color" || !isNumericTensor(v)) return v;
+  return vectorToStored("color", v) ?? v;
 }
 
 /** Control-flow sentinel: a detected dependency cycle. Carries the exact chain
@@ -3144,6 +3427,11 @@ class CycleAbort {
  *  the two must not be confused: one falls through to the stored-property read, the
  *  other is refused with a sentence (core/output_properties.outputValueProblem). */
 const NOT_AN_OUTPUT = Symbol("not an output property");
+
+/** "This path names no VECTOR address" — the same sentinel discipline
+ *  NOT_AN_OUTPUT uses, and for the same reason: `undefined` is a legal absent
+ *  value, so it cannot also mean "not a vector, fall through to the stored read". */
+const NOT_A_VECTOR = Symbol("not a vector address");
 
 /**
  * Pure function. Ref-proxy path segments → a resolver token for resolveRef: a
@@ -3341,7 +3629,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   //    to ANY kind (color/string/boolean/select), validated post-eval.
   const slots = new Map(); // key ("items.a1.x") → slot
   for (const [name, value] of Object.entries(state.vars ?? {}))
-    if (typeof value === "string")
+    if (isVarEquation(value))
       slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value, kind: "number" });
   for (const [id, item] of Object.entries(state.items ?? {})) {
     // An item whose `type` hasn't folded in yet DOES NOT EXIST YET (the
@@ -3694,6 +3982,67 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     return value;
   };
 
+  /**
+   * Query→value (settles what it reads). THE VECTOR ADDRESS SEAM (R7-38) — the
+   * value of `pos` / `size` / `<paint>.color`, or of ONE component under them,
+   * or the NOT_A_VECTOR sentinel when `rel` names no vector address.
+   *
+   * A SENTINEL RATHER THAN `undefined`/null, for the reason the file already
+   * uses one for output properties: `undefined` is a legal absent value, and the
+   * caller must be able to tell "this is not a vector address" (fall through to
+   * the ordinary stored read) from "this is one and its value is X".
+   *
+   * THE TWO STORAGE DIRECTIONS MEET HERE and nowhere else. A LEAVES vector
+   * (`pos`) requires the item's geometry to be settled first — exactly as cx/cy
+   * does — because its components ARE x/y and those may be equations. A
+   * COMPOSITE vector (`color`) reads the paint slot the address maps onto.
+   */
+  const readVectorAddress = (itemId, rel, settleGeometry) => {
+    // The address is the LAST-BUT-ONE segment for a component (`fill.color.r`)
+    // or the LAST for a whole vector (`pos`, `fill.color`).
+    const whole = VECTOR_KINDS[rel[rel.length - 1]] ? rel[rel.length - 1] : null;
+    const axisKind = rel.length >= 2 && VECTOR_KINDS[rel[rel.length - 2]] ? rel[rel.length - 2] : null;
+    const axis = axisKind && isVectorAxis(axisKind, rel[rel.length - 1]) ? rel[rel.length - 1] : null;
+    const kind = whole ?? (axis ? axisKind : null);
+    if (!kind) return NOT_A_VECTOR;
+    const decl = VECTOR_KINDS[kind];
+    const token = `${slugs.toSlug.get(itemId) ?? itemId}.${rel.join(".")}`;
+    if (decl.via === "composite") {
+      // `<paintKey>.color[.axis]` — the paint is whatever sits before `color`.
+      const paintPath = rel.slice(0, rel.indexOf(kind));
+      if (paintPath.length === 0) return NOT_A_VECTOR; // a bare `.color` names no paint
+      settleGeometry(itemId, false);
+      const paint = getPath(out.items[itemId], pathToStored(paintPath));
+      if (paint === undefined)
+        throw new Error(`Item "${slugs.toSlug.get(itemId) ?? itemId}" has no property "${paintPath.join(".")}"`);
+      const refusal = paintColorRefusal(paint, token);
+      if (refusal) throw new Error(refusal);
+      const color = getPath(paint, paintColorPath(paint)) ?? paint;
+      if (axis) {
+        const channel = colorChannelValue(color, axis);
+        if (channel === null) throw new Error(`"${token}" is not a colour — got ${JSON.stringify(color)}`);
+        return channel;
+      }
+      return vectorFor(kind, color) ?? (() => {
+        throw new Error(`"${token}" is not a colour — got ${JSON.stringify(color)}`);
+      })();
+    }
+    // A LEAVES vector: its components are stored leaves on the item itself, so
+    // the whole geometry must settle before they are read.
+    if (rel.length !== (axis ? 2 : 1)) return NOT_A_VECTOR; // `pos` only at the top level
+    settleGeometry(itemId, false);
+    const target = unsignedState(out.items[itemId]); // THE FLIP SEAM, as every pre-derivation reader does
+    if (axis) {
+      const v = target?.[axis];
+      if (typeof v !== "number") throw new Error(`Item "${slugs.toSlug.get(itemId) ?? itemId}" has no property "${axis}"`);
+      return v;
+    }
+    const vec = vectorFor(kind, target);
+    if (!vec)
+      throw new Error(`"${token}" needs ${decl.axes.join(" and ")} — this widget does not have both`);
+    return vec;
+  };
+
   const requireGroups = (itemId) => {
     for (const gid of ownerGroups.get(itemId) ?? []) requireItemGeometry(gid, false);
   };
@@ -3836,7 +4185,22 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
       const depKey = `vars.${d.name}`;
       if (slots.has(depKey)) requireSlot(depKey);
       if (!(d.name in (out.vars ?? {}))) throw new Error(`Unknown variable "${d.name}"`);
-      return out.vars[d.name];
+      const value = out.vars[d.name];
+      // A VEC2 VARIABLE IS STORED AS A PLAIN TUPLE and becomes a vector VALUE
+      // here — the tag is a runtime wrapper that must never be serialized into a
+      // document (core/var_kinds.js VAR_KIND_ZEROS says the same from the other
+      // side). Doing it at the read seam is what lets `= origin` enter the
+      // algebra and `= origin.x` project, from one stored `[x, y]`.
+      const asVector = Array.isArray(value) && value.length === 2 && value.every((n) => typeof n === "number")
+        ? makeVector(value, "pos")
+        : null;
+      if (!(d.path?.length)) return asVector ?? value;
+      // A COMPONENT of a variable. Only a vector variable has components; anything
+      // else names nothing and says so rather than yielding undefined.
+      const axis = d.path[d.path.length - 1];
+      if (!asVector || d.path.length !== 1 || !isVectorAxis("pos", axis))
+        throw new Error(`Variable "${d.name}" has no component "${d.path.join(".")}" — only a 2-vector variable has .x and .y`);
+      return asVector[axis];
     }
     if (d.kind === "prop") {
       if (!out.items?.[d.itemId]) throw new Error(`Unknown item "@${d.itemId}" in "${token}"`);
@@ -3877,6 +4241,13 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
       // the ordinary equation-error path. Never 0, never a stale sample.
       const published = readOutputProperty(d.itemId, d.path);
       if (published !== NOT_AN_OUTPUT) return published;
+      // VECTOR ADDRESSES (R7-38): `.pos` / `.size` / `<paint>.color`, and the
+      // components under them. Answered ahead of the generic getPath below for
+      // the same reason cx/cy and output properties are — for a LEAVES vector
+      // (`pos`) nothing is stored at the path at all, so the generic read would
+      // report "has no property" for an address the user's ruling says exists.
+      const vector = readVectorAddress(d.itemId, d.path, requireItemGeometry);
+      if (vector !== NOT_A_VECTOR) return vector;
       // display snake_case → stored camelCase (idempotent on camel), then a
       // DECLARED-LIST element field's canonical NAME → its storage key
       // (`points.3.x` → points[3][0] for a tuple element; a no-op otherwise).
@@ -3931,10 +4302,24 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     if (spec.impl) {
       const argv = args.map((arg, i) => {
         const kind = paramKindAt(overload, i);
-        if (kind === "number") return Number(arg);
+        // A NUMBER-KIND ARG MAY BE A VECTOR (R7-38b: "all math ops like sin cos
+        // etc operate on them like numpy would elementwise"). `Number()` on a
+        // vector is NaN, so the tensor is pulled out FIRST and the elementwise
+        // map below applies the impl per component. A ref proxy still coerces
+        // through Number here, which is what records its dependency.
+        if (kind === "number") return numericOrTensorArg(arg);
         if (kind === "string") return String(arg);
         throw new Error(`Argument ${i + 1} of "${name}" has unsupported kind "${kind}"`);
       });
+      // ELEMENTWISE WHEN ANY ARGUMENT IS A VECTOR. Both arities are covered by
+      // core/vector_values: a VARIADIC impl (min/max/hypot) zips across its
+      // arguments and broadcasts the scalars; anything else maps its single
+      // vector argument. A call with no vector argument is byte-identical to
+      // before — `spec.impl(...argv)` on plain numbers.
+      if (argv.some(isNumericTensor)) {
+        if (argv.length === 1) return vectorMapFunction(spec.impl, argv[0]);
+        return vectorMapVariadic(spec.impl, argv);
+      }
       return spec.impl(...argv);
     }
     const widgetIds = [];
@@ -3979,6 +4364,16 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // deterministic host, the function library, a PROJECT SCRIPT export, or a lazy
   // ref proxy.
   const scopeGet = (name, slot, selfId) => {
+    // THE ARITHMETIC HOST IS SERVED FIRST, AND IT MUST BE. `has: () => true`
+    // routes EVERY free identifier through this function, INCLUDING the `__op` /
+    // `__neg` that toJsExpr emits — so the closure binding in compileEquationFn
+    // is shadowed by the `with(scope)` and never reached (measured: "__op is not
+    // a function" from every arithmetic equation). Answering here is what makes
+    // the emitted call tree resolve. The names are double-underscored precisely
+    // so they cannot collide with a document variable or an item slug, and they
+    // sit ABOVE the document-reference lookup so no deck can shadow them.
+    if (name === "__op") return applyArithmetic;
+    if (name === "__neg") return negateValue;
     switch (name) {
       case "undefined": return undefined;
       case "NaN": return NaN;
@@ -4102,7 +4497,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     status.set(slot.key, "eval");
     stack.push(slot.key);
     try {
-      const v = runExpression(slot);
+      const v = colorSpelled(runExpression(slot), slot.kind);
       // RESULT-KIND VALIDATION. Number-kind slots keep the exact legacy message
       // ("evaluates to NaN/Infinity"); any-type "=" slots validate against the
       // property kind and fail LOUDLY on a mismatch (→ default, never a silent
@@ -4175,6 +4570,22 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   for (const id of Object.keys(out.items ?? {})) {
     const plugin = outputPublisher(id);
     if (!plugin) continue;
+    // ── A FRAME-DOMAIN NODE IS A CLOCK READ (core/exec_frame.js) ─────────────
+    // Declaring it here is what makes the per-frame trigger family WORK AT ALL, and
+    // the failure without it is instructive rather than obvious. A frame node reads
+    // the clock inside its own `frameStep`, which this pass never sees — so `clockRead`
+    // stayed null, THIS MEMO SERVED THE FIRST PASS'S RESULT FOREVER, and
+    // `web/app.svelte.js nodes()` (which caches on the evaluated state's IDENTITY)
+    // therefore called deriveRenderTree exactly ONCE. MEASURED in the browser: the
+    // clock ran to 5.2 s while the Time node's output sat frozen at its first reading
+    // and no latch ever advanced — a completely dead patch, with no error anywhere.
+    //
+    // `readClock()` rather than a new memo axis, because the axis ALREADY EXISTS and
+    // means exactly this: "this result depends on what time it was". A frame node's
+    // result does. It costs a deck without one nothing (the predicate is a property
+    // read on a plugin), and it costs a deck WITH one exactly what any other
+    // clock-reading document already pays.
+    if (typeof plugin.frameStep === "function") readClock();
     try {
       Object.assign(out.items[id], outputPropertyInjection(plugin, settledItem(id), nodeOutputs(id)?.outputs ?? null));
     } catch (e) {

@@ -47,6 +47,7 @@
  */
 
 import { parseColor } from "../ir.js";
+import { schemaAngleRadians } from "../../core/properties.js";
 
 // The refraction PRE_BULGE (the materialize->0 backdrop bulge). Exported as a JS
 // constant AND interpolated into the SkSL below, so the shader and the JS
@@ -495,10 +496,6 @@ export function maxGlassDisplacement(refractionDev, chromatic) {
 // squircle and surfaceTension stay WIDGET-side per the comic precedent — a fill's
 // shape IS its geometry, and the shape clip, not an SDF, does the shaping.)
 
-// Degrees → radians for the light-angle knob — the comic FILL precedent, whose
-// screen angles are authored as degrees and converted in comicUniformParams.
-const GLASS_DEG2RAD = Math.PI / 180;
-
 /**
  * THE LIQUID GLASS FILL KNOB SCHEMA — the ONE declaration of the fill's look
  * knobs, in the customProps row shape (the fill-material framework renders it as
@@ -534,6 +531,10 @@ export const GLASS_FILL_PARAMS = [
   { name: "backdropScale", kind: "number", default: 1, min: 0.25, step: 0.05, help: "RESOLUTION FACTOR the content beneath is re-rendered at for the refraction: 1 = screen resolution, 2 = supersample (crisper refraction, slower), 0.5 = half res (faster, softer)." },
 ];
 
+/** Stored angle → radians, reading each row's DECLARED storage unit from the
+ *  schema above rather than restating it here (core/properties.schemaAngleRadians). */
+const toRadians = schemaAngleRadians(GLASS_FILL_PARAMS);
+
 /**
  * Pure function. SCHEMA params (GLASS_FILL_PARAMS names/kinds — degrees, a colour
  * string) → the numeric params packGlassMaterial consumes (packGlassUniforms's own
@@ -557,7 +558,7 @@ export function glassUniformParams(p) {
   return {
     refractionStrength: p.refractionStrength, // world px — packGlassMaterial scales by u.scale
     edgeFalloff: p.edgeFalloff,               // world px — same
-    lightAngle: p.lightAngle * GLASS_DEG2RAD, // schema DEGREES → radians
+    lightAngle: toRadians("lightAngle", p.lightAngle),
     lightIntensity: p.lightIntensity,
     saturation: p.saturation,
     tint: parseColor(p.tint),                 // → [r, g, b, a]; alpha is the skin STRENGTH

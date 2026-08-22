@@ -598,10 +598,41 @@ check("the coercion table covers every port-type pair the audio roster can actua
 // backend: a wire that reaches the display list reaches all of them, because
 // `path` + stroke is an op every backend has drawn since before nodes existed.
 
+/**
+ * Pure function. The WIRE path ops in a scene display list.
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT A FILTER WRITTEN SIX TIMES ───────────────
+ * These checks used to count "every `path` op whose `d` starts with M" and call the
+ * answer wires. That was true only while NO NODE EMITTED A PATH, which was an
+ * accident of the roster rather than a property of the seam — and workstream
+ * NODECHROME_ ended it: every node's card now carries a vector FAMILY MARK, which
+ * is a `path` op starting with "M ", so four of these checks began counting node
+ * emblems as cables and reported 10 wires in a three-wire trio.
+ *
+ * The honest discriminator is POSITION, not shape: `sceneIR` emits the wire layer
+ * at SCENE level, before the first node's `pushTransform` — which is itself one of
+ * the things this section pins ("wires are emitted UNDER the nodes"). A path op
+ * inside a transform belongs to a widget; one before any transform is a cable.
+ *
+ * @param {object[]} ir - a scene display list
+ * @returns {object[]} the wire ops, in order (two per wire: halo then wire)
+ *
+ * @example // three wires in the trio, halo + wire each
+ * @example // wirePathOps(sceneIR(deriveRenderTree({items: trio()}, registry))).length // 6
+ * @example wirePathOps([]) // []
+ * @example // a node's family mark is a path too, but it sits inside a transform
+ * @example wirePathOps([{op: "pushTransform"}, {op: "path", d: "M 0 0 L 1 1"}]) // []
+ */
+function wirePathOps(ir) {
+  const firstNode = ir.findIndex((o) => o.op === "pushTransform");
+  const sceneLevel = firstNode === -1 ? ir : ir.slice(0, firstNode);
+  return sceneLevel.filter((o) => o.op === "path" && typeof o.d === "string" && o.d.startsWith("M "));
+}
+
 check("a connected trio puts WIRE OPS in the display list — the whole point of BN", () => {
   const ir = sceneIR(deriveRenderTree({ items: trio() }, registry));
   // Two ops per wire (halo + wire) and three wires in the trio.
-  const wireish = ir.filter((o) => o.op === "path" && typeof o.d === "string" && o.d.startsWith("M "));
+  const wireish = wirePathOps(ir);
   assert.strictEqual(wireish.length, 6, `three wires × (halo + wire); got ${wireish.length} path ops`);
   // The CURVE is the same one the editor's ghost draws — one function, so the wire
   // that replaces a ghost cannot land on a different path.
@@ -612,8 +643,15 @@ check("a connected trio puts WIRE OPS in the display list — the whole point of
 
 check("wires are emitted UNDER the nodes, so a card never has a cable struck across its readout", () => {
   const ir = sceneIR(deriveRenderTree({ items: trio() }, registry));
+  // THIS CHECK MUST NOT USE `wirePathOps`, which defines a wire AS a scene-level
+  // path — it would then be proving its own premise. So the wires are identified
+  // INDEPENDENTLY here, by their derived curves, and their positions compared to
+  // the first node's transform.
   const firstNodeOp = ir.findIndex((o) => o.op === "pushTransform");
-  const lastWireOp = ir.map((o, i) => [o, i]).filter(([o]) => o.op === "path" && String(o.d).startsWith("M ")).pop()[1];
+  const curves = new Set(deriveWires(deriveRenderTree({ items: trio() }, registry)).map((w) => wireBezierPath(w.from, w.to)));
+  const wireIndices = ir.map((o, i) => [o, i]).filter(([o]) => o.op === "path" && curves.has(o.d)).map(([, i]) => i);
+  assert.ok(wireIndices.length >= 3, `the trio's wires must be findable by their curves; found ${wireIndices.length}`);
+  const lastWireOp = Math.max(...wireIndices);
   assert.ok(lastWireOp < firstNodeOp,
     `every wire op must precede the first node's pushTransform (wire ${lastWireOp} vs node ${firstNodeOp})`);
 });
@@ -627,8 +665,7 @@ check("BY: a wire is culled ONLY when BOTH its nodes are off-view", () => {
   // rather than simulating a camera, which would pin the cull RECT instead of the
   // rule. Counting path ops the way the emission check above does: two per wire.
   const all = deriveRenderTree({ items: trio() }, registry);
-  const wireOpCount = (nodes) => sceneIR(nodes, { wireNodes: all })
-    .filter((o) => o.op === "path" && typeof o.d === "string" && o.d.startsWith("M ")).length;
+  const wireOpCount = (nodes) => wirePathOps(sceneIR(nodes, { wireNodes: all })).length;
   const byId = (id) => all.filter((n) => n.itemId === id);
   const wires = deriveWires(all);
   assert.strictEqual(wires.length, 3, "the trio has three wires to reason about");
@@ -686,7 +723,7 @@ check("WIRES ARE NOT WIDGETS still holds after they became scene content", () =>
 
 check("a document with NO nodes emits not one wire op (every existing deck is byte-identical)", () => {
   const ir = sceneIR(deriveRenderTree({ items: { r: { type: "rect", x: 0, y: 0, w: 10, h: 10 } } }, registry));
-  assert.strictEqual(ir.filter((o) => o.op === "path" && String(o.d).startsWith("M ")).length, 0);
+  assert.strictEqual(wirePathOps(ir).length, 0);
 });
 
 check("CULLING MAY NOT EAT A WIRE: ctx.wireNodes keeps a half-offscreen patch's cables", () => {
@@ -696,7 +733,7 @@ check("CULLING MAY NOT EAT A WIRE: ctx.wireNodes keeps a half-offscreen patch's 
   // presenter would draw a different picture than the PDF export of the same slide.
   const nodes = deriveRenderTree({ items: trio() }, registry);
   const culled = nodes.filter((n) => n.itemId !== "src"); // pretend `src` fell off the camera
-  const wireOpsIn = (ir) => ir.filter((o) => o.op === "path" && String(o.d).startsWith("M ")).length;
+  const wireOpsIn = (ir) => wirePathOps(ir).length;
   assert.strictEqual(wireOpsIn(sceneIR(culled)), 4,
     "without the pre-cull tree, src's wire is gone — this is the number the defect produced");
   assert.strictEqual(wireOpsIn(sceneIR(culled, { wireNodes: nodes })), 6,

@@ -50,6 +50,18 @@
  * precedent. These functions are PURE and return the PAIRS/PATHS to write; the
  * caller (web/app.svelte.js `toggleSectionKeyframes`) folds them into ONE document
  * and commits once. Nothing here touches a document.
+ *
+ * ── WORKSTREAM KEYFR (2026-08-12) ADDED TWO THINGS AND NEITHER IS A SECTION ──
+ * The functions here were never actually section-specific — they are generic over
+ * "some list of full state paths, over one slide", which is what let WORKSTREAM BJ
+ * reuse them for the ROW diamond over a multi-selection. The two additions extend
+ * the same list along its two remaining axes, and live here for that reason rather
+ * than in new modules that would have to restate the path grammar:
+ *   `sectionJumpTip`     — the ‹ › arrows' state SENTENCE, so an arrow with no
+ *                          target says why instead of silently doing nothing.
+ *   `itemBakePaths` +    — the whole ITEM's path list, which is what the slide-wide
+ *   `keyframeEverything… ` "Keyframe Everything In Slide" bake keys.
+ * Each carries its own user quote and reasoning at its docstring.
  */
 
 import { keyframeTriState } from "./multiselect.js";
@@ -192,6 +204,26 @@ export function sectionToggleTip(triState, title) {
 }
 
 /**
+ * The diamond's three readings, as ICONIFY NAMES — never a Unicode glyph (the
+ * app-wide icon rule). One declaration for both keyframe bubbles:
+ * web/KeyframeControls.svelte (a property row's diamond) and
+ * web/SectionKeyframeControls.svelte (a section header's). It lives HERE, beside
+ * `sectionToggleTip`, because the tri-state vocabulary this indexes — "all" /
+ * "some" / "none" — is declared in this module and every other function reading
+ * that vocabulary is already here; two copies of the map is how one bubble ends up
+ * drawing a different mark for the same state than the other.
+ *
+ * `mdi:rhombus-split` is the half-fill mark: at the 70% scale the section bubble
+ * renders it, a subtler device stops reading as "partly", and the family's visual
+ * restraint is about not being gaudy rather than about being illegible.
+ *
+ * @example TRI_ICONS.all // "mdi:rhombus" (every path keyed on this slide)
+ * @example TRI_ICONS.some // "mdi:rhombus-split" (a mixed set — the half fill)
+ * @example TRI_ICONS.none // "mdi:rhombus-outline" (nothing keyed here)
+ */
+export const TRI_ICONS = { all: "mdi:rhombus", some: "mdi:rhombus-split", none: "mdi:rhombus-outline" };
+
+/**
  * Pure function. The slide a section-wide ‹ / › jump lands on: the nearest slide
  * in `direction` holding a keyframe for ANY of the section's paths, or null when
  * there is none.
@@ -231,3 +263,219 @@ export function sectionJumpTarget(indicesPerPath, current, direction) {
   }
   return best;
 }
+
+/**
+ * Pure function. The ‹ / › arrow's TOOLTIP, which is also the whole reason this
+ * function exists rather than a bare boolean at the call site.
+ *
+ * ── WHAT THE USER ASKED FOR (2026-08-12, verbatim) ───────────────────────────
+ * "The buttons for previous keyframe and next keyframe should be disabled if
+ * there is no previous or next keyframe to go to."
+ *
+ * The no-target condition was ALREADY computed — `sectionJumpTarget` returns null
+ * and `app.jumpSectionKeyframes` "stays put when there is none". So the arrow was
+ * a live-looking control whose click did nothing, silently: the app knew the
+ * answer and declined to say it. That is the shape this codebase forbids, and it
+ * is the same defect the save-button ruling names — a control must not lie about
+ * its own affordance.
+ *
+ * A DISABLED ARROW MUST STILL SAY WHY, so the reason is a SENTENCE and not an
+ * absence. Both surfacings reflect it with `aria-disabled` + a handler guard
+ * rather than the native `disabled` attribute, because a natively disabled button
+ * is not focusable and the keyboard could then never reach this sentence (the
+ * toolbar's standing rule — web/Toolbar.svelte's Save button is the precedent,
+ * and the sentence there is likewise the only place its gate's reason is written
+ * down).
+ *
+ * THE SENTENCE NAMES THE DIRECTION AND THE FACT, in the arrow's own words: the
+ * user is looking at a greyed ‹, and "there is no earlier slide keyframing this"
+ * answers the question that greying provokes. It deliberately does NOT read like
+ * `unavailableMessage`'s "Unavailable — requires …" frame: that frame belongs to
+ * the COMMAND REGISTRY's `requires` clauses (core/commands.js), and these two
+ * arrows are not registry entries. Borrowing the frame here would imply a palette
+ * entry that does not exist.
+ *
+ * ── `subject` IS WHAT MADE THIS SHAREABLE (WORKSTREAM KEYFR follow-up) ───────
+ * The section header's arrows always named their section ("Previous slide
+ * keyframing anything in Transform") while the row's said "Previous keyframe".
+ * That difference is REAL — a section bubble speaks for many properties at once,
+ * so the title is what tells you which — and it is exactly why the first pass at
+ * this feature only reached one of the two: a tip function that could not say
+ * "Transform" was not usable by the section variant, so the section variant kept
+ * its own hand-written strings and inherited nothing. Taking the subject as an
+ * argument is what lets ONE function serve both, which is the whole fix.
+ *
+ * @param {number|null} target `sectionJumpTarget`'s answer for this direction.
+ * @param {number} direction -1 for previous, +1 for next.
+ * @param {string|null} [subject] What these arrows speak for ("Transform"), or
+ *   null/omitted for the row triad, which speaks for one property.
+ * @returns {string}
+ *
+ * @example
+ *     >>> sectionJumpTip(3, -1)
+ *     'Previous keyframe'
+ *     >>> sectionJumpTip(null, -1)
+ *     'No earlier slide keyframes this — nothing to jump back to'
+ *     >>> sectionJumpTip(7, +1)
+ *     'Next keyframe'
+ *     >>> sectionJumpTip(null, +1)
+ *     'No later slide keyframes this — nothing to jump forward to'
+ *     >>> // named, for a section header's smaller triad:
+ *     >>> sectionJumpTip(3, -1, "Transform")
+ *     'Previous slide keyframing anything in Transform'
+ *     >>> sectionJumpTip(null, +1, "Transform")
+ *     'No later slide keyframes anything in Transform — nothing to jump forward to'
+ */
+export function sectionJumpTip(target, direction, subject = null) {
+  const later = direction > 0;
+  if (target !== null) {
+    if (subject === null) return later ? "Next keyframe" : "Previous keyframe";
+    return `${later ? "Next" : "Previous"} slide keyframing anything in ${subject}`;
+  }
+  const what = subject === null ? "this" : `anything in ${subject}`;
+  return later
+    ? `No later slide keyframes ${what} — nothing to jump forward to`
+    : `No earlier slide keyframes ${what} — nothing to jump back to`;
+}
+
+/**
+ * Pure function. EVERYTHING one ‹ or › arrow needs to render itself: where it
+ * would go, whether it may be clicked, and the sentence it shows either way.
+ *
+ * ── WHY THIS EXISTS, IN THE USER'S OWN DIAGNOSIS (2026-08-13, verbatim) ──────
+ * "The disabling of next and previous keyframes for ones that don't have it seems
+ * not to have transferred to the overall ones such as the ones that are small. The
+ * small version didn't seem to have inherited this. This leads me to believe that
+ * they're not sharing the same base class or it was implemented in the wrong
+ * level. Perhaps it should be applied to the parent. I haven't looked at the code
+ * though. To be honest, I'm not really sure what the issue is. Please tell the
+ * agent thought. The code is not the same."
+ *
+ * THE LAST SENTENCE IS THE BUG REPORT AND IT IS EXACTLY RIGHT. There are two
+ * surfacings of this triad — web/KeyframeControls.svelte (row) and
+ * web/SectionKeyframeControls.svelte (the 70%-scale section header) — and they
+ * were siblings by COPIED MARKUP, not by a shared component. Their headers even
+ * say so, proudly: "the same three buttons in the same order… the same
+ * `.keybtn`/`.jumpbtn` classes". SHARING A CSS CLASS IS NOT SHARING BEHAVIOUR, so
+ * a fix applied to one file could not reach the other, and the availability
+ * shipped to exactly half the arrows in the app. The user inferred all of that
+ * from the outside, without reading the code.
+ *
+ * ── THE HOIST, AND WHY IT IS A DESCRIPTOR AND NOT A COMPONENT ───────────────
+ * "Perhaps it should be applied to the parent" is the right instinct, and this is
+ * the parent: the two variants differ in SCALE, in wrapper markup, in whether they
+ * stop propagation, and in whether they name a subject — all presentational — but
+ * they cannot differ in WHEN AN ARROW MAY BE CLICKED without one of them being
+ * wrong. So the shared layer is the ANSWER, not the markup: each variant renders
+ * its own button and reads `disabled`/`tip`/`target` off this one object. Merging
+ * the markup instead would have meant one component growing scale/wrapper/subject
+ * props to serve two visual designs the user deliberately asked to look different
+ * ("maybe just 30% smaller"), which is a worse trade than sharing the derivation.
+ *
+ * A THIRD SURFACING CANNOT SHIP UNWIRED, because there is now nothing else to
+ * call: the target walk, the guard condition and both sentences arrive together,
+ * and `tests/keyfr_tools_test.js` ENUMERATES the `jumpbtn` surfacings and fails on
+ * any that does not consume this. That enumeration is the real guarantee — the
+ * first pass at this feature was also "correct", and still reached one file.
+ *
+ * @param {number|null} target `sectionJumpTarget`'s answer for this direction.
+ * @param {number} direction -1 for previous, +1 for next.
+ * @param {string|null} [subject] What the arrows speak for, or null for a row.
+ * @returns {{target: number|null, disabled: boolean, tip: string}}
+ *
+ * @example
+ *     >>> jumpArrow(3, -1)
+ *     {target: 3, disabled: false, tip: 'Previous keyframe'}
+ *     >>> jumpArrow(null, +1)
+ *     {target: null, disabled: true, tip: 'No later slide keyframes this — nothing to jump forward to'}
+ *     >>> // SLIDE 0 IS A TARGET, NOT AN ABSENCE — a falsy test would grey this:
+ *     >>> jumpArrow(0, -1).disabled
+ *     false
+ */
+export function jumpArrow(target, direction, subject = null) {
+  return { target, disabled: target === null, tip: sectionJumpTip(target, direction, subject) };
+}
+
+/**
+ * Pure function. EVERY keyframeable state path of one item — the "Keyframe
+ * Everything In Slide" bake's per-item path set.
+ *
+ * ── WHAT THE USER ASKED FOR (2026-08-12, verbatim) ───────────────────────────
+ * "A 'Keyframe Everything In Slide' tool".
+ *
+ * ── IT IS THE SECTION BUBBLE'S SET, UNIONED OVER THE WHOLE ITEM ──────────────
+ * The additive keyframe primitive already exists — the section header diamond's
+ * "click to keyframe all of it" — and it is per-section. A slide-wide bake is
+ * that same act with a wider scope, so it is built by calling `sectionKeyPaths`
+ * over the item's ROWS rather than by inventing a second notion of "everything".
+ * That is what makes the two agree by construction: whatever a bubble would key,
+ * the bake keys, and nothing else.
+ *
+ * ── WHY `plugin.inspector` AND NOT THE ITEM'S STORED KEYS ────────────────────
+ * The stored fold is what the item HAPPENS to hold, which is both too much and
+ * too little. Too much: `name` and `type` are stored leaves that are not per-slide
+ * state (`keyframes: false` — a bake writing them would advertise a write the
+ * document refuses, and a keyframed `name` is meaningless). Too little: a property
+ * the author has never touched is ABSENT from the fold but is exactly the thing a
+ * bake is for — it holds a default that the bake must pin here so a later slide
+ * can tween away from it. So the DECLARATION is the authority, and the value comes
+ * from the caller's `storedValueAtPath` (which resolves a sparse material knob to
+ * its schema default for the same reason).
+ *
+ * ── UNIVERSAL ROWS ARE PASSED IN, NOT LOOKED UP ─────────────────────────────
+ * `active` is a universal property no plugin declares (core/multiselect.js
+ * `universalRows` owns that set and the camera's exemption from `active`), so the
+ * caller supplies those rows. This function stays a pure row→path mapping and
+ * gains no second opinion about what a universal row is.
+ *
+ * @param {string} itemId The item to bake.
+ * @param {object[]} rows Its keyframeable row defs (plugin.inspector + universal).
+ * @returns {string[][]} Full state paths, deduplicated (`sectionKeyPaths`' rule).
+ *
+ * @example
+ *     >>> itemBakePaths("a", [{key: "x"}, {key: "cx", writeKey: "x"}, {key: "name", keyframes: false}])
+ *     [["items", "a", "x"]]
+ *     >>> // a dotted row keys the nested leaf, exactly as its diamond does:
+ *     >>> itemBakePaths("a", [{key: "rotationAnchor.x"}])
+ *     [["items", "a", "rotationAnchor", "x"]]
+ */
+export function itemBakePaths(itemId, rows) {
+  return sectionKeyPaths(rows, () => [itemId], (row) => row.writeKey ?? row.key);
+}
+
+/**
+ * The bake's HELP sentence, whose whole job is to make the cost explicit — so it
+ * says BAKE, in the user's own vocabulary for this operation.
+ *
+ * A bake is not free. The document model is a SPARSE chain of deltas: a slide's
+ * delta says only what CHANGES there, and everything else is inherited. Keyframing
+ * every property of every item pins all of it on this one slide, which is a
+ * deliberate act with two consequences a user must be told about BEFORE clicking
+ * and not after: the slide's delta grows to hold the whole scene, and a value
+ * pinned here no longer follows an edit made on an earlier slide. The Aug-4
+ * feature review's ruling is exactly that shape — a bake is fine as an EXPLICIT
+ * action and a bug as implicit behaviour — so the explicitness has to be carried
+ * by the sentence, and there is nowhere else for it to live.
+ *
+ * IT STATES BOTH SCOPES RATHER THAN THE LIVE ONE, and that is forced rather than
+ * chosen: core/commands.js rules that `help` is "A PLAIN STRING deliberately" and
+ * every surfacing renders `cmd.help` directly, so a function here would render as
+ * source text in a tooltip — the exact mistake `commandUnavailableReason` exists
+ * to prevent for `requires`, which IS allowed to be a function. Stating both is
+ * also the more useful sentence: the reader is deciding WHETHER to select first,
+ * and a help that describes only the scope they currently have cannot answer that.
+ *
+ * IT ALSO NAMES THE ONE THING THE TOOL DOES NOT DO. A property that holds no
+ * value anywhere — absent from the slide AND from the widget's defaults, with the
+ * plugin supplying a fallback only when it paints — has nothing to pin, and is
+ * skipped. MEASURED: 33 of 161 paths on a real five-widget slide. A help sentence
+ * that promised "every property" without that clause would be the tool's own title
+ * lying at greater length, and the run reports the count for the same reason.
+ *
+ * @example
+ *     >>> keyframeEverythingHelp.startsWith("BAKES this slide")
+ *     true
+ *     >>> keyframeEverythingHelp.includes("Select some widgets first")
+ *     true
+ */
+export const keyframeEverythingHelp = "BAKES this slide: writes a keyframe HERE for every property of every widget on it, using the values they already hold — so the picture does not change now, but each of those values is PINNED to this slide instead of being inherited from an earlier one. Select some widgets first to bake only those; with nothing selected it bakes the whole slide. That is the cost, and it is why this is a tool you run rather than something that happens on its own: the slide's delta stops being sparse and grows to hold the whole scene, and a later edit to an earlier slide no longer flows through to here. A property that holds no value at all is skipped and counted in the console — there is nothing there to pin. One undo takes all of it back.";

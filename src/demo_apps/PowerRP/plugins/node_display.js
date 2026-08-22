@@ -34,9 +34,19 @@ import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { NODE_ITEM_REFS, minimumNodeHeight, nodeCardRim, nodeInkBounds } from "../core/nodeflow.js";
-import { formatNodeValue, nodeCard, nodeRim, nodeValueText, portBeads } from "../core/node_chrome.js";
+import { familyCard, familyRim, formatNodeValue, nodeValueText, portBeads } from "../core/node_chrome.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "../core/transform.js";
+
+/** The card FAMILY this node wears (core/node_chrome.NODE_FAMILIES).
+ *  This node is a pure SINK: it reads a value and shows it, changing nothing.
+ *  It sorts with its kind in a wall of cards.
+ *
+ *  Before workstream NODECHROME_ it passed NO family and so wore the NEUTRAL
+ *  FALLBACK — which is the ABSENCE of a family rather than a family, and so a
+ *  different card design rather than a different tint of the same one. That is
+ *  the band-less card the user photographed beside a banded audio module. */
+const NODE_FAMILY = "display";
 
 const DEFAULT_W = 140;
 const DEFAULT_DECIMALS = 3;
@@ -108,10 +118,10 @@ export const nodeDisplayPlugin = {
    */
   emit(s, _target, world) {
     const ops = [
-      ...nodeCard(s, "Display"),
+      ...familyCard(s, "Display", NODE_FAMILY),
       ...nodeValueText(s, displayReadout(s)),
       ...portBeads(nodeDisplayPlugin, s),
-      ...nodeRim(s),
+      ...familyRim(s, NODE_FAMILY),
     ];
     return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },

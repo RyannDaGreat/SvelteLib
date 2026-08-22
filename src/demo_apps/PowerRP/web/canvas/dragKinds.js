@@ -46,6 +46,7 @@
 import * as T from "../../core/transform.js";
 import { stateXYForCenterPivotWorld, UNCONSTRAINED, pinning } from "../../core/derive.js";
 import { diffState, getPath } from "../../core/deltas.js";
+import { wholisticPairs } from "../../core/scaling.js"; // WHOLISTIC SCALE (the W toggle): which non-geometry properties a size gesture carries with it
 
 /**
  * THE drag-kind vocabulary: every value CanvasView may assign to `app.dragKind`,
@@ -179,6 +180,87 @@ export const MODAL_TRANSFORM_KINDS = Object.freeze({
   scale: Object.freeze({ key: "S", label: "Scale", axisConstrainable: true, numericPrompt: "type a factor" }),
   rotate: Object.freeze({ key: "R", label: "Rotate", axisConstrainable: false, numericPrompt: "type an angle in degrees" }),
 });
+
+/**
+ * THE MODAL TOGGLES — the keys that change WHAT a live modal transform means,
+ * rather than starting or ending one. Two today (user, 2026-08-12: "in s and r,
+ * the 'i' key should toggle 'individual' vs as a whole, and 'w' hsould toggle
+ * 'wholistic'"), and a table for the same reason the two above it are: a toggle
+ * needs a key, a chip, an announcement segment and a statement of WHICH kinds it
+ * applies to, and hand-writing those in four files is how the `multiresize`
+ * omission and the "Grab"-for-every-kind ternary both happened.
+ *
+ * `kinds` IS THE APPLICABILITY GATE and it is per-toggle rather than global,
+ * because the two genuinely differ:
+ *   individual — S and R. It relocates the PIVOT (each item about its own centre
+ *     instead of the collective one), and grab has NO pivot to relocate: a
+ *     translation moves every item by the same vector whatever you measure it
+ *     from, so `G I` would be a key that changes nothing. That is the HintBar lie
+ *     this table exists to prevent, and it is the same reasoning that withholds
+ *     X/Y from rotate one table up.
+ *   wholistic — S only. It scales the properties a size gesture ought to carry
+ *     (stroke widths, font sizes, corner radii — core/scaling.js), and neither a
+ *     grab nor a rotate has a factor for those properties to follow.
+ *
+ * `soloSuppressed` MARKS A TOGGLE THAT NEEDS A MULTI-SELECTION, and only
+ * `individual` is one: "each item about its own centre" and "all items about the
+ * collective centre" are THE SAME TRANSFORM when there is one item, because a lone
+ * item's own centre IS the collective centre. So on a single selection the key is
+ * withheld rather than offered as a no-op. Wholistic is NOT suppressed — scaling a
+ * single widget's stroke with it is the feature's most ordinary use.
+ *
+ * @example MODAL_TOGGLES.individual.key // "I"
+ * @example MODAL_TOGGLES.wholistic.kinds // ["scale"]
+ * @example MODAL_TOGGLES.individual.soloSuppressed // true
+ * @example Object.keys(MODAL_TOGGLES) // ["individual", "wholistic"]
+ */
+export const MODAL_TOGGLES = Object.freeze({
+  individual: Object.freeze({
+    key: "I",
+    label: "Individual origins",
+    mark: "Individual",
+    kinds: Object.freeze(["scale", "rotate"]),
+    soloSuppressed: true,
+  }),
+  wholistic: Object.freeze({
+    key: "W",
+    label: "Wholistic scale",
+    mark: "Wholistic",
+    kinds: Object.freeze(["scale"]),
+    soloSuppressed: false,
+  }),
+});
+
+/**
+ * Every legal modal toggle id, derived from MODAL_TOGGLES so the two cannot
+ * disagree — the MODAL_KINDS shape, for the same reason.
+ *
+ * @example MODAL_TOGGLE_IDS // ["individual", "wholistic"]
+ */
+export const MODAL_TOGGLE_IDS = Object.freeze(Object.keys(MODAL_TOGGLES));
+
+/**
+ * Pure function. Whether a toggle applies to a live modal — the ONE predicate the
+ * shortcut gate, the announcement and the modal's own key handler all ask, so a
+ * key that cannot be announced also cannot act (the `modalSetAxis` rotate-guard
+ * rule, generalised).
+ *
+ * @param {string} id - a MODAL_TOGGLE_IDS member
+ * @param {string} kind - the live modal's kind
+ * @param {boolean} multi - whether the selection holds more than one item
+ * @returns {boolean}
+ *
+ * @example modalToggleApplies("wholistic", "scale", false) // true (a lone widget's stroke still scales)
+ * @example modalToggleApplies("wholistic", "rotate", true) // false (a turn has no factor)
+ * @example modalToggleApplies("individual", "scale", true) // true
+ * @example modalToggleApplies("individual", "scale", false) // false (one item's own centre IS the collective centre)
+ * @example modalToggleApplies("individual", "grab", true) // false (a translation has no pivot)
+ */
+export function modalToggleApplies(id, kind, multi) {
+  const t = MODAL_TOGGLES[id];
+  if (!t) throw new Error(`Unknown modal toggle ${JSON.stringify(id)} — declare it in MODAL_TOGGLES (web/canvas/dragKinds.js). Legal: ${MODAL_TOGGLE_IDS.join(", ")}.`);
+  return t.kinds.includes(kind) && (multi || !t.soloSuppressed);
+}
 
 /**
  * Every legal `app.modalXform.kind`, derived from MODAL_TRANSFORM_KINDS so the two
@@ -918,6 +1000,84 @@ export function scalePairs(member, factor, c, axis = null, constrain = UNCONSTRA
   const off = axis === "x" ? "y" : axis === "y" ? "x" : null;
   const k = pinning(off ? [AXIS_COORDINATES[off].factor] : [])(IDENTITY_FACTORS, { kx: factor, ky: factor });
   return scaleMemberPairs(member, k.kx, k.ky, c.x, c.y, bothConstraints(axisPinning(axis), constrain));
+}
+
+/**
+ * Pure function. THE PIVOT A MEMBER TURNS OR SCALES ABOUT — the collective centre,
+ * or the member's OWN centre under `individual` (Blender's I / individual-origins).
+ *
+ * WHY IT IS ONE FUNCTION AND NOT A BRANCH AT EACH CALL SITE: the S and R modals ask
+ * the identical question, and answering it twice is how two gestures that must agree
+ * come to disagree. It is also the whole of what `individual` MEANS — the toggle
+ * changes the pivot and nothing else, so the entire feature is this one substitution
+ * and the existing per-member math is reused untouched.
+ *
+ * THE MEMBER'S OWN CENTRE IS ITS FOLDED WORLD CENTRE, not its stored x/y: those
+ * differ for a rotated, scaled or group-parented member, and using the stored pair
+ * would put the pivot off the item — the same distinction scaledBoxAboutPoint
+ * documents for its own math. A member with no box (an arrow, which carries no
+ * startWorld box) falls back to the collective centre, because a widget whose
+ * geometry is two free endpoints has no single centre to spin about; that is a
+ * STATED limit, not a silent one — its endpoints still scale about the shared pivot
+ * exactly as they do today.
+ *
+ * @param {object} member - a transform member
+ * @param {{x: number, y: number}} collective - the selection's collective centre
+ * @param {boolean} individual - whether the toggle is on
+ * @returns {{x: number, y: number}} the pivot for this member
+ *
+ * @example // toggle off: everything turns about the shared centre
+ * @example memberPivot({startWorld: {x: 0, y: 0, rotation: 0, scale: 1}, startW: 100, startH: 50}, {x: 500, y: 500}, false) // {x: 500, y: 500}
+ * @example // toggle on: the member's own world centre (origin + half its box)
+ * @example memberPivot({startWorld: {x: 0, y: 0, rotation: 0, scale: 1}, startW: 100, startH: 50}, {x: 500, y: 500}, true) // {x: 50, y: 25}
+ * @example // a member with no box has no centre of its own — the shared pivot stands
+ * @example memberPivot({plugin: {moveBy: () => []}}, {x: 500, y: 500}, true) // {x: 500, y: 500}
+ */
+export function memberPivot(member, collective, individual) {
+  if (!individual || !member.startWorld || typeof member.startW !== "number" || typeof member.startH !== "number")
+    return collective;
+  return T.apply(member.startWorld, member.startW / 2, member.startH / 2);
+}
+
+/**
+ * Pure function. THE WHOLISTIC WRITE for one member: the item-scoped preview pairs
+ * that carry a scale of `factor` into the properties a size gesture ought to take
+ * with it — stroke widths, font sizes, corner radii, blur radii, shadow offsets.
+ * core/scaling.js owns WHICH properties and by how much; this is the adapter that
+ * turns its answer into the pairs `app.setPreview` takes.
+ *
+ * IT IS ADDITIVE TO THE GEOMETRY, NEVER A REPLACEMENT FOR IT. The caller emits
+ * `scalePairs(...)` AND these, in that order, so x/y/w/h come from the one geometry
+ * seam exactly as they always have and this adds the rest. That is why the geometry
+ * keys cannot collide: core/scaling.js's SHARED_SCALING deliberately holds no entry
+ * for them (its header says why), so `wholisticPairs` never answers for x/y/w/h.
+ *
+ * A KEY WHOSE VALUE DOES NOT CHANGE EMITS NO PAIR — enforced inside
+ * `wholisticPairs`, which is the minimal-delta law `diffState` applies to the
+ * geometry half. At factor 1 this is [] exactly, so a zero-travel gesture with the
+ * toggle ON writes nothing and disturbs no stored equation.
+ *
+ * NO `constrain` PARAMETER, and that is a claim rather than an omission. The
+ * handle-constraint protocol projects a desired GEOMETRY onto what a widget's
+ * modifier points allow; a stroke width is not geometry and no constraint in the app
+ * speaks about one. An equation-valued property is still protected — `scaledValue`
+ * passes non-numbers through untouched, which is the same "only a free number is
+ * transformed" rule this file applies on every other branch.
+ *
+ * @param {object} member - a transform member ({itemId, plugin, rawItem})
+ * @param {number} factor - the gesture's scale factor
+ * @returns {Array<[string[], *]>} preview pairs
+ *
+ * @example // a stroked rect scaled x2 carries its stroke and corners with it:
+ * @example wholisticMemberPairs({itemId: "r", plugin: {inspector: [{key: "strokeWidth", kind: "number"}]}, rawItem: {strokeWidth: 3}}, 2) // [[["items","r","strokeWidth"], 6]]
+ * @example // the identity writes nothing:
+ * @example wholisticMemberPairs({itemId: "r", plugin: {inspector: [{key: "strokeWidth", kind: "number"}]}, rawItem: {strokeWidth: 3}}, 1) // []
+ * @example // a dotted key reads the NESTED value and scopes into the item as a geometry path does:
+ * @example wholisticMemberPairs({itemId: "r", plugin: {inspector: [{key: "shadow.blur", kind: "number"}]}, rawItem: {shadow: {blur: 4}}}, 2) // [[["items","r","shadow","blur"], 8]]
+ */
+export function wholisticMemberPairs(member, factor) {
+  return wholisticPairs(member.rawItem ?? {}, member.plugin ?? {}, factor)
+    .map(([key, value]) => [["items", member.itemId, ...key.split(".")], value]);
 }
 
 /**

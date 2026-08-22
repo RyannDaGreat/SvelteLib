@@ -258,13 +258,24 @@ export function stackLayout(n, w, h, shiftX, shiftY) {
  * Literal-valued, per R6-25.1 (an equation-valued preset would be `=`-prefixed;
  * none of these needs one).
  */
+// R7-39 TOP-UP (batch A): the original six plus five more, EVERY row setting
+// the SAME six-key set (shiftX, shiftY, alphaExponent, cardRadius,
+// shadowOpacity, shadowBlur) the original six already agree on — this family
+// has no on/off switch dividing its rows the way paper_peacock's shadow group
+// does, so there is nothing to stay sparse ABOUT; uniform is the established
+// idiom here and the new rows keep it uniform.
 const PRESETS = [
   { name: "Riffle", description: "A tight sideways fan with hard corners — a deck being riffled, every card readable.", props: { shiftX: 0.28, shiftY: 0.02, alphaExponent: 0.25, cardRadius: 0.01, shadowOpacity: 0.25, shadowBlur: 0.01 } },
   { name: "Receding drift", description: "A long diagonal that fades away fast, so the pile reads as depth rather than as cards.", props: { shiftX: 0.22, shiftY: 0.22, alphaExponent: 1.2, cardRadius: 0.02, shadowOpacity: 0.35, shadowBlur: 0.04 } },
   { name: "Contact sheet", description: "Barely offset and barely faded — a squared-up pile you can read every layer of.", props: { shiftX: 0.1, shiftY: 0.1, alphaExponent: 0, cardRadius: 0, shadowOpacity: 0.15, shadowBlur: 0.006 } },
-  { name: "Photo pile", description: "Rounded corners, a soft drop shadow and a lazy downward step — snapshots dropped on a table.", props: { shiftX: 0.12, shiftY: 0.3, alphaExponent: 0.4, cardRadius: 0.06, shadowOpacity: 0.45, shadowBlur: 0.05 } },
+  { name: "Photo pile", description: "Slightly rounded corners, a soft close drop shadow and a diagonal drift down-and-across — snapshots dropped loosely on a table.", props: { shiftX: 0.2, shiftY: 0.24, alphaExponent: 0.4, cardRadius: 0.03, shadowOpacity: 0.4, shadowBlur: 0.025 } },
   { name: "Ghost trail", description: "A wide fan that vanishes into nothing — motion, not a stack.", props: { shiftX: 0.4, shiftY: 0.06, alphaExponent: 2, cardRadius: 0.01, shadowOpacity: 0, shadowBlur: 0 } },
   { name: "End-on", description: "No offset at all: the pile seen straight down its edge, so only the front card shows.", props: { shiftX: 0, shiftY: 0, alphaExponent: 0.5, cardRadius: 0.02, shadowOpacity: 0.3, shadowBlur: 0.02 } },
+  { name: "Staircase", description: "An even downward step with almost no fade — every card reads equally, like stair-stepped index cards.", props: { shiftX: 0.02, shiftY: 0.35, alphaExponent: 0.05, cardRadius: 0.015, shadowOpacity: 0.3, shadowBlur: 0.015 } },
+  { name: "Polaroid drop", description: "Deeply rounded corners and a heavy, close shadow — thick-bordered instant photos dropped in a loose pile.", props: { shiftX: 0.18, shiftY: 0.24, alphaExponent: 0.6, cardRadius: 0.22, shadowOpacity: 0.7, shadowBlur: 0.11 } },
+  { name: "Vertical flip", description: "Pure downward motion, no sideways drift at all — a flipbook seen edge-on from the side.", props: { shiftX: 0, shiftY: 0.32, alphaExponent: 0.35, cardRadius: 0.02, shadowOpacity: 0.3, shadowBlur: 0.03 } },
+  { name: "Recede up-left", description: "A negative shift so the pile recedes UP and to the LEFT instead of down-right — the same depth read, mirrored.", props: { shiftX: -0.2, shiftY: -0.16, alphaExponent: 0.5, cardRadius: 0.03, shadowOpacity: 0.35, shadowBlur: 0.03 } },
+  { name: "Flat swatches", description: "Square corners and a thin, tight shadow on a wide even sideways fan — clean colour/material swatches rather than photographs.", props: { shiftX: 0.3, shiftY: 0, alphaExponent: 0.15, cardRadius: 0, shadowOpacity: 0.12, shadowBlur: 0.004 } },
 ];
 
 /**

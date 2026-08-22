@@ -145,6 +145,29 @@ export const modalAxisConstraint = (c) => modalTransform(c) && MODAL_KINDS_WITHO
  *  case; it mirrors MODAL_TRANSFORM_KINDS' `axisConstrainable: false`, and
  *  handShortcutEntries cross-checks the two so they cannot drift. */
 const MODAL_KINDS_WITHOUT_AXIS = ["rotate"];
+/**
+ * Pure function. A live modal transform a given TOGGLE applies to — the gate for
+ * the I (individual origins) and W (wholistic) chips.
+ *
+ * IT IS A CURRIED PREDICATE OVER THE TOGGLE'S OWN DECLARATION rather than a pair of
+ * hand-written predicates, which is the `modalAxisConstraint` lesson one toggle
+ * family over: that one is a single rule reading a NAMED list, and a second and
+ * third copy of the shape would be where the drift starts. The declaration
+ * (web/canvas/dragKinds.js MODAL_TOGGLES) says which kinds a toggle means anything
+ * for and whether it needs a multi-selection; this turns that into the `when`.
+ *
+ * `multiSelection` IS ITS OWN CONTEXT AXIS and not `hasSelection`, because the two
+ * answer different questions: the I key is real only when there are SEVERAL items
+ * (one item's own centre IS the collective centre, so the toggle would change
+ * nothing), while the W key is real on a single widget.
+ *
+ * @example modalToggleChip({kinds: ["scale"], soloSuppressed: false})({mode: "edit", modalActive: true, modalKind: "scale"}) // true
+ * @example modalToggleChip({kinds: ["scale"], soloSuppressed: false})({mode: "edit", modalActive: true, modalKind: "grab"}) // false
+ * @example modalToggleChip({kinds: ["scale", "rotate"], soloSuppressed: true})({mode: "edit", modalActive: true, modalKind: "scale", multiSelection: true}) // true
+ * @example modalToggleChip({kinds: ["scale", "rotate"], soloSuppressed: true})({mode: "edit", modalActive: true, modalKind: "scale"}) // false — one item has no "own" centre to differ
+ */
+export const modalToggleChip = (toggle) => (c) =>
+  modalTransform(c) && toggle.kinds.indexOf(c.modalKind) !== -1 && (!toggle.soloSuppressed || !!c.multiSelection);
 /** Pure function. Ordinary editor input: editBase, and no one-shot/mode takeover.
  * @example editMode({mode: "edit"}) // true
  * @example editMode({mode: "edit", paletteOpen: true}) // false */
@@ -816,11 +839,25 @@ export const POPOVER_HINTS = Object.freeze({
  *   app                — the app instance the live entries drive (run closures)
  *   canvasModes        — web/widget_handlers.canvasModes() output
  *   dragKindModifiers  — web/canvas/dragKinds.js DRAG_KIND_MODIFIERS
+ *   modalTransformKinds— web/canvas/dragKinds.js MODAL_TRANSFORM_KINDS
+ *   modalToggles       — web/canvas/dragKinds.js MODAL_TOGGLES. REQUIRED, and this
+ *     is the whole reason the check below exists: it used to default to `{}`, so a
+ *     caller that forgot it got a registry SILENTLY MISSING the I and W entries and
+ *     no complaint. tests/shortcut_registry_test.js was that caller, which is how
+ *     the satisfiability gate — the one test whose entire job is catching a dead
+ *     `when` — ran green for the whole life of an entry it never held, while the
+ *     app's own boot tripwire reported that same entry every single load. A test
+ *     population that is not the app's population is worse than no test: it reports
+ *     confidence about a set nobody runs. It is the missing-named-import hazard the
+ *     app's CLAUDE.md names, one layer up: an optional parameter binds to a benign
+ *     value and ships.
  *   activations        — web/widget_handlers.activations() output
  *
  * Returns: the entry array, ready for shortcuts.add() in order.
  */
-export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modalTransformKinds, activations }) {
+export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modalTransformKinds, modalToggles, activations }) {
+  if (!modalToggles || typeof modalToggles !== "object")
+    throw new Error("shortcut_entries: handShortcutEntries requires `modalToggles` (web/canvas/dragKinds.js MODAL_TOGGLES) — omitting it would build a registry with no I/W toggle entries and say nothing, which is how a satisfiability gate ran green against a population the app does not use.");
   // Loud cross-check (house idiom: core/properties.js BLEND_MODES ↔ LABELS): a
   // drag kind declaring a modifier this module has no wording for would silently
   // announce nothing, which is the exact defect the table exists to prevent.
@@ -1007,6 +1044,23 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
     // for a key that would do nothing is the HintBar lie this registry forbids.
     { keys: ["X"], label: "X axis", when: modalAxisConstraint, run: () => app.modalSetAxis("x") },
     { keys: ["Y"], label: "Y axis", when: modalAxisConstraint, run: () => app.modalSetAxis("y") },
+    // ── MODAL TOGGLES, GENERATED PER TOGGLE ─────────────────────────────────
+    // I = individual origins (each item about its OWN centre instead of the
+    // collective one — Blender's I), W = wholistic scale (the gesture's factor also
+    // multiplies stroke widths, font sizes, corner radii and the other lengths
+    // core/scaling.js classifies). User, 2026-08-12: "in s and r, the 'i' key should
+    // toggle 'individual' vs as a whole, and 'w' hsould toggle 'wholistic'".
+    //
+    // GENERATED from MODAL_TOGGLES (web/canvas/dragKinds.js) for the reason the
+    // G/S/R entries above are generated from MODAL_TRANSFORM_KINDS: a toggle needs a
+    // key, a chip and an announcement segment, and hand-writing those in three files
+    // is how a key that works with no chip ships. Each is scoped by its OWN
+    // declaration — W is withheld from a rotate (a turn has no factor for a stroke
+    // width to follow) and I from a grab (a translation has no pivot) and from a
+    // single selection (one item's own centre IS the collective centre) — so no chip
+    // ever offers a key that would do nothing, the same law the X/Y pair obeys.
+    ...Object.entries(modalToggles).map(([id, t]) =>
+      ({ keys: [t.key], label: t.label, when: modalToggleChip(t), run: () => app.modalToggle(id) })),
     // NUMERIC ENTRY: digits / "." / "-" build a value buffer applied EXACTLY
     // (S 2 = factor 2; G X 2 = +2 world units along X). Backspace edits it. The
     // twelve key entries DISPATCH but are hidden, because twelve chips reading
@@ -1436,10 +1490,11 @@ export const HINT_PROBE_CROSSHAIRS = Object.freeze([null, "band", "place"]);
  *   - hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], modalKinds: [], app: {}}).length
  *   === HINT_PROBE_MODES.length * HINT_PROBE_CROSSHAIRS.length  // true
  * @example
- * // …and so does each MODAL KIND, for the same reason: one flag set, not a loop.
+ * // Each MODAL KIND rides the flag axis too — but as TWO sets, solo and
+ * // multi-selected, because that count is what the I toggle's `when` reads.
  * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], modalKinds: ["grab", "rotate"], app: {}}).length
  *   - hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], modalKinds: [], app: {}}).length
- *   === 2 * HINT_PROBE_MODES.length * HINT_PROBE_CROSSHAIRS.length  // true
+ *   === 2 * 2 * HINT_PROBE_MODES.length * HINT_PROBE_CROSSHAIRS.length  // true
  */
 export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, activationIds, modalKinds, app }) {
   // One extra flag set per activation: the selected widget declares it. Derived, so
@@ -1450,7 +1505,24 @@ export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, a
     // A live modal ALWAYS has a kind, so it is probed per kind — which is what lets
     // a chip be scoped to one (rotate's missing X/Y) and still be provably live for
     // the others.
-    ...modalKinds.map((kind) => ({ modalActive: true, modalKind: kind })),
+    //
+    // AND PER SELECTION COUNT, for the same reason one step down. A modal transform
+    // always runs on a selection, but WHETHER THAT SELECTION HOLDS ONE ITEM OR
+    // SEVERAL is a state the user reaches both ways, and it is the discriminator the
+    // I (individual origins) chip is scoped by — with one item, "each about its own
+    // centre" and "all about the collective centre" are the same transform, so
+    // MODAL_TOGGLES marks that toggle `soloSuppressed` and its `when` requires
+    // `multiSelection`. Probing the solo case ALONE made a correct predicate report
+    // as UNSATISFIABLE at boot, which is exactly the failure mode this function's
+    // own history warns about two comments up: the reader then goes hunting for a
+    // contradiction in a predicate that has none, because the defect is in the
+    // prober's model of reachable states and not in the entry. Both halves are
+    // probed rather than only the multi one, so the solo case stays available to
+    // prove the chip STANDS DOWN there (the `handlesSelected` precedent).
+    ...modalKinds.flatMap((kind) => [
+      { modalActive: true, modalKind: kind, hasSelection: true },
+      { modalActive: true, modalKind: kind, hasSelection: true, multiSelection: true },
+    ]),
   ];
   const out = [];
   for (const mode of HINT_PROBE_MODES)
@@ -1468,6 +1540,13 @@ export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, a
                 numericField: null, numericFieldBounded: false,
                 fieldScope: null, popoverOpen: false, popoverKind: null,
                 activation: null,
+                // A REAL AXIS App.svelte's shortcutCtx() supplies, so it must be
+                // DECLARED here even though most flag sets leave it false. A field
+                // the prober omits entirely reads `undefined` in all 79k contexts,
+                // which silently makes every predicate that consults it dark — the
+                // boot tripwire then reports the ENTRY as unsatisfiable, naming the
+                // one thing that is not wrong. That is how the I chip was reported.
+                multiSelection: false,
                 // Nothing clicked yet ⇒ no stack under the cursor. The deep case is
                 // a probe flag below, so the click-through chip is proven live.
                 clickThroughDepth: 0,
@@ -1476,7 +1555,12 @@ export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, a
                 // resolves `activation` from the SELECTED item's plugin, so a
                 // non-null activation always means there is a selection. Modelling
                 // it keeps the grid describing states the user can be in.
-                hasSelection: flags.activation != null || !!flags.hasSelection,
+                // TWO invariants on one line: a resolved `activation` comes from the
+                // SELECTED item's plugin, and `multiSelection` is `selectedIds().length
+                // > 1` — so either being true means there IS a selection. A grid that
+                // crossed them independently would invent "two items selected with
+                // nothing selected" and then judge entries against it.
+                hasSelection: flags.activation != null || !!flags.multiSelection || !!flags.hasSelection,
                 // AN APP INVARIANT, not a convenience: CanvasView sets `dragging` and
                 // `dragKind` together and clears them together, so a non-null
                 // dragKind ALWAYS means a live gesture. Modelling it here keeps the

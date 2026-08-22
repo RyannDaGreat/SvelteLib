@@ -94,6 +94,7 @@ export const VCV_MICROCOSM = {
     families: ["granular", "FDN plate reverb", "polyphony / voice allocation"],
   },
   deviations: [
+    "THE SECOND CAUDAL'S SPEED IS DROPPED, NOT CARRIED. Its harvested value was −0.396, and Rack clamps a param to its own bounds before saving, so a stored negative PROVES Vult's Speed knob is bipolar while VC-10 models it 0…1. Vult is closed source, so the rescale has no known bounds and is not guessed. Writing the raw number anyway was the worst of the three options: our engine clamps it to 0, so the document read −0.396 while the sound was a STOPPED pendulum, and the Inspector drew a knob outside its own track. The number is preserved in this sentence, which is the right home for a quantity no knob can hold.",
     "THE AUX SEND/RETURN LOOP IS CUT. AuxExpander's four returns fed back into the same module (Plateau, Chronoblob2, Simpliciter#4 and JustAPhaser#2 all return to it), which is a cycle core/nodeflow.js refuses. The returns are summed by three chained audio_mixers instead; every module and every send is intact.",
     "THE EXPANDER BUS BECOMES TWO CABLES. MixMaster feeds AuxExpander over Rack's invisible expander channel — there is no cable between them in the patch file. The AuxExpander placeholder therefore declares `bus_l`/`bus_r` inputs and MixMaster's main pair drives them.",
     "Core/AudioInterface substituted by audio_pad at all three of its cables. The original's source is a LIVE INPUT (a guitar in front of the pedal); a sustained pad is the material a granulator wants and is the source the house patches already use.",
@@ -126,7 +127,12 @@ export const VCV_MICROCOSM = {
     // they are measurements of one four-segment pendulum.
     { id: "chaos", type: "audio_vcv_caudal", col: 0, row: 6 },
     // The second one is a pure CV source: its six taps become the granulators' speeds.
-    { id: "chaos2", type: "audio_vcv_caudal", col: 0, row: 7, knobs: { speed: -0.396 } },
+    // Its harvested `speed` of −0.396 IS DROPPED, so it sits at the default `chaos` above
+    // already sits at: Vult's Speed knob is bipolar (Rack clamps before saving, so a stored
+    // negative proves it) while VC-10 models it 0…1, and our engine would clamp the raw
+    // value to a stopped pendulum while the document read −0.396. See vcv-ambient-drone's
+    // Caudal for the full reasoning; the number is recorded in this patch's deviations.
+    { id: "chaos2", type: "audio_vcv_caudal", col: 0, row: 7 },
     // THE FREEZE FOOTSWITCH. A Bogaudio Manual's eighth output holds both looping delays,
     // which is the Microcosm's own hold pedal.
     { id: "freeze", type: "audio_vcv_manual", col: 0, row: 8 },
