@@ -210,22 +210,54 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   note(uploads === uploadsBefore1a, "marker paste uploaded NOTHING (no /api/upload/ POST) — the PNG was never treated as a foreign image");
 
-  // 1b. NO marker, a re-encoded PNG, but our internal clipboard still holds the
-  //     copy. This is the browser/platform that drops the custom flavor — and it
-  //     is byte-for-byte the case that produced the user's bug. The internal
-  //     payload alone must be enough, which is what makes Ctrl+V == the button.
+  // 1b. AN UNTAGGED BROWSER: no marker, a re-encoded PNG, and our internal
+  //     clipboard still holding the copy. This is the platform that cannot carry
+  //     the custom flavor at all — and it is byte-for-byte the case that produced
+  //     the user's bug. There the internal payload alone must be enough, which is
+  //     what makes Ctrl+V == the button.
+  //
+  // THE PREMISE IS A CAPABILITY, AND THIS CASE USED TO SPELL IT AS AN ABSENCE.
+  // It simply omitted the marker from the DataTransfer and called that "the
+  // browser that drops the custom flavor". Those were the same thing until
+  // `a983cc91`, which made the app ask `osClipboardTagging()` — a question about
+  // what the BROWSER CAN DO, asked before any copy happens — instead of reasoning
+  // from what one event happened to carry. Headless Chrome on 127.0.0.1 answers
+  // "tagged" (MEASURED: `ClipboardItem.supports("web application/x-powerrp-item")`
+  // -> true), so an unmarked image here is foreign BY DEFINITION and this case had
+  // silently become a second copy of section 2 while asserting section 1's outcome.
+  //
+  // SO THE CAPABILITY IS OVERRIDDEN RATHER THAN THE ASSERTION WEAKENED. The two
+  // assertions below are the ONLY coverage of the untagged arm — the arm that
+  // exists precisely so a browser without custom flavors does not lose element
+  // paste — and going green by deleting them would have retired the guarantee the
+  // user's bug report was about. `ClipboardItem.supports` is writable and
+  // configurable here (measured), so shadowing it flips `osClipboardTagging()` to
+  // "untagged" for the duration and the app takes the branch this case names. It
+  // is restored immediately after: every later case wants the real capability.
   before = Object.keys(await itemsOf(page)).length;
   const rectsBefore1b = await hasMarkerRect();
   const uploadsBefore1b = uploads;
+  const taggingUnderOverride = await page.evaluate(() => {
+    window.__realSupports = ClipboardItem.supports;
+    ClipboardItem.supports = () => false;
+    // Report what the app's own predicate now answers, so a browser that stops
+    // honouring the override fails HERE with a sentence rather than three
+    // assertions down with a wrong-branch outcome that reads like a regression.
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") return "never";
+    if (typeof ClipboardItem.supports !== "function") return "untagged";
+    return ClipboardItem.supports("web application/x-powerrp-item") ? "tagged" : "untagged";
+  });
+  note(taggingUnderOverride === "untagged", `the untagged branch is actually reachable in this browser (osClipboardTagging → ${taggingUnderOverride})`);
   const r1b = await firePaste(page, {
     files: [{ b64: FOREIGN_PNG_B64, name: "reencoded2.png", type: "image/png" }],
   });
   after = await settleCount(page, before);
   note(r1b.defaultPrevented, "the app consumed the paste event with no marker present");
   note(after === before + 1, `unmarked round-trip paste inserted exactly one item (${before} → ${after})`);
-  note((await hasMarkerRect()) === rectsBefore1b + 1, "unmarked round-trip paste STILL inserted the ELEMENT (the regression: this used to insert an image)");
+  note((await hasMarkerRect()) === rectsBefore1b + 1, "on an UNTAGGED browser, an unmarked round-trip paste STILL inserted the ELEMENT (the regression: this used to insert an image)");
   await new Promise((r) => setTimeout(r, 400));
   note(uploads === uploadsBefore1b, "unmarked round-trip paste uploaded nothing");
+  await page.evaluate(() => { ClipboardItem.supports = window.__realSupports; delete window.__realSupports; });
 
   // 1c. THE PARITY ASSERTION ITSELF: the toolbar button's command, run on the
   //     same clipboard, produces the same kind of insert as 1a/1b.
@@ -258,16 +290,30 @@ try {
   });
   note(clipCleared, "internal clipboard (server + mirror) is empty before the foreign-image case");
   before = Object.keys(await itemsOf(page)).length;
+  // THE DETECTOR IS SCOPED TO THIS CASE'S OWN INSERT, and asking "is there an
+  // image anywhere on the slide?" was a latent race that only stayed hidden while
+  // 1b happened to leave none. `Object.values(items).includes("image")` matched an
+  // image inserted by an EARLIER case on the FIRST poll, so the loop exited
+  // immediately and the upload counter below was read before this case's POST had
+  // even fired — reporting "no upload" for an upload that was moments away. Keying
+  // on the ids that were not there before cannot mistake someone else's widget for
+  // this one, whatever an earlier case leaves behind.
+  const idsBefore2 = new Set(Object.keys(await itemsOf(page)));
   const uploadsBefore2 = uploads;
   await firePaste(page, { files: [{ b64: FOREIGN_PNG_B64, name: "screenshot.png", type: "image/png" }] });
   let sawImage = false;
   for (let i = 0; i < 60; i++) {
     const items = await itemsOf(page);
-    if (Object.values(items).includes("image")) { sawImage = true; after = Object.keys(items).length; break; }
+    const fresh = Object.keys(items).filter((id) => !idsBefore2.has(id));
+    if (fresh.some((id) => items[id] === "image")) { sawImage = true; after = Object.keys(items).length; break; }
     await new Promise((r) => setTimeout(r, 200));
   }
   note(sawImage, "foreign image inserted an IMAGE widget (the paste-to-upload feature is intact)");
-  note(uploads > uploadsBefore2, "foreign image was UPLOADED (a POST to /api/upload/ fired)");
+  // The insert lands from the upload's RESPONSE, so the POST is already counted by
+  // the time the widget appears; the settle is belt-and-braces for a client that
+  // inserts optimistically.
+  await new Promise((r) => setTimeout(r, 400));
+  note(uploads > uploadsBefore2, `foreign image was UPLOADED (a POST to /api/upload/ fired; ${uploadsBefore2} → ${uploads})`);
   // Let that upload's insert fully settle before section 3 counts items, or its
   // async arrival would be misread as an insert caused by the typing-target paste.
   await new Promise((r) => setTimeout(r, 800));

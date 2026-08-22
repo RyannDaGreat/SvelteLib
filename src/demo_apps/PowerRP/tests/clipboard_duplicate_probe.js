@@ -39,17 +39,30 @@
  *     to the OS clipboard (verified by a best-effort clipboard.read() when
  *     headless allows it, else by the stored signature + clean render).
  *
- *  E. ELEMENT ROUND-TRIP. With a known {powerrp_item, png_sig} on the server
- *     clipboard, pasting an image inserts the ELEMENT, not a flattened bitmap —
- *     whether or not the image's signature matches. Both halves assert the same
- *     outcome since the 2026-07-30 parity ruling: a signature MISMATCH does not
- *     prove an image is foreign, because the OS pasteboard re-encodes images in
- *     transit, so our own render returns with different bytes. While our own
- *     copy is on the clipboard, Ctrl+V pastes the element. The genuinely foreign
- *     image (nothing of ours on the internal clipboard) is owned by
- *     tests/paste_parity_probe.js. The seed deliberately uses the LEGACY
- *     singular `powerrp_item` key, so this section doubles as the proof that an
- *     older session clipboard still pastes.
+ *  E. ELEMENT ROUND-TRIP, AND THE SCREENSHOT BESIDE IT. With a known
+ *     {powerrp_item, png_sig} on the server clipboard, pasting an image THAT
+ *     CARRIES OUR MARKER inserts the ELEMENT, not a flattened bitmap; an image
+ *     that does NOT carry it is a screenshot and is uploaded. The seed
+ *     deliberately uses the LEGACY singular `powerrp_item` key, so E1 doubles as
+ *     the proof that an older session clipboard still pastes.
+ *
+ *     THE DECIDING EVIDENCE IS THE MARKER, NOT THE BYTES, AND THIS SECTION USED
+ *     TO SAY OTHERWISE. Its two halves both asserted "element wins" on the 2026-
+ *     07-30 parity reasoning: a signature MISMATCH does not prove an image is
+ *     foreign, because the OS pasteboard re-encodes images in transit (581 bytes
+ *     in, 645 out, measured on macOS), so OUR OWN render comes back with
+ *     different bytes. **That reasoning is still true and is no longer the
+ *     question.** `a983cc91` established that on a browser which CAN tag a copy
+ *     (`osClipboardTagging() === "tagged"`, which headless Chrome is), an image
+ *     arriving WITHOUT `POWERRP_CLIPBOARD_MIME` is foreign by definition —
+ *     nothing about its bytes is consulted. Both halves here omitted the type
+ *     entirely, so both described a foreign paste while asserting the element
+ *     path, and the fixture had stopped matching the sentence above it.
+ *     E1 now passes the marker (it is our own copy, so it must say so) and E2
+ *     keeps its untagged fixture and asserts the screenshot outcome. The
+ *     genuinely foreign path with an EMPTY internal clipboard is owned by
+ *     tests/paste_parity_probe.js; the precedence rules by
+ *     tests/paste_screenshot_precedence_probe.js.
  *
  * Run (exit-code gated):
  *   node src/demo_apps/PowerRP/tests/clipboard_duplicate_probe.js
@@ -580,19 +593,31 @@ try {
     });
   }, { matchSig, markerW: MARKER_W });
 
-  // Count uploads across section E: a MATCH must NOT upload; a MISMATCH must.
+  // Count uploads across section E: the MARKED paste must NOT upload; the
+  // UNMARKED one must (it is a screenshot).
   let uploadCountE = 0;
   page.removeAllListeners("request");
   page.on("request", (req) => { if (req.method() === "POST" && req.url().includes("/api/upload/")) uploadCountE++; });
 
-  // E1. MATCH → element paste (behavior 3). Paste an image whose signature
-  // equals the stored png_sig → the ELEMENT (rect w=333), not a bitmap.
+  // E1. OUR OWN COPY COMING BACK → element paste (behavior 3). The image carries
+  // POWERRP_CLIPBOARD_MIME beside it, which is what "our own copy" MEANS on a
+  // browser that can tag one, and its signature also equals the stored png_sig —
+  // so both the marker and the legacy byte evidence agree. Expect the ELEMENT
+  // (rect w=333) and no upload.
+  //
+  // THE MARKER IS THE POINT OF THE FIXTURE. Omitting it (as this call did until
+  // 2026-08-22) made the paste foreign by definition on a tagged browser, so the
+  // assertion below was testing the screenshot path while claiming the element
+  // one. The png_sig match is kept, deliberately: it is what proves the ELEMENT
+  // wins on the MARKER rather than on the bytes agreeing — E2 varies the marker
+  // with the bytes held foreign, and the two together isolate which one decides.
   const e1 = await page.evaluate(async ({ b64, markerW }) => {
+    const MARKER = "web application/x-powerrp-item"; // POWERRP_CLIPBOARD_MIME (web/clipboard.js)
     const app = window.__powerrp_app;
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const file = new File([bytes], "match.png", { type: "image/png" });
     const before = Object.keys(app.doc.slides[0].delta.items).length;
-    await app.pasteFromClipboard([file]);
+    await app.pasteFromClipboard([file], [MARKER, "Files"]);
     const items = app.doc.slides[0].delta.items;
     const after = Object.keys(items).length;
     const rectId = Object.keys(items).find((id) => items[id].type === "rect" && items[id].w === markerW);
@@ -600,22 +625,31 @@ try {
   }, { b64: RED_B64, markerW: MARKER_W });
   await new Promise((r) => setTimeout(r, 200)); // let any (unexpected) upload fire before we read the counter
   const uploadsAfterMatch = uploadCountE;
-  note(e1.after === e1.before + 1, `MATCH paste inserted exactly one item (${e1.before} → ${e1.after})`);
-  note(e1.pastedElement, "MATCH paste inserted the ELEMENT (rect marker w=333), not a flattened image");
-  note(uploadsAfterMatch === 0, "MATCH paste did NOT upload anything (the element came from the server clipboard)");
+  note(e1.after === e1.before + 1, `MARKED paste inserted exactly one item (${e1.before} → ${e1.after})`);
+  note(e1.pastedElement, "MARKED paste inserted the ELEMENT (rect marker w=333), not a flattened image");
+  note(uploadsAfterMatch === 0, "MARKED paste did NOT upload anything (the element came from the server clipboard)");
 
-  // E2. A DIFFERENT image, with our internal clipboard STILL LOADED.
+  // E2. AN UNMARKED image, with our internal clipboard STILL LOADED — a
+  // screenshot taken while a widget copy is live. It must become an IMAGE
+  // widget and upload, and the live internal payload must NOT shadow it.
   //
-  // SUPERSEDED BY THE 2026-07-30 PARITY RULING, and deliberately reversed. This
-  // used to expect an IMAGE widget, on the theory that a signature mismatch
-  // proves the image is foreign. It proves nothing: the OS pasteboard
-  // RE-ENCODES images, so OUR OWN render comes back with a different signature
-  // too (581 bytes in, 645 out, measured on macOS). Treating "mismatch" as
-  // "foreign" is precisely what pasted the user's copied widget as a flattened
-  // bitmap. With an internal payload live, an image-only clipboard is now
-  // resolved toward the ELEMENT — Ctrl+V and the toolbar button are one action.
-  // The genuine foreign-image path (empty internal clipboard) is asserted in
-  // tests/paste_parity_probe.js, which owns this behavior end to end.
+  // THIS ASSERTION HAS BEEN REVERSED TWICE AND BOTH REVERSALS ARE WORTH KNOWING,
+  // because the second one only looks like the first undone. Originally it
+  // expected an IMAGE, on the theory that a signature mismatch proves an image
+  // foreign. The 2026-07-30 parity ruling reversed it to expect the ELEMENT:
+  // mismatch proves nothing, since the OS pasteboard RE-ENCODES images and our
+  // own render returns with different bytes (581 in, 645 out, measured on
+  // macOS) — treating "mismatch" as "foreign" is what pasted the user's copied
+  // widget as a flattened bitmap. **That reasoning was never wrong and is not
+  // what changed.** `a983cc91` changed the QUESTION: on a browser that can tag
+  // a copy, the marker's ABSENCE is direct evidence of foreignness, so the bytes
+  // are never consulted at all. The element-wins bias had been applied to a case
+  // that was never ambiguous, which meant one widget copy disabled system-image
+  // paste for the rest of the session — the user's actual bug.
+  //
+  // So E1 and E2 now differ in EXACTLY ONE INPUT, the marker, with the bytes
+  // held foreign in both. That is what makes this pair evidence about which
+  // signal decides, rather than two examples of the same outcome.
   const mmBefore = await page.evaluate(() => Object.keys(window.__powerrp_app.doc.slides[0].delta.items).length);
   await page.evaluate(async ({ b64 }) => {
     const app = window.__powerrp_app;
@@ -636,9 +670,10 @@ try {
     if (r.hasImg) { mmImage = true; break; }
     await new Promise((r) => setTimeout(r, 200));
   }
-  note(!mmImage, "a re-encoded/mismatched image did NOT become an image widget while our own copy is on the clipboard");
+  await new Promise((r) => setTimeout(r, 200)); // let the upload fire before we read the counter
+  note(mmImage, "an UNMARKED image became an image widget even though our own copy is on the clipboard (a983cc91: a live internal payload must not shadow a screenshot)");
   note(mmAfter === mmBefore + 1, `paste inserted exactly one item (${mmBefore} → ${mmAfter})`);
-  note(uploadCountE === 0, "nothing was uploaded — the ELEMENT was pasted, not the bitmap (the parity ruling)");
+  note(uploadCountE === 1, `the UNMARKED image was UPLOADED, and the MARKED one was not — one POST across the whole section (saw ${uploadCountE})`);
 
   await new Promise((r) => setTimeout(r, 200));
   if (consoleErrors.length) errors.push("CONSOLE ERRORS DURING PROBE:\n" + consoleErrors.join("\n"));
