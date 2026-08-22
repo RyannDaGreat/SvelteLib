@@ -68,6 +68,52 @@ const inventory = process.argv.includes("--inventory");
 const TEST_DIRS = ["tests", "render_gpu/tests"];
 
 /**
+ * THE THIRD CATEGORY: A PATH-SHAPED LITERAL THAT IS DATA, NOT A DEPENDENCY.
+ *
+ * WHY IT HAD TO EXIST. `htmlcap_html2image_test.js` feeds `isForeignUrl` a row of
+ * URL shapes — `["data:image/png;base64,AAA", "/asset/D/x.png", "x.png", "./x.png",
+ * "#a", ""]` — and asserts each is NOT foreign. `"./x.png"` resolves under the test
+ * dir to `tests/x.png`, which `.gitignore`'s `tests/*.png` covers, so this gate
+ * reported the suite as depending on user data. **Nothing opens it. Nothing ever
+ * did.** It is an argument to a pure predicate.
+ *
+ * WHY NOT "REQUIRE A READ CALL ON THE LINE", THE OBVIOUS FIX. Because it would gut
+ * the gate: the defect this file was WRITTEN for was
+ * `const PLUGIN_DIRS = ["assets/builtin/library", "projects/Imitations/assets"]` —
+ * a literal in a list, read somewhere else entirely. The self-check below pins that
+ * shape by name. The two cases are structurally IDENTICAL (a path-shaped string in
+ * an array literal) and differ only in what the program later does with it, which
+ * no line-based grep can see. So the discrimination has to come from the AUTHOR.
+ *
+ * IT COSTS A SENTENCE, DELIBERATELY. The marker must be followed by a REASON, and a
+ * bare `NOT-A-PATH:` is refused as loudly as the violation it would have silenced —
+ * an escape hatch that can be used without saying why is an allowlist, and this
+ * project's allowlists all state their entries' reasons. Read from the RAW line,
+ * before comment-stripping, since the marker lives in a comment.
+ */
+const NOT_A_PATH_MARKER = /NOT-A-PATH:(.*)$/i;
+
+/**
+ * Pure function. The stated reason this line's path-shaped literals are data rather
+ * than dependencies, `""` for a marker with no reason (which is an error, not an
+ * exemption), or null when the line carries no marker at all.
+ *
+ * @param {string} rawLine one line of source, comments INTACT
+ * @returns {string|null}
+ *
+ * @example notAPathReason('const u = "./x.png"; // NOT-A-PATH: input to isForeignUrl, never opened')
+ * // "input to isForeignUrl, never opened"
+ * @example notAPathReason('const dirs = ["projects/P/assets"];')
+ * // null
+ * @example notAPathReason('const u = "./x.png"; // NOT-A-PATH:')
+ * // "" — a marker with no reason; refused, not honoured
+ */
+export function notAPathReason(rawLine) {
+  const m = NOT_A_PATH_MARKER.exec(rawLine);
+  return m === null ? null : m[1].trim();
+}
+
+/**
  * ARTIFACT DIRECTORY NAMES — where a suite may legitimately WRITE. Every one is
  * gitignored because it holds artifacts, which is CLAUDE.md's instruction, not a
  * violation of it. A path under one of these is not a fixture and is never a
@@ -254,12 +300,18 @@ function gitignoredLiterals(sources) {
   const seen = [];
   for (const abs of sources) {
     const strip = [".js", ".mjs"].includes(extname(abs)) ? stripJsComments : stripHashComments;
-    strip(readFileSync(abs, "utf8")).split("\n").forEach((line, i) => {
+    const raw = readFileSync(abs, "utf8");
+    // The RAW lines in parallel with the stripped ones: `pathLiterals` must not see
+    // a commented-out path, but `notAPathReason` reads a marker that only exists in
+    // a comment. Same array index, so the two views cannot slip apart.
+    const rawLines = raw.split("\n");
+    strip(raw).split("\n").forEach((line, i) => {
+      const reason = notAPathReason(rawLines[i] ?? "");
       for (const lit of pathLiterals(line)) {
         for (const base of [APP, dirname(abs)]) {
           const p = resolve(base, lit);
           if (!p.startsWith(`${REPO}/`)) continue;
-          seen.push({ where: `${relative(APP, abs)}:${i + 1}`, lit, rel: relative(APP, p), repoRel: relative(REPO, p) });
+          seen.push({ where: `${relative(APP, abs)}:${i + 1}`, lit, reason, rel: relative(APP, p), repoRel: relative(REPO, p) });
         }
       }
     });
@@ -301,24 +353,55 @@ for (const h of hits) {
   bySite.get(key).push(h);
 }
 const sites = [...bySite.values()];
-const violations = sites.filter((g) => g.every((h) => verdict(h.rel) === "VIOLATION")).map((g) => g[0]);
+
+/**
+ * Pure function. One site's category. A site is `DATA` when its author marked the
+ * line NOT-A-PATH with a reason; `UNEXPLAINED` when they marked it WITHOUT one,
+ * which is refused rather than honoured; otherwise the best verdict among the bases
+ * the literal could resolve under — a site is a violation only when NO reading of it
+ * is legitimate, since crying wolf on a path that has a valid interpretation is how
+ * a gate gets muted.
+ *
+ * @param {Array<{rel: string, reason: string|null}>} group one site's hits
+ * @returns {"DATA"|"UNEXPLAINED"|"ARTIFACT"|"EXCLUDE"|"DECLARED"|"VIOLATION"}
+ *
+ * @example siteVerdict([{rel: "tests/x.png", reason: "input to a predicate"}])
+ * // "DATA"
+ * @example siteVerdict([{rel: "tests/x.png", reason: ""}])
+ * // "UNEXPLAINED" — a marker with no reason is an allowlist entry with no reason
+ * @example siteVerdict([{rel: "projects/P/a.js", reason: null}, {rel: ".claude_logs/a", reason: null}])
+ * // "ARTIFACT" — one legitimate reading is enough
+ */
+export function siteVerdict(group) {
+  const reason = group[0]?.reason ?? null;
+  if (reason !== null) return reason === "" ? "UNEXPLAINED" : "DATA";
+  return group.map((h) => verdict(h.rel)).find((v) => v !== "VIOLATION") ?? "VIOLATION";
+}
+
+const violations = sites.filter((g) => siteVerdict(g) === "VIOLATION").map((g) => g[0]);
+const unexplained = sites.filter((g) => siteVerdict(g) === "UNEXPLAINED").map((g) => g[0]);
 
 if (inventory) {
-  for (const g of sites) {
-    const why = g.map((h) => verdict(h.rel)).find((v) => v !== "VIOLATION") ?? "VIOLATION";
-    console.log(`${why.padEnd(9)} ${g[0].where}  "${g[0].lit}"`);
-  }
+  for (const g of sites) console.log(`${siteVerdict(g).padEnd(11)} ${g[0].where}  "${g[0].lit}"`);
   console.log(`\n${hits.length} gitignored path literals across ${sources.length} test sources`);
   process.exit(0);
 }
 
-if (violations.length) {
-  console.error(`\nFAIL gitignored_fixture_test (${violations.length}):\n`);
+if (violations.length || unexplained.length) {
+  console.error(`\nFAIL gitignored_fixture_test (${violations.length + unexplained.length}):\n`);
   for (const v of violations) {
     console.error(`  · ${v.where} depends on "${v.lit}", which git IGNORES (${v.rel}).\n` +
       "    A gate may not read user data: it will ENOENT on every fresh clone, and the\n" +
       "    stack reads like a regression. Commit a minimal fixture under tests/fixtures/,\n" +
-      "    or declare it in tests/fixture_precondition.js OPTIONAL_FIXTURES and skip loudly.");
+      "    declare it in tests/fixture_precondition.js OPTIONAL_FIXTURES and skip loudly,\n" +
+      "    or — if nothing ever OPENS it and the literal is only data — mark the line\n" +
+      "    `// NOT-A-PATH: <why>` (see NOT_A_PATH_MARKER; the reason is required).");
+  }
+  for (const u of unexplained) {
+    console.error(`  · ${u.where} carries a bare NOT-A-PATH marker for "${u.lit}" with NO reason.\n` +
+      "    The marker suppresses a portability check, so it must say what makes this\n" +
+      "    literal data rather than a dependency. A suppression with no reason is an\n" +
+      "    allowlist entry with no reason, which is the thing this gate exists to end.");
   }
   process.exit(1);
 }
@@ -360,6 +443,27 @@ if (violations.length) {
   //     a declared one must not.
   assert.equal(verdict(ghostDir), "VIOLATION", "SELF-CHECK: an undeclared project path is not a violation — the gate is vacuous");
   assert.equal(verdict(Object.keys(OPTIONAL_FIXTURES)[0]), "DECLARED", "SELF-CHECK: a DECLARED optional fixture is reported as a violation");
+
+  // (g) THE ESCAPE HATCH, BOTH DIRECTIONS. It has to open — the false positive it
+  //     was written for was a permanent red on the canonical gate, and a permanent
+  //     red trains people to stop reading the gate. It also has to REFUSE a bare
+  //     marker, or it is an allowlist anyone can extend without saying why.
+  const dataSite = [{ rel: ghostDir, reason: "input to a pure predicate, never opened" }];
+  assert.equal(siteVerdict(dataSite), "DATA", "SELF-CHECK: a marked-and-explained literal is still a violation — the hatch does not open");
+  assert.equal(siteVerdict([{ rel: ghostDir, reason: "" }]), "UNEXPLAINED", "SELF-CHECK: a bare NOT-A-PATH marker is honoured — the hatch is a silent allowlist");
+  assert.equal(siteVerdict([{ rel: ghostDir, reason: null }]), "VIOLATION", "SELF-CHECK: an UNMARKED violation stopped being one — the hatch leaks");
+  assert.equal(notAPathReason(`x = "a/b"; // NOT-a-PATH:  spaced reason  `), "spaced reason",
+    "SELF-CHECK: the marker is case-sensitive or does not trim — either would make it fail silently");
+  assert.equal(notAPathReason('const dirs = ["a/b"];'), null, "SELF-CHECK: an unmarked line reports a marker");
+  //     The marker must survive comment-stripping's index alignment: it lives in a
+  //     comment, so it is read from the RAW line, and a stripper that ate lines
+  //     would pair it with the wrong source line. (c) pins the stripper; this pins
+  //     that the two views are the same length.
+  {
+    const src = `a\n/* p */\nx; // NOT-A-PATH: why\n`;
+    assert.equal(src.split("\n").length, stripJsComments(src).split("\n").length,
+      "SELF-CHECK: raw and stripped line counts differ — every marker would attach to the wrong line");
+  }
 }
 
 // ── NON-VACUITY ──────────────────────────────────────────────────────────────
@@ -370,4 +474,11 @@ assert.ok(sites.length >= 10, `only ${sites.length} gitignored literal sites see
 assert.ok(sites.some((g) => g.some((h) => verdict(h.rel) === "DECLARED")),
   "no DECLARED fixture site was found — fixture_precondition.js's registry is unreachable from any test, so this gate's exemption path is untested");
 
-console.log(`PASS gitignored_fixture_test — ${sources.length} test sources swept, ${sites.length} gitignored path-literal sites, all of them artifacts, sweep exclusions, or declared in fixture_precondition.js.`);
+// THE SUMMARY COUNTS ITS CATEGORIES rather than asserting a list of them. The
+// previous sentence named three ("artifacts, sweep exclusions, or declared in
+// fixture_precondition.js") and would have gone on saying so after DATA was added —
+// a green run reporting a category that no longer covers every site. A tally cannot
+// drift: it is derived from the same verdicts the failure path uses.
+const tally = sites.reduce((acc, g) => { const v = siteVerdict(g); acc[v] = (acc[v] ?? 0) + 1; return acc; }, {});
+const breakdown = Object.entries(tally).sort().map(([v, n]) => `${n} ${v}`).join(", ");
+console.log(`PASS gitignored_fixture_test — ${sources.length} test sources swept, ${sites.length} gitignored path-literal sites, all accounted for: ${breakdown}.`);

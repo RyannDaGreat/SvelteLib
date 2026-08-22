@@ -285,7 +285,7 @@ check("foreign URLs are de-duplicated and reported in source order", () => {
 check("isForeignUrl draws the line at an explicit scheme+host, with data: excepted", () => {
   for (const u of ["https://a.test/x", "http://a.test/x", "//a.test/x", "ftp://a.test/x"])
     assert.equal(isForeignUrl(u), true, `${u} should be foreign`);
-  for (const u of ["data:image/png;base64,AAA", "/asset/D/x.png", "x.png", "./x.png", "#a", ""])
+  for (const u of ["data:image/png;base64,AAA", "/asset/D/x.png", "x.png", "./x.png", "#a", ""]) // NOT-A-PATH: inputs to isForeignUrl, a pure predicate — nothing opens them
     assert.equal(isForeignUrl(u), false, `${u} should NOT be foreign`);
 });
 
