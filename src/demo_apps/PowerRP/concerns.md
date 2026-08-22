@@ -1075,3 +1075,49 @@ after element creation) and replaced it with an explicit is/is-not-established l
 That is the whole round in one incident: **every one of the four defects above was
 protected by a confident sentence, and the repair nearly added a fifth.** An admitted
 gap invites the next reader to measure; a stated mechanism tells them not to bother.
+
+## 2026-08-22 — 13 OF 16 GATE FAILURES WERE THE RUNNER FIGHTING ITSELF
+
+A canonical `run_all.mjs`: 619 pass / 16 fail. One node fail (`gitignored_fixture_test`,
+a false positive of its own, fixed separately) and 15 browser. **Eleven of the fifteen
+carried `504 (Outdated Optimize Dep)` + `Failed to fetch dynamically imported module:
+…/@pdf-lib_fontkit.js?v=…`, and all fifteen passed standalone.**
+
+Root cause: 213 probes each boot their own Vite dev server, three run concurrently, and
+all three shared `node_modules/.vite`. The dep optimizer rewrites that directory on
+discovery and restamps every chunk's `?v=` hash; a neighbour's already-served page then
+504s and Skia never loads. **Three different hashes appear in one run's log** — three
+re-optimizations while probes were live.
+
+**THE LESSON IS ABOUT WHAT A FAILURE LOOKS LIKE.** These reds die in 5-12 s with NO
+assertion text. That is not a neutral fact — it is why the whole class kept getting
+attributed to the app. A probe that fails an assertion tells you what it wanted; a
+probe whose page never booted tells you nothing, and the nothing gets filled in with
+whatever the reader was last working on. Several sessions have now spent time on it,
+including one that concluded the fix "needs worktree isolation with a private
+node_modules" and stopped there.
+
+**FIVE PROBES HAD ALREADY SOLVED IT AND NOBODY GENERALIZED.** `equation_lock_probe` and
+four `scene3d_*` probes each pass a private `cacheDir: mkdtemp(…)` inline — five
+independent hits, five different tmp prefixes, no shared helper, no note anywhere
+saying why. None of the five was in the failing set. **That is the shape to watch for:
+when the same three-line workaround appears in N unrelated files, the workaround is a
+diagnosis nobody wrote down.** Finding it is what turned this from a suspicion into a
+measurement.
+
+Fixed with `POWERRP_VITE_CACHE_DIR` (run_all.mjs sets it per concurrent browser slot;
+web/vite.config.js honours it), the same seam shape `BACKEND_URL` already uses, so no
+probe changed. After: same 15 probes, same concurrency, 13 pass, signature count 11 →
+0. Cost measured at ~0.4 s per cold cache, inside run-to-run noise.
+
+Also found in passing: the runner printed its complete verdict and then **died on
+`Error: kill EPERM`**. `backend.stop()` runs twice by design and its `exited !== null`
+guard cannot see the second, because `close` is an event-loop delivery and the `exit`
+hook runs after the loop is done — so it re-signalled a zombie group leader, which
+macOS reports as EPERM rather than ESRCH. A green run ending in a stack trace reads as
+a broken gate. It signals once now. Widening the errno allow-list was refused: that
+would have hidden a real permission failure on the FIRST call, which is the one that
+means something.
+
+The two survivors — `clipboard_duplicate_probe` and `paste_parity_probe` — fail
+standalone with real assertion text and are a separate matter, under investigation.

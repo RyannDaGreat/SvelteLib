@@ -212,6 +212,18 @@ default-branch load.
   500` from nothing listening. Probes do not *listen* on the fixed backend port, but
   each one's self-spun Vite *proxies* to `BACKEND_URL` — so without one they report
   an absent dependency as if the app were broken.
+- **A BROWSER RED THAT DIES IN 5-12 s WITH NO ASSERTION TEXT IS THE GATE, NOT THE
+  APP.** Grep the run for `Outdated Optimize Dep` or `Failed to fetch dynamically
+  imported module`. 213 probes each boot their OWN Vite server and three run at
+  once; they used to share one `node_modules/.vite`, and the optimizer rewrites
+  that directory on discovery, restamping every chunk's `?v=` hash out from under
+  the pages its neighbours already served. Skia's import 504s, the app never boots.
+  Measured: 15 reds in one canonical run, 11 with that signature across three
+  hashes; all 15 passed standalone. Fixed by `POWERRP_VITE_CACHE_DIR` — `run_all.mjs`
+  gives each concurrent BROWSER SLOT its own cache and `web/vite.config.js` honours
+  it; unset, Vite's default applies. **If you add a runner that spawns probes, it
+  must set that variable per concurrent slot**, or the storm comes back looking like
+  a dozen unrelated product defects.
 - **BEFORE BELIEVING A BROWSER RED, CHECK THE HOST CAN SCREENSHOT AT ALL**:
   `node src/demo_apps/PowerRP/tests/browser_capture_preflight.mjs`
   64 of the 166 browser probes call `page.screenshot`, and a host whose Chrome

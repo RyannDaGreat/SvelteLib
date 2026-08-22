@@ -7230,3 +7230,72 @@ probes' media elements is the standing unmeasured suspicion).
 cleanest demonstration of why: the four defects above each survived behind a sentence
 exactly like that one. An admitted gap invites the next reader to measure. A stated
 mechanism tells them not to bother.
+
+### THE GATE'S OWN CONCURRENCY WAS THE LARGEST SOURCE OF BROWSER REDS
+
+Measured 2026-08-22, on a canonical `tests/run_all.mjs` run: **619 pass / 16 fail**,
+and **13 of the 16 were one infrastructure defect in the runner** — not in the app,
+and not in the probes.
+
+**THE MECHANISM, WITH THE EVIDENCE THAT ESTABLISHES IT.** 213 browser probes each
+call `vite.createServer` themselves, and the gate runs three at a time. All three
+wrote ONE dep cache at `node_modules/.vite`. Vite's optimizer rewrites that directory
+whenever it discovers a dependency, stamping a fresh `?v=<hash>` on every pre-bundled
+chunk — and a page a NEIGHBOURING server already served still holds the old hash. Its
+next import gets `504 (Outdated Optimize Dep)`, the dynamic import of Skia dies with
+`Failed to fetch dynamically imported module: …/@pdf-lib_fontkit.js?v=…`, and the app
+never boots. The probe then fails in 5-12 s **with no assertion text at all**, which
+is indistinguishable at a glance from a crash in the product.
+
+The evidence, in order of strength:
+  · THREE DIFFERENT `?v=` HASHES appear in one run's log, on ports 5173 and 5175 —
+    three re-optimizations while probes were live.
+  · Eleven of the fifteen browser reds carry the signature verbatim.
+  · Every one of the fifteen PASSES STANDALONE.
+  · **FIVE PROBES WERE ALREADY IMMUNE AND NOBODY HAD NOTICED WHY.** `equation_lock_probe`
+    and the four `scene3d_*` probes each pass their own `cacheDir: mkdtemp(…)` inline,
+    having each hit this independently — five ad-hoc fixes, five different tmp
+    prefixes, never generalized. None of the five was among the reds. That is a
+    natural experiment sitting in the tree, and it is what turned a suspicion into a
+    diagnosis.
+  · After the fix, the same fifteen probes at the same concurrency: **13 pass, and the
+    signature count goes 11 → 0.**
+
+**WHAT WAS ALREADY WRITTEN DOWN, AND WHY IT DID NOT SAVE US.** `web/vite.config.js`'s
+`optimizeDeps.include` list exists for exactly this failure and its comments describe
+it precisely (monaco, three/spark/GLTFLoader, `entries: ["index.html"]` for the signal
+bundle). It works — for ONE server. It cannot help when a SIBLING server writes the
+cache directory out from under a live page. `theme_family_probe.js`'s comment had even
+reached the right conclusion in 2026-08-01 — *"a peer's save invalidates the SHARED
+node_modules/.vite cache and full-reloads the page whatever this flag says … the
+remaining flakiness needs worktree isolation with a private node_modules"* — but
+reached for a hammer big enough that nobody picked it up. **A private `cacheDir` IS
+that isolation, for the only part of `node_modules` that matters, and costs ~0.4 s.**
+
+**THE FIX IS THE `BACKEND_URL` SHAPE, DELIBERATELY.** `POWERRP_VITE_CACHE_DIR` is set
+by `run_all.mjs` per concurrent browser SLOT and honoured by `web/vite.config.js`; 213
+probes needed no edit, exactly as 93 probes reach a live backend without one. PER SLOT
+rather than per probe, because probes within a slot run in sequence and can share a
+warm cache safely; only different slots must never share. Unset — a probe run by hand,
+the real dev server, any build — it is `undefined` and Vite's default applies, so
+there is no test-only branch in what gets served.
+
+**THE COST WAS MEASURED, NOT ASSUMED**: `flip_probe` at 8.72/9.56/8.56 s on the shared
+warm cache vs 9.67/8.73/9.64 s on a cold private one. A ~0.4 s mean delta, inside the
+run-to-run noise.
+
+**AND THE RUNNER CRASHED AFTER PRINTING ITS OWN VERDICT.** `backend.stop()` runs twice
+by design (the `finally`, then the `exit` hook), and its `exited !== null` guard cannot
+catch the second: `close` is delivered on the event loop, and the `exit` hook runs when
+the loop is already done. So it re-signalled a process group whose leader was a zombie,
+which macOS answers with **EPERM, not ESRCH** — rethrown. The gate printed `TOTAL: …`
+and then died on a stack trace. It signals ONCE now; widening the errno allow-list was
+refused, because that would have hidden a real permission failure on the first call,
+which is the one that matters.
+
+**THE STANDING RULE THIS PRODUCES**: any future runner that spawns probes concurrently
+must give each slot its own `POWERRP_VITE_CACHE_DIR`. Without it the storm returns
+disguised as a dozen unrelated product defects — which is how it has read every time
+so far. CLAUDE.md carries the short form beside the screenshot-preflight hazard, since
+both answer the same question: *before believing a browser red, what else could have
+produced it?*
