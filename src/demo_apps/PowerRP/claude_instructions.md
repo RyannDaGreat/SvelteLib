@@ -7128,3 +7128,105 @@ Eighteen items, each with a stated reason. The ones that matter:
     plugins/index.js still imported it; `ec510317` imported EXACT_DECIMALS six minutes
     before shapes.js exported it). HEAD is fine; those commits are not bisectable, and
     nothing in a working tree can repair history.
+
+## THE 2026-08-22 BROWSER-GATE REPAIR, AND THE FOUR PRODUCT DEFECTS IT SURFACED
+
+### Why a gate repair is a product round
+
+The audit above left the bare-node suites green and the BROWSER half red. Repairing a
+red probe is normally test work, but a probe reddens for exactly two reasons and only
+one of them is the probe's: either the probe asserts something the app never promised,
+or **the app is wrong and the probe is the only thing saying so**. Sorting the reds is
+therefore a product audit wearing a test-repair hat, and it produced four defects in
+shipping code that no bare-node suite could have seen. All four share a shape worth
+naming, because it is the same shape the 36 false claims above had:
+
+**A FALSE SENTENCE IN A DOCBLOCK KEPT EACH ONE ALIVE.** In every case the code was
+wrong AND a comment nearby asserted the wrongness was fine, so a reader who checked
+came away reassured. That is why this project counts a false claim as a defect of the
+same kind as a crash: it is not decoration, it is the thing that stops the next reader
+from looking.
+
+### 1. A SPACE IS NOT A MISSING GLYPH (`core/glyph_outlines.js`)
+
+`shapedGlyphPathDs` did `if (!d) { missing++; continue; }`. `render_gpu/fontkit_outlines.js
+glyphPathById` returns `null` for an id the face does not have — the honest gap the
+counter exists for — and `""` for a real glyph whose outline is empty. A SPACE. So the
+loud `glyph_outlines: N shaped glyph(s) have no outline in the run's OWN font` warning
+fired on the words "Hello World", and had been firing on every sentence anyone typed.
+
+**The lesson is about the LOUD CHANNEL, not about glyphs.** This codebase's whole
+error posture is that failures are loud; a warning that fires on the routine case
+spends that posture down to nothing. The user had been seeing this error and it meant
+nothing, which is exactly the state a silent failure would have produced. Both cases
+still contribute nothing to the path list; only the `null` is COUNTED.
+
+### 2. `documentState` EVALUATED A DIFFERENT DOCUMENT THAN THE CANVAS (`web/App.svelte`)
+
+It passed `null` for `contentSizes`. It is a HYPOTHETICAL of the SAME slide at the
+SAME instant as `app.state()` — that is its entire contract — so an input the real
+evaluation receives and this one does not is a disagreement about the document, and
+every tool gate reading it answers about a document that does not exist. An item with
+a content-bound equation (`= abs(self.w) * self.content.aspect`) read its FALLBACK
+here while the canvas read the measurement.
+
+OLD HOLE, NOT A REGRESSION: the 3-argument call it grew from defaulted the same way,
+confirmed against `HEAD~6`. Recorded because the shape recurs — an argument list grows
+and the new parameter is filled with `null` at one call site "for now".
+
+### 3. A BLANK VIDEO V6 WIDGET ERRORED ON INSERT (`web/VideoV6Overlay.svelte`)
+
+The overlay gated on `typeof src === "string" && src.length > 0` — the weaker half of
+video_v7's `isPlayableVideoSrc`, missing its `data:image/` clause — so the widget's OWN
+default `BLANK_SRC` (a 1x1 transparent PNG) was handed to a `<video>`. The element
+fires `error` with MediaError code 4 and `videoV6Registry` reports it loudly and
+correctly. **So inserting the widget from the menu, touching nothing, printed a console
+error about a corrupt clip the author had never chosen.**
+
+The plugin's own docblock asserted the opposite — *"A `<video>` pointed at a PNG simply
+never produces a video frame"* — which is what let the hole survive: the false claim
+explained the symptom away in advance.
+
+**THE PREDICATE NOW LIVES IN `core/video_sampling.js`.** It was written for V7 and V6
+carried a hand-copied weaker version, which is this codebase's worst recurring defect
+(that module's own header says so, about these very widgets). A `web/` module serving
+one video experiment is the wrong place for another's overlay to reach, and core/ is
+where both plugins already share `videoSrcRow`. `web/videoV7Placement.js` keeps a note
+saying where it went, because that is where anyone will look first.
+
+### 4. A TRANSIENT DECODE FAILURE WAS RECORDED AS PERMANENT (`render_gpu/skia/video_v5.js`)
+
+The live paint path gated on `scrubFailed.has(key)`. `createImageBitmap` on an
+ALREADY-LOADED `<video>` throws `InvalidStateError` transiently — measured clustering
+into windows on this host, the same tree green minutes later — and one such throw
+blacklisted that (scope, source, time, wrap) frame **for the life of the page**. The
+card went blank and no paint, scrub or reselect could ever bring it back, because the
+one gate that could re-request it was the gate that had latched.
+
+It now counts attempts (`V5_SCRUB_MAX_ATTEMPTS = 3`) and the frame is given up on only
+at the cap. **A retry costs one decode, not one per paint**: the live pump is coalesced
+per source (`entry.pumpQueued`), so re-kicking on every paint still yields at most one
+seek+decode in flight — three attempts are three real decodes across a genuine
+interval, not three frames of one gesture. The AWAITED path never consulted this map at
+all and was always retry-on-request; this cap governs the LIVE path only. Every failure
+is still reported LOUDLY, and the sentence now says WHICH it is, because a blank quad
+about to recover and one that never will look identical.
+
+`render_gpu/tests/video_v5_retry_test.js` pins the rule AND the wiring. The wiring half
+is the point: the defect was never a wrong predicate, it was the CALL SITE, so a test
+that only exercised the extracted pure function would have passed on the broken build.
+
+### THE MECHANISM CLAIM THAT WAS WITHDRAWN (`tests/image_stack_live_probe.js`)
+
+While triaging defect 4 an agent wrote *"Chromium refuses the grab for roughly the
+first 200 ms"* into a probe docblock as measured fact. **It does not reproduce in
+either direction** — grabs succeed at t+40 ms in isolation, and in-app grabs that
+SUCCEED land ~400 ms after the element is created. The docblock now states what IS
+established (the fixture is fine; the failure clusters; a cold Vite dep cache and CPU
+starvation are both ruled out) and what is NOT (the trigger; contention with other
+probes' media elements is the standing unmeasured suspicion).
+
+**A CONFIDENT WRONG MECHANISM IS WORSE THAN AN ADMITTED GAP**, and this is the round's
+cleanest demonstration of why: the four defects above each survived behind a sentence
+exactly like that one. An admitted gap invites the next reader to measure. A stated
+mechanism tells them not to bother.

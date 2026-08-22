@@ -1023,3 +1023,55 @@ ONE brief was "did this pass by asserting LESS?" — none had.
     had nothing to do, while the real cost — a second `getDocument` parse — went
     unnamed. **A doc hazard does not merely mislead; it can retire a real task by
     describing it as already-hard and pointless.**
+
+## 2026-08-22 — THE LAST FOUR REDS, AND THE FOUR PRODUCT DEFECTS UNDER THEM
+
+Continuing the browser-gate repair above. The two resumed lanes (media-probes,
+plaintext-glyph) turned 12 more probes green and then STOPPED, reporting four defects
+they could not fix because the files were outside their leases. Reporting rather than
+reaching is the lease rule working, and all four turned out to be real.
+
+- **`core/glyph_outlines.js:351` counted a SPACE as a missing glyph.** `if (!d)`, where
+  `glyphPathById` returns `null` for an absent id and `""` for a real glyph with no
+  ink. The loud "N shaped glyph(s) have no outline in the run's OWN font" error fired
+  on the string "Hello World". THE LESSON IS ABOUT THE LOUD CHANNEL: the user had been
+  seeing this error and it meant nothing to them, which is the same place a silent
+  failure would have left us. A warning that fires on the routine case spends the
+  project's whole error posture down to zero. `plaintext_inline_edit_probe` was the
+  only thing in the repo saying so, and it was being read as a probe defect.
+
+- **`web/App.svelte:1069` passed `null` contentSizes to `documentState`'s evaluation.**
+  Its docblock says it is a hypothetical of the SAME slide at the SAME instant as
+  `app.state()` — so a missing input is a disagreement about the document, and a tool
+  gate reading it answers about one that does not exist. **PRE-EXISTING, verified
+  against `HEAD~6`**: the 3-argument call it grew from defaulted the same way, so this
+  was NOT a regression from the varKinds threading beside it. Worth recording anyway,
+  because the shape recurs — a parameter list grows and one call site gets `null`
+  "for now", and the `null` outlives everyone who knew why.
+
+- **`plugins/demo/video_v6.js` + `web/VideoV6Overlay.svelte`: a blank widget errored on
+  insert.** The overlay's guard was `typeof src === "string" && src.length > 0` — the
+  weaker half of V7's `isPlayableVideoSrc` — so the widget's own `BLANK_SRC` default (a
+  1x1 PNG) went to a `<video>`, which fires MediaError 4. Inserting the widget and
+  touching nothing printed a console error about a corrupt clip the author never chose.
+  **THE DOCBLOCK IS WHY IT SURVIVED**: it asserted "a `<video>` pointed at a PNG simply
+  never produces a video frame", which explains the symptom away before anyone checks.
+  The predicate moved to `core/video_sampling.js` — the hand-copied weaker duplicate is
+  precisely the failure that module's own header was written about.
+
+- **`render_gpu/skia/video_v5.js:717` made a transient failure permanent.** One
+  `createImageBitmap` InvalidStateError blacklisted a frame key for the life of the
+  page; the card went blank and nothing could bring it back. Now three attempts, then
+  give up — and the console line says which. NOTE THE COST ARGUMENT, because it is what
+  made retrying safe: the live pump is coalesced per source, so re-kicking every paint
+  is still one decode in flight, and three attempts span a real interval rather than
+  three frames of one gesture.
+
+**AND ONE FALSE CLAIM WRITTEN BY THE REPAIR ITSELF.** An agent triaging the V5 defect
+wrote "Chromium refuses the grab for roughly the first 200 ms" into
+`tests/image_stack_live_probe.js` as measured fact. A verifier could not reproduce it
+in either direction (isolated grabs succeed at t+40 ms; in-app successes land ~400 ms
+after element creation) and replaced it with an explicit is/is-not-established list.
+That is the whole round in one incident: **every one of the four defects above was
+protected by a confident sentence, and the repair nearly added a fifth.** An admitted
+gap invites the next reader to measure; a stated mechanism tells them not to bother.
