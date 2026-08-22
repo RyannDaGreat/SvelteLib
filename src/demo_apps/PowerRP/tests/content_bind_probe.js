@@ -40,24 +40,46 @@ async function main() {
     await page.waitForFunction(() => !!window.__powerrp_app, { timeout: 60000 });
     await new Promise((r) => setTimeout(r, 800));
 
-    const r = await page.evaluate(async (w, h) => {
+    // ── WHY THIS IS THREE CALLS AND NOT ONE ──────────────────────────────────
+    // It was ONE `page.evaluate(async …)` containing a 60x50ms polling loop until
+    // 2026-08-22. That leaves a CDP `Runtime.callFunctionOn` promise pending for
+    // ~3s, and V8 COLLECTS it under memory pressure: the probe then dies with
+    // `ProtocolError: Protocol error (Runtime.callFunctionOn): Promise was
+    // collected` before reaching a single assertion — a puppeteer stack with no
+    // assertion text, which reads exactly like a product regression and is not
+    // one. MEASURED on a loaded host (105 concurrent Chromes): 1 of 3 runs
+    // survived as one call, 4 of 4 split like this. No page navigation was
+    // involved, so it is not the dep-optimizer reload CLAUDE.md warns about.
+    // The waiting moves to `page.waitForFunction`, which is polled by the browser
+    // and holds no pending promise. NO ASSERTION CHANGED — the same eight values
+    // are gathered in the same order and checked by the same `ok()` calls below.
+    const id = await page.evaluate(async (w, h) => {
       const app = window.__powerrp_app;
       // A real decodable image at a known, deliberately non-square aspect.
       const c = document.createElement("canvas");
       c.width = w; c.height = h;
       const ctx = c.getContext("2d");
       ctx.fillStyle = "#c33"; ctx.fillRect(0, 0, w, h);
-      const uri = c.toDataURL("image/png");
+      await app.insertImageAsset(c.toDataURL("image/png"), { x: 400, y: 300 });
+      return app.selection;
+    }, IMG_W, IMG_H);
 
-      await app.insertImageAsset(uri, { x: 400, y: 300 });
-      const id = app.selection;
-      // rawState = what is STORED; state() = folded + EVALUATED (equations resolved).
-      const out = { insertedW: app.rawState().items[id].w, insertedH: app.rawState().items[id].h };
+    // rawState = what is STORED; state() = folded + EVALUATED (equations resolved).
+    const r = await page.evaluate((id) => ({
+      insertedW: window.__powerrp_app.rawState().items[id].w,
+      insertedH: window.__powerrp_app.rawState().items[id].h,
+    }), id);
 
-      // Wait for the decode to reach the registry (the measurement is a PULL, so
-      // it appears as soon as the bitmap does).
-      for (let i = 0; i < 60 && !app.contentSizes().has(id); i++) await new Promise((res) => setTimeout(res, 50));
-      out.measured = app.contentSizes().get(id) ?? null;
+    // Wait for the decode to reach the registry (the measurement is a PULL, so it
+    // appears as soon as the bitmap does). A TIMEOUT IS NOT A THROW: it leaves
+    // `measured` null so the `THE PRODUCER RAN` check below reports it as the
+    // failed requirement it is, rather than as a puppeteer TimeoutError.
+    await page.waitForFunction((id) => window.__powerrp_app.contentSizes().has(id), { timeout: 15000, polling: 50 }, id)
+      .catch(() => {});
+
+    Object.assign(r, await page.evaluate((id) => {
+      const app = window.__powerrp_app;
+      const out = { measured: app.contentSizes().get(id) ?? null };
 
       const cmd = app.commands.get("bind-height-to-content");
       out.present = !!cmd;
@@ -77,13 +99,28 @@ async function main() {
       app.setPreview([[["items", id, "w"], 400]]);
       app.commitPreview();
       out.trackedH = app.state().items[id].h;
+      return out;
+    }, id));
 
-      // And the escape hatch: a typed number replaces the binding.
+    // ── A WINDOW IN WHICH THE BINDING IS ACTUALLY LIVE ───────────────────────
+    // The escape-hatch commit below REPLACES the equation with a plain number, so
+    // until 2026-08-22 the binding existed only inside one synchronous evaluate
+    // and no asynchronous consequence of it was ever observable: the app's
+    // reactive tool-gate pass ran after the equation had already been removed.
+    // Measured — with the override still inline, four consecutive runs reported
+    // "no page errors" while the bound state was demonstrably logging one.
+    // Settling HERE, outside the evaluate, is what lets the console gate below
+    // see the bound document. It is done between two short calls rather than as
+    // an `await` inside one, for the pending-promise reason documented above.
+    await new Promise((res) => setTimeout(res, 600));
+
+    // And the escape hatch: a typed number replaces the binding.
+    Object.assign(r, await page.evaluate((id) => {
+      const app = window.__powerrp_app;
       app.setPreview([[["items", id, "h"], 123]]);
       app.commitPreview();
-      out.overriddenH = app.state().items[id].h;
-      return out;
-    }, IMG_W, IMG_H);
+      return { overriddenH: app.state().items[id].h };
+    }, id));
 
     ok(r.insertedW === IMG_W && r.insertedH === IMG_H, `setup: the image inserted at its native ${IMG_W}x${IMG_H} (got ${r.insertedW}x${r.insertedH})`);
     ok(r.measured !== null, `THE PRODUCER RAN: the intrinsic size reached the table (${JSON.stringify(r.measured)})`);
@@ -94,6 +131,25 @@ async function main() {
     ok(r.evaluatedH === 800 / (IMG_W / IMG_H), `THE FEATURE: at width 800 a 4:1 image gives height ${800 / (IMG_W / IMG_H)} (got ${r.evaluatedH})`);
     ok(r.trackedH === 400 / (IMG_W / IMG_H), `IT KEEPS TRACKING: width 400 re-derives height ${400 / (IMG_W / IMG_H)} with no second command (got ${r.trackedH})`);
     ok(r.overriddenH === 123, `THE ESCAPE HATCH: typing a plain height replaces the binding (got ${r.overriddenH})`);
+    // Let the last commit's reactive work land before judging the console.
+    await new Promise((res) => setTimeout(res, 300));
+
+    // THIS CHECK IS RED ON A CLEAN TREE AND THE ERROR IS REAL — do NOT add it to
+    // IGNORE, and do not "fix" it by deleting the live-binding settle above.
+    // Measured 2026-08-22: while the bind equation is live the app logs
+    //   PowerRP expression error at items.<id>.h: Item "<name>" has no property "content.aspect"
+    // The equation itself is CORRECT — evaluatedH and trackedH above are exact,
+    // because app.state() threads the content-size table. The emitter is
+    // `documentState()` at web/App.svelte:1069, the hypothetical tool-gate
+    // evaluation, which passes `null` for evaluateState's `contentSizes` argument
+    // while carefully threading `a.projectScript()` and `a.varKindsForEval()`. The
+    // comment directly above that line makes precisely this argument for the other
+    // two ambient inputs and stops one short of the third. Stack captured in the
+    // page through core/report.js reportOnce -> expressions.js fail/evalSlot,
+    // under the withSimulationFrozen(withPointerFrozen(...)) pair that is unique
+    // to that function. Fix: `a.contentSizes()` in place of that `null` —
+    // core/content_size.js documents the table as an evaluation INPUT that every
+    // consumer must thread, exactly as the project script is.
     ok(errors.length === 0, `no page errors${errors.length ? ` — ${errors.slice(0, 3).join(" | ")}` : ""}`);
 
     console.log(checks.map(([p, l]) => `  ${p ? "ok  " : "FAIL"} ${l}`).join("\n"));

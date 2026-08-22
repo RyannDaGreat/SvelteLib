@@ -348,7 +348,19 @@ function shapedGlyphPathDs(placements) {
   let missing = 0;
   for (const g of placements) {
     const d = glyphOutlineById(g.glyphId, { font: g.font, bold: g.bold });
-    if (!d) { missing++; continue; }
+    // AN EMPTY PATH IS A GLYPH WITH NO INK, NOT A MISSING ONE — and `!d` could not
+    // tell them apart, which is why typing "Hello World" reported a glyph the font
+    // could not draw. `render_gpu/fontkit_outlines.js glyphPathById` returns null
+    // ONLY for an id the face does not have (the honest gap this counter exists
+    // for) and "" for a real glyph whose outline is empty — a SPACE, in every
+    // sentence anyone types. Conflating them made the loud "N shaped glyph(s) have
+    // no outline in the run's OWN font" warning fire on ordinary text, which is the
+    // worst thing a loud channel can do: cry wolf about the routine case until the
+    // real one is not believed. (Measured against the committed TTFs: the sole
+    // "missing" glyph in "Hello World" in Inter is the space.) Both still contribute
+    // nothing to `ds`; only the null is COUNTED.
+    if (d === null || d === undefined) { missing++; continue; }
+    if (d === "") continue;
     const em = g.size / unitsPerEm;
     ds.push(transformPathD(d, matMul(
       { a: 1, b: 0, c: 0, d: 1, e: g.x, f: g.baselineY },

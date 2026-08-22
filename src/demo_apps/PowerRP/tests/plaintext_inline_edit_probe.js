@@ -46,6 +46,30 @@ try {
   // Ignore backend-absent noise: this probe self-spins a FRONTEND-ONLY Vite (no
   // server.py), so best-effort thumbnail-persist POSTs and the project-asset
   // listing 404/500. All orthogonal to in-place text editing.
+  // ── THIS PROBE IS RED ON A CLEAN TREE, ON A REAL DEFECT ────────────────────
+  // It fails on ONE console error and the message is FALSE, so do NOT add it to
+  // the filter below:
+  //   "PowerRP glyph_outlines: 1 shaped glyph(s) have no outline in the run's OWN
+  //    font — the renderer resolved them through a FALLBACK face …"
+  // The text this probe types is "Hello World" in Inter, and the one "missing"
+  // glyph is the SPACE. No fallback face was involved and the glyph is not
+  // "FILLED but not outlined" — it has no ink at all, which is exactly what
+  // core/glyph_outlines.js `textGlyphPathDs` documents as normal ("a space
+  // contributes none"; "@example // a space has no ink, so `a b` still yields
+  // two").
+  // CAUSE, measured 2026-08-22 against the committed TTFs: `glyphPathById`
+  // (render_gpu/fontkit_outlines.js:154) returns "" — an EMPTY path — for a real
+  // glyph that carries no ink, and null only for one the face genuinely lacks.
+  // core/glyph_outlines.js:351 collapses the two with `if (!d) { missing++; }`,
+  // so every space in every run is counted as a fallback-face glyph. Inter has 5
+  // such glyphs (U+0020, U+00A0, three other spaces) and Lora 3; NEITHER face
+  // returns null for any id in range, so the two cases never actually overlap.
+  // CONSEQUENCE beyond this probe: the diagnostic can never do its job, because
+  // any text containing a space trips it and a genuine fallback-face glyph is
+  // indistinguishable from ordinary word spacing.
+  // FIX (verified 2026-08-22 — this probe goes green with it, 13s):
+  //   if (d === null) { missing++; continue; }  // face cannot supply it
+  //   if (d === "") continue;                   // real glyph, no ink (a space)
   page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|thumbnail|\/api\/thumb|WebGPU|VideoV7|listAssets|could not list project assets|\/api\/assets/i.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });

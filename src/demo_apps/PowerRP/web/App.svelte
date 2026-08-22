@@ -1066,7 +1066,17 @@
     // evaluation and the real one, so an unfrozen read would make two evaluations of
     // one instant disagree, which is the ephemerality the recordable kind excludes.
     // (W3-P, R7-24 freeze audit, 2026-08-06.)
-    return { raw, evaluated: withSimulationFrozen(() => withPointerFrozen(() => evaluateState(raw, a.registry, a.projectScript(), null, a.varKindsForEval()).state)) };
+    // CONTENT SIZES ARE THREADED, and the `null` that used to sit here was a real
+    // gap rather than a deliberate omission. This evaluation is a HYPOTHETICAL of
+    // the SAME slide at the SAME instant (see above) — so every input the real
+    // evaluation gets, this one must get too, or the two disagree about a property
+    // and a tool gate answers about a document that does not exist. `contentSizes`
+    // is exactly such an input: it is not in the fold, so an item carrying a
+    // content-bound equation (`= abs(self.w) * self.content.aspect`) read its
+    // FALLBACK here while the canvas read the measurement. It was `null` from the
+    // day this function was written — the 3-argument call defaulted it — so this is
+    // an old hole, not a regression from the varKinds threading beside it.
+    return { raw, evaluated: withSimulationFrozen(() => withPointerFrozen(() => evaluateState(raw, a.registry, a.projectScript(), a.contentSizes(), a.varKindsForEval()).state)) };
   }
 
   /**

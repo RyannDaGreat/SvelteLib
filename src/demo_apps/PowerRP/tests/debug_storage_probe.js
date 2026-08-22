@@ -26,7 +26,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
 
 const { createServer } = await import("vite");
-const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+// hmr:false + watch:null — the house probe convention (palette_probe.js:44-47 states
+// it in full). Was `{ port: 0, open: false, host: "127.0.0.1" }`, i.e. both ON: a save
+// anywhere in the tree while this probe is driving the palette sends a full-reload, and
+// the app object, the open palette and the modal all go with it — after which the
+// `.debug-storage-grandtotal` wait below can only time out. A one-shot headless run has
+// no developer to benefit from HMR.
+const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null } });
 await server.listen();
 const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`;
 
@@ -44,6 +50,15 @@ const assert = (cond, msg) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** How long the app is GIVEN to appear — the ceiling, not the expectation (a cold Vite
+ *  dep re-optimization is minutes slower than a warm boot). */
+const BOOT_TIMEOUT_MS = 90000;
+/** Skia wasm + fonts + first paint, AFTER window.__powerrp_app exists. */
+const BOOT_SETTLE_MS = 3500;
+/** How long a palette keystroke is GIVEN to re-filter the list before Enter. Bounded so
+ *  a genuinely missing command still fails, and fast in the normal case because it polls. */
+const PALETTE_SETTLE_MS = 10000;
+
 // Console noise this probe ignores, each for a stated reason:
 //  · backend-absent chatter: this Vite is frontend-only on purpose (?static=1).
 //  · WebGPU fallback: measured harmless boot-time notice on every headless run
@@ -58,7 +73,17 @@ try {
   page.on("console", (m) => { if (m.type() === "error" && !EXPECTED_NOISE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/?static=1`, { waitUntil: "networkidle0" });
-  await sleep(3500); // Skia wasm + fonts + first paint
+  // WAIT FOR THE APP, DO NOT GUESS AT IT. This was `sleep(3500)` alone, commented
+  // "Skia wasm + fonts + first paint" — a constant that holds only on a warm dep cache
+  // and an idle machine. A cold Vite re-optimize pushes first paint minutes past it
+  // (measured elsewhere in this suite: 80 s vs 14 s for the same probe, same tree), and
+  // when it does, the very next page.evaluate reads `window.__powerrp_app` as undefined
+  // and the probe reports a stopwatch failure in the words of a storage failure.
+  // b09f40a4 made exactly this change to tests/image_stack_live_probe.js for exactly
+  // this reason; the settle after it stays, because "the app object exists" is earlier
+  // than "Skia and the fonts are up".
+  await page.waitForFunction(() => window.__powerrp_app != null, { timeout: BOOT_TIMEOUT_MS, polling: 200 });
+  await sleep(BOOT_SETTLE_MS); // Skia wasm + fonts + first paint, AFTER the app exists
   if (errors.length) {
     console.error("BOOT ERRORS:\n" + errors.join("\n"));
     process.exit(1);
@@ -118,14 +143,37 @@ try {
   const paletteOpen = await page.evaluate(() => document.querySelector(".palette-results") !== null);
   assert(paletteOpen, "the command palette opened");
 
+  // ENTER IS PRESSED ON A KNOWN ROW, NOT AFTER A GUESSED PAUSE. Each of these three
+  // steps was `sleep(250)` between typing and Enter; the palette re-filters on input, so
+  // a 250 ms window that closes early does not fail loudly — it presses Enter on
+  // WHATEVER is highlighted and runs a DIFFERENT command, and the only evidence left is
+  // the `.debug-storage-grandtotal` wait timing out 15 s later with nothing to say about
+  // why. The palette marks its rows `data-command-id` + `.highlighted`
+  // (web/CommandPalette.svelte), so the honest wait is "the row Enter will run is the
+  // row I mean". Bounded, so a command that genuinely is not there still reddens.
+  // A timeout here is rethrown with the id it wanted AND the id it actually got — a bare
+  // puppeteer "waiting for function failed" names neither, and which row the palette
+  // settled on is the whole diagnosis.
+  const waitHighlighted = async (id) => {
+    try {
+      await page.waitForFunction(
+        (want) => document.querySelector(".palette-results .palette-item.highlighted")?.dataset.commandId === want,
+        { timeout: PALETTE_SETTLE_MS, polling: 50 }, id);
+    } catch {
+      const got = await page.evaluate(() => document.querySelector(".palette-results .palette-item.highlighted")?.dataset.commandId ?? null);
+      throw new Error(`palette: waited ${PALETTE_SETTLE_MS}ms for "${id}" to be the highlighted row; it was ${JSON.stringify(got)}`);
+    }
+  };
   await page.keyboard.type("Debug", { delay: 20 });
-  await sleep(250);
+  await waitHighlighted("debug");
   await page.keyboard.press("Enter"); // drills into the "Debug" submenu
-  await sleep(250);
   await page.keyboard.type("Storage", { delay: 20 });
-  await sleep(250);
+  await waitHighlighted("debug-storage"); // DEBUG_PAGES[0].id === "storage" (web/DebugConsole.svelte)
   await page.keyboard.press("Enter"); // runs "Debug: Storage"
-  await sleep(600);
+  // Awaited rather than slept on, and NOT allowed to throw: the assertion below is the
+  // sentence this probe wants in the log, so a timeout has to reach it rather than
+  // replace it with a puppeteer stack.
+  await page.waitForSelector(".debug-console", { timeout: PALETTE_SETTLE_MS }).catch(() => {});
 
   const modalOpen = await page.evaluate(() => document.querySelector(".debug-console") !== null);
   assert(modalOpen, "the Debug console modal opened with the Storage page active");

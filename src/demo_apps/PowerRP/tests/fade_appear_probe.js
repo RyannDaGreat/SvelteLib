@@ -39,7 +39,15 @@ mkdirSync(shotDir, { recursive: true });
 //   only_a — RED,  x 10..60   (exists ONLY on slide A: active:false keyed on B)
 //   stay   — GRAY, x 75..125  (persistent, unchanged)
 //   only_b — BLUE, x 140..190 (exists ONLY on slide B: created there)
-const strip = (x, fill) => ({ type: "rect", x, y: 0, w: 50, h: 200, z: 1, rotation: 0, scale: 1, active: true, fill, stroke: null, strokeWidth: 0, cornerRadius: 0, opacity: 1, rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" } });
+// FIXTURE VALIDITY: `stroke` is written as a TRANSPARENT COLOUR, not as `null`.
+// It said `stroke: null` until 2026-08-22. `c27c3260` (2026-08-02) made an
+// explicit `null` at a required key a REPORTED repair — "had stroke DELETED
+// (written as null) — a required key, restored to the plugin default" — which
+// this probe's console gate then (correctly) failed on. The picture is
+// unchanged either way because strokeWidth is 0, so this fixes the FIXTURE
+// rather than widening the gate: a repair report is exactly what that gate
+// exists to catch, and a fixture must load with zero of them.
+const strip = (x, fill) => ({ type: "rect", x, y: 0, w: 50, h: 200, z: 1, rotation: 0, scale: 1, active: true, fill, stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 1, rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" } });
 const doc = {
   meta: { name: "fade-appear-probe", slideW: 200, slideH: 200 },
   slides: [

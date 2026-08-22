@@ -22,6 +22,11 @@ import { dirname, resolve } from "node:path";
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
 
 // Two-slide deck, RED → BLUE, slide 2 = a SLOW fade (linear → ~50/50 midpoint).
+// FIXTURE VALIDITY: `stroke` is a TRANSPARENT COLOUR, not `null`. It said
+// `stroke: null` until 2026-08-22; `c27c3260` (2026-08-02) made an explicit
+// `null` at a required key a REPORTED repair ("had stroke DELETED (written as
+// null) …"), which this probe's console gate correctly failed on. strokeWidth
+// is 0, so the picture is identical — the FIXTURE is fixed, not the gate.
 const doc = {
   meta: { name: "fade-livemode-probe", slideW: 200, slideH: 200 },
   slides: [
@@ -32,7 +37,7 @@ const doc = {
       delta: {
         items: {
           cam: { type: "camera", name: "Camera", x: 0, y: 0, w: 200, h: 200, z: 1000, rotation: 0, scale: 1, active: true, background: "#000000" },
-          box: { type: "rect", name: "Box", x: 0, y: 0, w: 200, h: 200, z: 1, rotation: 0, scale: 1, active: true, fill: "#ff0000", stroke: null, strokeWidth: 0, cornerRadius: 0, opacity: 1, rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" } },
+          box: { type: "rect", name: "Box", x: 0, y: 0, w: 200, h: 200, z: 1, rotation: 0, scale: 1, active: true, fill: "#ff0000", stroke: "#00000000", strokeWidth: 0, cornerRadius: 0, opacity: 1, rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" } },
         },
       },
     },

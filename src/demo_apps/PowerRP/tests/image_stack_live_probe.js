@@ -23,6 +23,40 @@
  * the sibling widget's probe and shares this one's whole media path. No project server
  * is started; the clip rides in as a data URI.
  *
+ * ── A STANDING RED THIS PROBE CATCHES, WHICH IS NOT ITS OWN FAULT ───────────
+ * INTERMITTENT, and the trigger is NOT known — read the next paragraph before you
+ * believe any theory of it, including one written here. `render_gpu/skia/video_v5.js:613`
+ * (`createImageBitmap(el)` in decodeV5ScrubFrame) throws
+ * `InvalidStateError: … The image source is not usable.` on an element that is ready
+ * by every observable — readyState 4, videoWidth/Height 96x72, error null, seeking
+ * false, parked at the requested time by a resolved `seeked`.
+ * `noteV5ScrubFailure` (video_v5.js:717) then writes the key into `scrubFailed`, and
+ * `getVideoV5ScrubFrame` (video_v5.js:758) gives a failed key "no hold and no retry"
+ * — so a TRANSIENT browser state is recorded as a PERMANENT one and those cards stay
+ * blank for the life of the page. That permanence is the DEFECT, and it is certain
+ * from the source regardless of what provokes the throw; note video_v5.js:709-712
+ * calls this branch UNTESTED because "a seek/decode failure on an ALREADY-LOADED
+ * element could not be induced from a probe" — it can, this is it. That is why this
+ * probe reads `none,none,blue` when it reddens. The defect is in product code, not
+ * here; do not silence the console check to hide it.
+ *
+ * WHAT IS AND IS NOT ESTABLISHED ABOUT THE TRIGGER (verifier, 2026-08-22), because a
+ * confident wrong mechanism here is worse than an admitted gap — the last version of
+ * this paragraph carried one and it was measured false the same day:
+ *   · THE FIXTURE IS FINE. `fixtures/scrub_video.mp4` grabs clean in a bare page,
+ *     attached AND detached, with video_v5's exact element flags and its warm-up
+ *     seek: 10/10 grabs OK, the earliest at t+40 ms after `loadeddata`. So this is
+ *     NOT an undecodable fixture, and it is NOT a fixed refusal window after load —
+ *     a claim of "Chromium refuses for roughly the first 200 ms" was written here and
+ *     does not reproduce in either direction (grabs succeed at t+40 ms in isolation;
+ *     in-app grabs that SUCCEED land ~400 ms after the element is created).
+ *   · IT CLUSTERS. 3 consecutive gate reds (80 s each — both settle loops running out)
+ *     in one window, then 6 consecutive greens (14-15 s) on the same tree.
+ *   · TWO CHEAP SUSPECTS ARE RULED OUT: a cold Vite dep cache (`rm -rf
+ *     node_modules/.vite` → green, 14 s) and CPU starvation (14 `yes` spinners on a
+ *     14-core host → green, 28 s). Contention with OTHER browser probes' media
+ *     elements is the standing suspicion and is NOT yet measured.
+ *
  * Run from SvelteLib root:
  *   node src/demo_apps/PowerRP/tests/image_stack_live_probe.js
  */
@@ -117,6 +151,30 @@ const band = ([r, g, b]) => (saturation([r, g, b]) <= SATURATION_MIN ? "none" : 
 /** Pure function. Is this the camera backdrop (within the PNG round-trip's slack)?
  *  @example isBackdrop([34, 34, 34]) // true */
 const isBackdrop = (rgb) => rgb.every((c, i) => Math.abs(c - BACKDROP_RGB[i]) <= BACKDROP_TOLERANCE);
+
+/**
+ * Pure function. Has the stack SETTLED — every card showing its OWN decoded frame?
+ *
+ * THIS REPLACED "every card is not the backdrop" (and, in phase 2, "card 0 is not
+ * the backdrop") AS THE SETTLE PREDICATE. Those were satisfied by a card showing
+ * SOMEBODY ELSE'S frame, because `getVideoV5ScrubFrame` (render_gpu/skia/video_v5.js,
+ * the hold added in 3a136e86) deliberately returns the source's most recently decoded
+ * frame on a miss — a documented mid-gesture PREVIEW that converges to the exact frame
+ * a repaint or two later. Sampling on "not blank" therefore photographs the preview:
+ * measured, one gate run in five read `red,green,green` — card 2 wearing card 1's
+ * frame — and failed an assertion about a picture the widget had not finished drawing.
+ * Distinctness is the convergence the hold's own docblock promises, so waiting for it
+ * is waiting for the thing the assertions are about. NO ASSERTION CHANGED: each one
+ * still runs on whatever the final sample holds, so a stack that never converges
+ * (a real defect) still reddens, only later.
+ *
+ * @example // settled([{rgb:[226,56,57]},{rgb:[56,226,57]},{rgb:[56,57,226]}]) // true
+ * @example // settled([{rgb:[226,56,57]},{rgb:[56,226,57]},{rgb:[56,226,57]}]) // false — two greens
+ * @example // settled([{rgb:[34,34,34]},{rgb:[56,226,57]},{rgb:[56,57,226]}]) // false — one blank
+ */
+const settled = (cards) =>
+  cards.every((c) => !isBackdrop(c.rgb) && band(c.rgb) !== "none") &&
+  new Set(cards.map((c) => band(c.rgb))).size === cards.length;
 
 /** Pure function. The RGB triple at (x, y) of a decoded PNG. */
 function pixelAt(png, x, y) {
@@ -225,13 +283,17 @@ try {
   let flat = null;
   for (let i = 0; i * POLL_MS < DECODE_TIMEOUT_MS; i++) {
     const cards = await cardPixels(box);
-    if (cards.every((c) => !isBackdrop(c.rgb) && band(c.rgb) !== "none")) { flat = cards; break; }
+    if (settled(cards)) { flat = cards; break; }
     await sleep(POLL_MS);
   }
   const flatCards = flat ?? await cardPixels(box);
   await writeFile(resolve(SHOTS, "image_stack_fade_off.png"), PNG.sync.write(await shoot(box)));
   console.log(`  cards (front → back): ${flatCards.map((c) => `${c.j}=${band(c.rgb)}(${c.rgb})`).join("  ")}`);
-  assert(flat !== null, `every card shows decoded video (${flatCards.filter((c) => isBackdrop(c.rgb)).length} still blank)`);
+  // Read off the FINAL sample rather than off `flat`: `flat === null` now means
+  // "never converged", which is a different (and weaker) statement than "a card is
+  // blank" — and the two must not share one sentence.
+  assert(flatCards.every((c) => !isBackdrop(c.rgb) && band(c.rgb) !== "none"),
+    `every card shows decoded video (${flatCards.filter((c) => isBackdrop(c.rgb)).length} still blank)`);
   const bands = flatCards.map((c) => band(c.rgb));
   assert(new Set(bands).size === FRAME_COUNT,
     `the three cards show three DIFFERENT frames — the per-element equations resolved to 0 s / 1 s / 2 s (got ${bands.join(",")})`);
@@ -244,7 +306,7 @@ try {
   let faded = null;
   for (let i = 0; i * POLL_MS < DECODE_TIMEOUT_MS; i++) {
     const cards = await cardPixels(box);
-    if (!isBackdrop(cards[0].rgb) && band(cards[0].rgb) !== "none") { faded = cards; break; }
+    if (settled(cards)) { faded = cards; break; } // was "card 0 is not the backdrop" — see settled()
     await sleep(POLL_MS);
   }
   const fadedCards = faded ?? await cardPixels(box);

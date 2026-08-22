@@ -169,9 +169,33 @@ try {
   // ── Scenario 6: Copy as PNG — clipboard actually holds a decodable PNG ─────
   await page.evaluate((id) => { window.__powerrp_app.selection = id; }, RECT);
   await new Promise((r) => setTimeout(r, 60));
+  // THE CLIPBOARD IS THE OS's, AND IT OUTLIVES THIS PROCESS. Park a text sentinel on
+  // it first, so "there is a PNG here" can only mean "this run's copy-as-png put it
+  // here" — without this, a PNG left by an EARLIER run of this same probe satisfies
+  // the check instantly and it goes green while Copy as PNG is broken. That is not
+  // hypothetical: it happened on the first run after the poll below replaced the fixed
+  // sleep, in a run whose console shows `Copy as PNG: nothing selected` — the check
+  // passed on a previous run's bytes.
+  await page.evaluate(() => navigator.clipboard.writeText("palette_probe: no PNG copied yet"));
   await page.evaluate(() => window.__powerrp_app.runCommand("copy-as-png"));
-  await new Promise((r) => setTimeout(r, 400)); // GPU render + clipboard write settle
-  const pngInfo = await page.evaluate(async () => {
+  // WAITED FOR, NOT GUESSED AT. This was `setTimeout(400)` with the comment "GPU
+  // render + clipboard write settle", and 400 ms is simply not enough on this host:
+  // `runCommand` does NOT return copyAsPng's promise (web/app.svelte.js:8687), so
+  // page.evaluate resolves the instant the command is dispatched and the sleep is the
+  // whole wait, while the work behind it is an offscreen Skia raster + readback + PNG
+  // encode through gpuService under SwiftShader. MEASURED 2026-08-22 on an idle
+  // machine: the PNG reaches the clipboard at 612 ms, so the probe read an EMPTY
+  // clipboard and reported `pngInfo={"ok":false,"types":[]}` — an assertion about the
+  // stopwatch wearing the words of an assertion about Copy as PNG. (Independently
+  // verified the same headless Chrome round-trips a canvas PNG through
+  // navigator.clipboard.write/read in 1 attempt, so the API itself is not the limit.)
+  // The deadline is generous because the gate runs three browsers at once and this
+  // probe's own header records ~23 concurrent Chromes contending for ONE OS clipboard;
+  // a poll costs nothing when the write is fast and is the only thing that stays true
+  // when it is slow. NOTHING BELOW CHANGED: the same bytes get the same checks.
+  const PNG_CLIPBOARD_TIMEOUT_MS = 20000;
+  const PNG_CLIPBOARD_POLL_MS = 100;
+  const readClipboardPng = () => page.evaluate(async () => {
     const items = await navigator.clipboard.read();
     const item = items.find((i) => i.types.includes("image/png"));
     if (!item) return { ok: false, types: items.flatMap((i) => i.types) };
@@ -184,6 +208,11 @@ try {
     const view = new DataView(buf.buffer);
     return { ok: sigOk, size: buf.length, width: view.getUint32(16), height: view.getUint32(20) };
   });
+  let pngInfo = await readClipboardPng();
+  for (let waited = 0; !pngInfo.ok && waited < PNG_CLIPBOARD_TIMEOUT_MS; waited += PNG_CLIPBOARD_POLL_MS) {
+    await new Promise((r) => setTimeout(r, PNG_CLIPBOARD_POLL_MS));
+    pngInfo = await readClipboardPng();
+  }
   check("copy-png-clipboard-has-png", pngInfo.ok === true, `pngInfo=${JSON.stringify(pngInfo)}`);
   check("copy-png-nonzero-dims", pngInfo.ok && pngInfo.width > 0 && pngInfo.height > 0, `pngInfo=${JSON.stringify(pngInfo)}`);
 

@@ -36,6 +36,25 @@
  * first insert, which is boot noise this probe is not about and which
  * `boot_crash_surface_probe.js` owns. Both are reported separately so a real boot
  * regression is visible rather than swallowed.
+ *
+ * NOT JUDGED AT ALL: a template whose command the app GATES OFF (`when` returns
+ * false) — see the roster comment below. It is named in the output with its
+ * `requires` sentence, so the roster can shrink only out loud.
+ *
+ * ── A STANDING RED THIS PROBE CATCHES, WHICH IS NOT ITS OWN FAULT ───────────
+ * `demo-insert-video-v6` raises two console.errors the instant it is placed, with
+ * its SHIPPED defaults and no user input:
+ *   Video V6: failed to load source data:image/png;base64,… [object MediaError]
+ *   Video V6: play() rejected for data:image/png;base64,… NotSupportedError
+ * `plugins/demo/video_v6.js:45` defaults `src` to BLANK_SRC, a 1x1 PNG, and
+ * `web/videoV6Registry.js:44-51` hands it straight to a <video>, which refuses it
+ * (MediaError code 4) and then rejects the play(). The sibling widget already
+ * guards this exact case — `plugins/demo/video_v7.js:29-31`: "the overlay
+ * recognizes `data:image/…` as 'not yet sourced' … handing an image URI to a
+ * <video> would error" — and `render_gpu/gpu/video_registry.js:725` records the
+ * same hazard for the scrub path. Only V6 is missing the guard, and its own
+ * docblock (`plugins/demo/video_v6.js:40-44`) asserts the opposite, which is what
+ * hid it. The defect is in product code, not here; do not filter these two lines.
  */
 
 import { resolve, dirname } from "node:path";
@@ -53,13 +72,24 @@ const SETTLE_MS = 420;
 /** Boot is slow on a cold dep cache; this is the ceiling, not the expectation. */
 const BOOT_TIMEOUT_MS = 60000;
 
-const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+// HMR + watch OFF. Was `{ port: 0, open: false, host: "127.0.0.1" }`, i.e. both ON:
+// a file saved by anyone while this probe is mid-roster sends a full-reload, the page
+// throws its app away, and the very next `page.evaluate` reads `window.__powerrp_app`
+// as undefined. That is not a hypothesis — one gate run reported
+// `demo-preset-double-pendulum: threw while inserting: Cannot read properties of
+// undefined (reading 'commands')`, which no preset can cause and a vanished app object
+// explains exactly. tests/image_stack_live_probe.js and tests/filmstrip_live_probe.js
+// already carry this pair for the same stated reason ("a sibling agent's edit must not
+// reload the page mid-probe"); this probe is longer-running than either, so it is the
+// most exposed, and it was the one still missing them.
+const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null } });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
 const browser = await launchBrowser();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let inserted = 0;
+let withheldIds = [];   // ids the app gates OFF; named in the summary, never dropped in silence
 const dirty = [];      // [{id, errors}]
 const bootNoise = [];
 
@@ -78,13 +108,40 @@ try {
 
   // THE ROSTER, ASKED FOR RATHER THAN LISTED. Templates that arm the crosshair need a
   // canvas click to complete; the app knows which, so it is asked rather than guessed.
-  const templates = await page.evaluate(() => {
+  //
+  // AND IT IS ASKED WHETHER THE COMMAND MAY RUN, not only whether it exists. The
+  // filter was `/^demo-(patch|preset|insert)-/.test(c.id) && typeof c.run === "function"`
+  // — id and callability only — so it reached past every `when` gate in web/App.svelte
+  // and invoked entries the app deliberately refuses to offer a user. Concretely:
+  // `demo-insert-globe-map` is QUARANTINED (`when: () => false` + a `requires`
+  // sentence — the mechanism tests/map_quarantine_test.js pins, chosen so the palette
+  // can say WHY rather than hiding the row), and running it reproduced the very defect
+  // the quarantine withholds ("no map tiles are available to this renderer … NOT what
+  // the editor shows"). A probe that reports a withheld widget's known defect as an
+  // insertion failure is measuring something no user can reach.
+  //
+  // The gate is `core/commands.commandUnavailable`'s rule — `!!cmd.when && !cmd.when(app)`
+  // — applied in the page, and `requires` is RESOLVED through the same rule
+  // `commandUnavailableReason` uses (it MAY BE A FUNCTION of the app; reading the field
+  // raw renders a function's source text). Withheld entries are NAMED below, never
+  // silently dropped: a roster that shrinks without saying so is how "covers every
+  // template" stops being true.
+  const roster = await page.evaluate(() => {
     const a = window.__powerrp_app;
-    return a.commands.all()
-      .filter((c) => /^demo-(patch|preset|insert)-/.test(c.id) && typeof c.run === "function")
-      .map((c) => ({ id: c.id, title: c.title }));
+    const reason = (c) => (typeof c.requires === "function" ? c.requires(a) : c.requires) ?? null;
+    const all = a.commands.all()
+      .filter((c) => /^demo-(patch|preset|insert)-/.test(c.id) && typeof c.run === "function");
+    const withheld = all.filter((c) => !!c.when && !c.when(a));
+    return {
+      templates: all.filter((c) => !withheld.includes(c)).map((c) => ({ id: c.id, title: c.title })),
+      withheld: withheld.map((c) => ({ id: c.id, requires: reason(c) })),
+    };
   });
+  const { templates } = roster;
   console.log(`DEMO INSERT RUNTIME — ${templates.length} templates, each into a live editor\n`);
+  for (const w of roster.withheld)
+    console.log(`  --  ${w.id.padEnd(42)} WITHHELD by the app — requires ${w.requires ?? "(no reason declared)"}`);
+  if (roster.withheld.length) console.log("");
   if (bootNoise.length) console.log(`  (${bootNoise.length} pre-insert boot message(s), reported at the end)\n`);
 
   for (const t of templates) {
@@ -113,13 +170,14 @@ try {
       console.log(`  ok  ${t.id}`);
     }
   }
+  withheldIds = roster.withheld.map((w) => w.id);
   bucket = bootNoise;
 } finally {
   await browser.close();
   await server.close();
 }
 
-console.log(`\n${inserted} template(s) inserted, ${dirty.length} with console errors`);
+console.log(`\n${inserted} template(s) inserted, ${dirty.length} with console errors${withheldIds.length ? `, ${withheldIds.length} withheld by the app (${withheldIds.join(", ")})` : ""}`);
 if (bootNoise.length) {
   console.log(`\nBOOT-TIME messages (not this probe's subject, reported so they are not invisible):`);
   for (const b of [...new Set(bootNoise)].slice(0, 5)) console.log(`  ${b.slice(0, 160)}`);
