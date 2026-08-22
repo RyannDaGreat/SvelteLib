@@ -35,7 +35,7 @@
  * ── AND IT IS NOT THE SPEED WIN IT WAS EXPECTED TO BE. SAY SO. ────────────────
  * The hypothesis behind this module was that the PNG compression dominated the old
  * path. It does not. Measured per 1080p frame on a plain-HTTP LAN origin
- * (tests/browser_encode_measure_probe.js): render 29.8 ms (75%), PNG 6.4 ms (16%),
+ * (tests/browser_encode_measure.mjs): render 29.8 ms (75%), PNG 6.4 ms (16%),
  * upload 3.7 ms (9%). A wasm H.264 frame at the same size costs ~62 ms, and only
  * the worker's overlap with rendering keeps the whole pipeline within 8% of the
  * upload path (86.1 vs 92.8 ms/frame end to end). It WINS at small outputs, where

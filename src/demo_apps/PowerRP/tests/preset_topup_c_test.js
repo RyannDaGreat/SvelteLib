@@ -15,8 +15,9 @@
  *   (2) PIXEL DISTINCTNESS, INCLUDING THE UNTOUCHED WIDGET (ledger C-16), for
  *       the two materialBackdrop families (brightness_contrast, glitch) — full
  *       real renders on a software Skia surface (render_gpu/skia/node_render.js,
- *       the same backend cli/render.js uses), each family calibrated against its
- *       own measured closest pair.
+ *       the same backend cli/render.js uses), against TWO floors a pair may clear
+ *       either of (see MIN_MAX_ABS / MIN_LIT_MEAN below for why one metric cannot
+ *       do it) and ONE named, pinned known-thin pair.
  *
  *   (3) GLOBE_MAP IS HONESTLY PARTIAL, NOT SKIPPED. Its surface is fetched map
  *       TILES (async, URL-addressed, never document state — see the plugin's own
@@ -33,17 +34,25 @@
  *       if partial, pixel check — not the full picture a browser would show,
  *       and this file says exactly that rather than implying otherwise.
  *
- * THE RADIANS-VS-DEGREES TRAP (task brief, and worth restating because it is
- * genuinely inconsistent across this codebase, not a rule): rainy_window's and
- * metaballs' `lightAngle` (kind:"angle", display:"degrees") are STORED IN
- * RADIANS despite the identical schema declaration — grep finds
- * `LIGHT_ANGLE_DEFAULT = -Math.PI * 0.6` literal in both. globe_map's own
- * `lightAngle` (render_gpu/skia/atmosphere_shader.ATMOSPHERE_FILL_PARAMS) is
- * NOT that widget: its default is a plain `-35` and its packer computes
- * `(u.lightAngle * Math.PI) / 180` — i.e. DEGREES, matching the ordinary
- * `rotation`-row convention ("stored in raw DEGREES", core/properties.js:2129).
- * Section (3c) below pins this against the packer directly so a future
- * convention flip anywhere in this file is caught rather than silently wrong.
+ * THE RADIANS-VS-DEGREES TRAP IS A RULE, AND THE ROW DECLARES WHICH SIDE IT IS
+ * ON (core/properties.angleStorageUnit, pinned by tests/angle_units_test.js): a
+ * `kind:"angle"` row that ALSO declares `display:"degrees"` STORES RADIANS — the
+ * flag bridges the degree dial and nothing else — which is why rainy_window's,
+ * metaballs' and raycast_dither's `lightAngle` hold literal radians
+ * (`LIGHT_ANGLE_DEFAULT = -Math.PI * 0.6`). A BARE `kind:"angle"` row stores
+ * DEGREES, and globe_map's `lightAngle`
+ * (render_gpu/skia/atmosphere_shader.ATMOSPHERE_FILL_PARAMS) is one of those: a
+ * plain `-35` default, converted by its packer, matching the ordinary
+ * `rotation`-row convention ("stored in raw DEGREES", core/properties.js). So
+ * two widgets differ here because their ROWS differ, not because the codebase is
+ * inconsistent. Section (3c) below pins it against the real packer so a
+ * convention flip is caught rather than silently wrong.
+ *
+ * (This paragraph said the opposite — "genuinely inconsistent … not a rule", and
+ * that atmosphere's row was "identically declared" — until 31694d93 dropped
+ * `display:"degrees"` from atmosphere's row and wrote the rule down without
+ * touching this file. Recorded because the stale wording is still quoted in that
+ * commit's own message.)
  */
 
 import assert from "node:assert/strict";
@@ -58,21 +67,25 @@ import { renderToPng } from "../render_gpu/skia/node_render.js";
 import { imageDistance, litSetDistance, readPng } from "./imageDistinctness.js";
 
 let passed = 0;
-/** Command. Runs one check and prints its outcome (throws on failure). */
-function test(name, fn) {
-  fn();
+/** Command. Runs one check and prints its outcome (throws on failure). AWAITS `fn`,
+ *  and every call site awaits this: the async checks below used to be fired and
+ *  dropped, so their "ok" line and the closing "N tests passed" both printed BEFORE
+ *  the pixels were compared, and a real failure arrived after them as an unhandled
+ *  rejection — a red run whose log read green. */
+async function test(name, fn) {
+  await fn();
   passed++;
   console.log(`  ok  ${name}`);
 }
 
 // ── (1) the count floor ───────────────────────────────────────────────────────
-test("(1a) demo_brightness_contrast has >= 10 presets (R7-39)", () => {
+await test("(1a) demo_brightness_contrast has >= 10 presets (R7-39)", () => {
   assert.ok(brightnessContrastPlugin.presets.length >= 10, `${brightnessContrastPlugin.presets.length} presets`);
 });
-test("(1b) demo_glitch has >= 10 presets (R7-39)", () => {
+await test("(1b) demo_glitch has >= 10 presets (R7-39)", () => {
   assert.ok(glitchPlugin.presets.length >= 10, `${glitchPlugin.presets.length} presets`);
 });
-test("(1c) demo_globe_map has >= 10 presets (R7-39)", () => {
+await test("(1c) demo_globe_map has >= 10 presets (R7-39)", () => {
   assert.ok(globeMapPlugin.presets.length >= 10, `${globeMapPlugin.presets.length} presets`);
 });
 
@@ -131,6 +144,39 @@ async function renderGlitch(knobs) {
   return readPng(await renderToPng(scene, VIEW, { width: RENDER_W, height: RENDER_H, background: "#808080" }));
 }
 
+// TWO WAYS A PAIR CAN BE VISIBLY DIFFERENT, BOTH MEASURED, EITHER ONE ENOUGH.
+// This replaces a single maxAbs bound of 6, which was wrong in BOTH directions on
+// this very roster (measured, both families):
+//   - it admitted "(widget defaults)" vs "Punch" at maxAbs 7 — ONE code value of
+//     headroom, calibrated by the family's own thinnest pair rather than against
+//     it, on the weakest metric in this family of suites;
+//   - and maxAbs alone is decided by ONE pixel, so it can never say whether the
+//     rest of the frame moved — while a lit-set MEAN alone (what every sibling
+//     suite gates on) false-REDS "Punch" vs "Punch, Hue Locked", the pair whose
+//     entire point is a chroma-only difference: maxAbs 30, lit-set mean just 3.26.
+// So: a LARGE difference SOMEWHERE (maxAbs — a localized or chroma-only change) OR
+// a SMALL difference EVERYWHERE (lit-set mean — a whole-frame tone regrade). The
+// derivable floor is still DISPLAYABLE_CODE_VALUE = 1 (R6-25.3); how far apart is
+// "worth a separate row" is the judgement, and these two are calibrated against the
+// rosters' own pairs: the closest PASSING pair clears at 1.25x (brightness_contrast:
+// "Punch, Hue Locked" vs "Silver Gelatin", maxAbs 23 / lit 7.52) and 7.95x (glitch).
+const MIN_MAX_ABS = 20;
+const MIN_LIT_MEAN = 6;
+
+// THE ONE PAIR THAT CLEARS NEITHER FLOOR, NAMED HERE RATHER THAN ADMITTED BY A
+// LOWER BOUND. "Punch" is {smooth, brightness 0, contrast 1.6} and the widget's own
+// untouched default is {smooth, 0, 1.4} — one knob, 0.2 apart — so it renders at
+// maxAbs 7 / lit-set mean 4.65 from the picture an author gets for FREE by placing
+// the widget and touching nothing: a near-dead row in exactly C-16's sense. Its fix
+// belongs in plugins/demo/brightness_contrast.js and must move BOTH "Punch" and
+// "Punch, Hue Locked" (whose own description makes it the A/B partner of Punch's
+// exact curve), so it is RECORDED here, not done here. Moving the DEFAULT instead is
+// not available: the schema's 1.4 is load-bearing for byte-compatibility with every
+// pre-fill-material document (plugins/demo/brightness_contrast.js says so).
+// PINNED BOTH WAYS below: an entry that no longer fails is itself a hard error, so
+// this list cannot outlive the defect it records.
+const KNOWN_THIN_PAIRS = ["(widget defaults) <-> Punch"];
+
 /**
  * Near-pure function (renders via a Skia surface; deterministic at the frozen
  * editor/CLI clock). Runs the pairwise distinctness check (ledger C-16) for one
@@ -140,36 +186,41 @@ async function renderGlitch(knobs) {
  * @param {string} label - family name, for assertion messages
  * @param {Array<{name:string, props:object}>} presets
  * @param {(knobs: object|null) => Promise<object>} render - the family's render rig
- * @param {number} minSeparation - calibrated floor, in maxAbs code values
+ * @param {string[]} knownThin - "A <-> B" pairs recorded as known-thin; each MUST still fail
  */
-async function checkDistinctness(label, presets, render, minSeparation) {
+async function checkDistinctness(label, presets, render, knownThin) {
   const blank = await render(null);
   const frames = [{ name: "(widget defaults)", png: await render({}) }];
   for (const preset of presets) frames.push({ name: preset.name, png: await render(preset.props) });
 
+  const stillThin = new Set(knownThin);
   let narrowest = null;
   const tooClose = [];
   for (let i = 0; i < frames.length; i++)
     for (let j = i + 1; j < frames.length; j++) {
       const d = imageDistance(frames[i].png, frames[j].png);
       const lit = litSetDistance(frames[i].png, frames[j].png, blank);
-      if (!narrowest || d.maxAbs < narrowest.d.maxAbs) narrowest = { a: frames[i].name, b: frames[j].name, d, lit };
-      if (d.maxAbs < minSeparation) tooClose.push(`${frames[i].name} <-> ${frames[j].name} (maxAbs ${d.maxAbs}, lit-set mean ${lit.meanAbs.toFixed(3)})`);
+      // How comfortably the pair clears whichever floor it clears best: < 1 is a failure.
+      const margin = Math.max(d.maxAbs / MIN_MAX_ABS, lit.meanAbs / MIN_LIT_MEAN);
+      if (!narrowest || margin < narrowest.margin) narrowest = { a: frames[i].name, b: frames[j].name, d, lit, margin };
+      if (margin >= 1) continue;
+      const pair = `${frames[i].name} <-> ${frames[j].name}`;
+      if (stillThin.delete(pair)) continue; // recorded above, with its reason and its fix
+      tooClose.push(`${pair} (maxAbs ${d.maxAbs}, lit-set mean ${lit.meanAbs.toFixed(3)})`);
     }
   assert.deepEqual(tooClose, [],
-    `${label}: these render as the same picture: ${tooClose.join("; ")}. A preset that moves no pixel is a dead row — if one side is "(widget defaults)", move the DEFAULT.`);
-  console.log(`      ${label} narrowest: ${narrowest.a} vs ${narrowest.b} — maxAbs ${narrowest.d.maxAbs}, lit-set mean ${narrowest.lit.meanAbs.toFixed(3)} over ${(100 * narrowest.lit.coverage).toFixed(1)}% of the frame`);
+    `${label}: these render as the same picture: ${tooClose.join("; ")}. A preset that moves no pixel is a dead row — if one side is "(widget defaults)", move the PRESET (the default is what an author gets for free).`);
+  assert.deepEqual([...stillThin], [],
+    `${label}: KNOWN_THIN_PAIRS lists ${[...stillThin].join("; ")}, which now clear the floors — delete the entry (a pinned defect that has been fixed is a stale exception, and this file must not keep teaching one).`);
+  console.log(`      ${label} closest to failing: ${narrowest.a} vs ${narrowest.b} — maxAbs ${narrowest.d.maxAbs}, lit-set mean ${narrowest.lit.meanAbs.toFixed(3)} over ${(100 * narrowest.lit.coverage).toFixed(1)}% of the frame (${narrowest.margin.toFixed(2)}x the floors)`);
 }
 
-// CALIBRATED per family (R6-25.3: the derivable floor is DISPLAYABLE_CODE_VALUE =
-// 1; "far enough to be worth a separate row" is measured against each family's own
-// closest pair, with headroom — the rainy_window/raycast_dither precedent's shape).
 await test("(2a) every brightness_contrast preset renders distinguishably, defaults included", async () => {
-  await checkDistinctness("brightness_contrast", brightnessContrastPlugin.presets, renderBrightnessContrast, 6);
+  await checkDistinctness("brightness_contrast", brightnessContrastPlugin.presets, renderBrightnessContrast, KNOWN_THIN_PAIRS);
 });
 
 await test("(2b) every glitch preset renders distinguishably, defaults included", async () => {
-  await checkDistinctness("glitch", glitchPlugin.presets, renderGlitch, 6);
+  await checkDistinctness("glitch", glitchPlugin.presets, renderGlitch, []);
 });
 
 // ── (3) globe_map — op-shape checks (the globe_map_test.js precedent) + a real
@@ -182,19 +233,20 @@ function globeState(props, w = GLOBE_RENDER_W, h = GLOBE_RENDER_H) {
   return { ...globeMapPlugin.defaults, w, h, ...props };
 }
 
-// The six rows this topup ADDED (the pre-existing six — Blue Marble, Daylight
+// The five rows this topup ADDED (the pre-existing six — Blue Marble, Daylight
 // Globe, Hybrid, Continental, City, Terrain — are untouched and out of (3b)'s
-// scope; see that test's own comment for why).
+// scope; see that test's own comment for why). 6 + 5 = the 11 rows
+// shipped, against (1c)'s floor of 10.
 const NEW_GLOBE_PRESET_NAMES = ["Night Lights", "Atlantic Disc", "Sepia Atlas", "Neon Wireframe", "Ice Planet"];
 
-test("(3a) every new globe_map preset writes only declared keys (globe_map_test.js's own check, re-run over the topped-up table)", () => {
+await test("(3a) every new globe_map preset writes only declared keys (globe_map_test.js's own check, re-run over the topped-up table)", () => {
   const declared = new Set(Object.keys(globeMapPlugin.defaults));
   for (const preset of globeMapPlugin.presets)
     for (const key of Object.keys(preset.props))
       assert.ok(declared.has(key), `preset "${preset.name}" writes undeclared key "${key}"`);
 });
 
-test("(3b) every NEW (topped-up) preset's emitted op tree differs from every OTHER preset's, tiles aside", () => {
+await test("(3b) every NEW (topped-up) preset's emitted op tree differs from every OTHER preset's, tiles aside", () => {
   // emit() with no render context takes the camera-free tile-plan fallback
   // (tilePlan's own docblock: "the export path"), so two calls with the SAME
   // state are deterministic — this compares emitted STRUCTURE (JSON of the op
@@ -226,10 +278,12 @@ test("(3b) every NEW (topped-up) preset's emitted op tree differs from every OTH
   assert.deepEqual(dupes, [], `identical emitted op trees: ${dupes.join("; ")}`);
 });
 
-test("(3c) lightAngle is read as literal DEGREES by the atmosphere packer (the radians-vs-degrees trap, pinned against the real packer, not restated)", () => {
-  // packAtmosphere's own formula: angle = (lightAngle * PI) / 180. Two Night
-  // Lights-style values, checked against that formula directly rather than a
-  // transcribed expectation, so a convention flip in the shader is caught here.
+await test("(3c) lightAngle is read as literal DEGREES by the atmosphere packer (the radians-vs-degrees trap, pinned against the real packer, not restated)", () => {
+  // atmosphere's `lightAngle` is a BARE kind:"angle" row, so it stores DEGREES
+  // and the packer converts (via core/properties.schemaAngleRadians, which reads
+  // the row rather than restating the unit): angle = (lightAngle * PI) / 180.
+  // Checked against that identity directly rather than a transcribed
+  // expectation, so a convention flip in the shader is caught here.
   for (const [lightAngle, lightHeight] of [[-170, 0.35], [-35, 0.35], [-90, 0.4], [-60, 0.4]]) {
     const u = packAtmosphere({ cx: 0, cy: 0, halfW: 100, halfH: 100, glowColor: "#ffffff", rimStrength: 1, rimPower: 3, haloWidth: 0.1, nightAmount: 0.7, limbDarken: 0.3, lightAngle, lightHeight });
     const angle = (lightAngle * Math.PI) / 180;
@@ -251,7 +305,7 @@ test("(3c) lightAngle is read as literal DEGREES by the atmosphere packer (the r
   }
 });
 
-test("(3d) atmosphere params appear exactly when a globe is showing, for every preset (viewMode/style/zoom control this, not a hardcoded list)", () => {
+await test("(3d) atmosphere params appear exactly when a globe is showing, for every preset (viewMode/style/zoom control this, not a hardcoded list)", () => {
   for (const preset of globeMapPlugin.presets) {
     const s = globeState(preset.props);
     const ops = globeMapPlugin.emit(s);

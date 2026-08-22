@@ -172,6 +172,13 @@ export const MATERIAL_PRESETS = {
 // Human display names for the Tools-area section titles ("Sky material presets").
 // Fill materials carry no `label` in their descriptor; stroke materials do, but a
 // single map keeps the two slots consistent and is where a new material's name goes.
+// IT MUST COVER PRESET_SECTION_MATERIAL_IDS, and for a while it did not: the
+// widget-authority merge (WIDGET_PRESET_SOURCES, below) gave NINE materials a preset
+// section without giving them a name, and the curated table's own metal/metalStamp
+// never had one either — so web/app.svelte.js titled those sections from the raw id
+// ("rainy_window fill presets", "corkboardThumbtack fill presets"). These are
+// MATERIAL names, deliberately shorter than the demo widget's title ("Glitch", not
+// "Digital Glitch"); the section already says which slot it is.
 const MATERIAL_DISPLAY_NAMES = {
   sky: "Sky",
   mandelbrot: "Mandelbrot",
@@ -180,6 +187,17 @@ const MATERIAL_DISPLAY_NAMES = {
   glitch: "Glitch",
   brush: "Brush",
   wavy: "Wavy",
+  metal: "Metal",
+  metalStamp: "Metal Stamp",
+  glass: "Glass",
+  metaballs: "Metaballs",
+  corkboard: "Corkboard",
+  corkboardThumbtack: "Thumbtack",
+  frosted: "Frosted Glass",
+  rainy_window: "Rainy Window",
+  raycast_dither: "Raycast Dither",
+  lens_flare: "Lens Flare",
+  brightness_contrast: "Brightness / Contrast",
 };
 
 /**
@@ -229,6 +247,13 @@ const WIDGET_PRESET_SOURCES = {
   raycast_dither: "demo_raycast_dither", sky: "sky", lens_flare: "demo_lens_flare",
   comic: "demo_comic", mandelbrot: "demo_mandelbrot", brightness_contrast: "demo_brightness_contrast",
 };
+
+// Every material id that can surface a preset SECTION in the Tools pane: the
+// curated table plus the widget-authority table. Exported so
+// tests/misc-presets_fix_test.js can prove MATERIAL_DISPLAY_NAMES covers it —
+// a missing entry is invisible in every other check, because materialDisplayName
+// falls back to the id and the section renders, just wearing an identifier.
+export const PRESET_SECTION_MATERIAL_IDS = [...new Set([...Object.keys(MATERIAL_PRESETS), ...Object.keys(WIDGET_PRESET_SOURCES)])];
 
 /**
  * Query (reads the material registries). The demo WIDGET's presets translated

@@ -732,9 +732,10 @@ export function pdfRasterCacheBytes() {
 
 /**
  * Pure function. Picks the best already-landed scale out of `cachedScales` for a
- * request at `wantScale` — the INTERACTION-LOD choice, factored out of the two
- * lookups below so the policy is stated once, testable in bare node, and identical
- * for whole pages and regions.
+ * request at `wantScale` — the INTERACTION-LOD choice, factored out of the cache
+ * lookup below so the policy is stated once and is testable in bare node. Any
+ * second lookup that wants a nearest scale must come through here too; the
+ * region twin that did not is why this sentence names the rule rather than a count.
  *
  * THE RULE IS "NEAREST, PREFERRING SHARPER". A drag is a continuous zoom sweep, so
  * the wanted bucket is usually one or two steps off something resident. Ties and
@@ -748,12 +749,12 @@ export function pdfRasterCacheBytes() {
  * @param {number[]} cachedScales - scales already resident for this page
  * @returns {number|null} the scale to draw, or null when nothing is cached
  *
- * @example bestCachedScale(2.0, [1.0, 3.0]) // 3 (equidistant in log space → the sharper one)
+ * @example bestCachedScale(2.0, [1.0, 4.0]) // 4 (EQUIDISTANT in log space → the sharper one: |ln(1/2)| = |ln(4/2)|)
  * @example bestCachedScale(2.0, [1.9, 4.0]) // 1.9 (much closer than 4)
  * @example bestCachedScale(2.0, []) // null (nothing resident — caller draws a placeholder)
  *
- * (Declared above its two callers; see pdfPageRasterRefForDisplay at the end of
- * this section for THE seam the widgets actually call.)
+ * (Declared above its caller; see pdfPageRasterRefForDisplay at the end of this
+ * section for THE seam the widgets actually call.)
  */
 export function bestCachedScale(wantScale, cachedScales) {
   if (!(wantScale > 0) || cachedScales.length === 0) return null;
@@ -765,7 +766,7 @@ export function bestCachedScale(wantScale, cachedScales) {
     // `<=` is the tie-break: equal distance keeps the LARGER scale, because the
     // loop meets scales in ascending order only by accident and a later equal
     // candidate is the bigger one whenever the list is sorted that way. Sorting is
-    // done by the callers, which own the map iteration order.
+    // done by the caller, which owns the map iteration order.
     if (distance <= bestDistance) { bestDistance = distance; best = scale; }
   }
   return best;
@@ -803,34 +804,33 @@ export function pdfBestCachedPageRef(src, page, wantScale) {
   return { ref, scale };
 }
 
+// NO "BEST CACHED REGION" LOOKUP, DELIBERATELY. One existed here — the region
+// twin of pdfBestCachedPageRef — and it had NO caller: pdf_display asks only for
+// whole-page rasters when a gesture is live, and the docblock naming it as the
+// caller was simply wrong. It also could not have been correct if wired: it
+// carried its own nearest-scale loop with a strict `<`, so a tie kept whichever
+// entry Map iteration reached first rather than the sharper raster, contradicting
+// bestCachedScale's "identical for whole pages and regions". A region raster is
+// keyed by the VISIBLE WINDOW, which moves every frame of a pan, so a useful
+// version has to ignore the sub-rect and return the region's own sourceRect for
+// the caller to place. If that fallback is ever wanted, write it THROUGH
+// bestCachedScale so the policy stays stated once.
+
 /**
- * Query (reads the cache; near-pure, same LRU/keep-set touch as above). The best
- * already-rasterized REGION ref for (src, page) — any sub-rect, any scale.
+ * THE INTERACTION-LOD PLACEHOLDER — the flat fill a PDF-family widget draws while a
+ * gesture is live and NOTHING is resident for that page.
  *
- * SUB-RECT IS NOT MATCHED, AND THAT IS THE POINT: a region raster is keyed by the
- * visible window, which changes every frame of a pan, so requiring the same window
- * would miss on essentially every drag frame and make this function useless. The
- * caller (pdf_display) uses this only as a fallback BEHIND the whole-page raster
- * and only while a gesture is live, where the alternative is a placeholder box.
- * Returns the region's own sourceRect so the caller can place it correctly rather
- * than assuming it covers the page.
+ * The user asked "Why don't we just make them white rectangles?", and this is that
+ * — but PAPER, not white. It is the same value pdf_packet already ships as its
+ * `paper` default, so an un-landed sheet reads as a blank page of the same stock as
+ * its neighbours instead of a bright white hole punched in the fan. A literal
+ * #ffffff would be the one colour guaranteed to flash against every real page,
+ * since a scanned or rendered PDF page is never pure white at its edges.
+ *
+ * It is shared here rather than per-plugin so the three widgets cannot drift into
+ * three different "loading" colours for one gesture.
  */
-export function pdfBestCachedRegionRef(src, page, wantScale) {
-  const prefix = `${src}|${page}|`;
-  let best = null;
-  let bestDistance = Infinity;
-  for (const [key, entry] of regions) {
-    if (!key.startsWith(prefix) || entry.status !== "ready") continue;
-    const scale = Number(key.slice(key.lastIndexOf("|") + 1));
-    if (!(scale > 0)) continue;
-    const distance = Math.abs(Math.log(scale / wantScale));
-    if (distance < bestDistance) { bestDistance = distance; best = entry; }
-  }
-  if (!best) return null;
-  best.lastUsed = ++useSeq;
-  requestedSinceTrim.add(best.ref);
-  return { ref: best.ref };
-}
+export const PDF_PLACEHOLDER_PAPER = "#fbfaf7";
 
 /**
  * Command (near-pure: idempotent) OR Query, depending on `interactive` — THE ONE
@@ -861,22 +861,6 @@ export function pdfBestCachedRegionRef(src, page, wantScale) {
  * @example // dragging, with 1.9 already resident:
  * @example //   pdfPageRasterRefForDisplay(src, 1, 2.0, false) -> "pdfpage:<src>:1:1.9" (requests nothing)
  */
-/**
- * THE INTERACTION-LOD PLACEHOLDER — the flat fill a PDF-family widget draws while a
- * gesture is live and NOTHING is resident for that page.
- *
- * The user asked "Why don't we just make them white rectangles?", and this is that
- * — but PAPER, not white. It is the same value pdf_packet already ships as its
- * `paper` default, so an un-landed sheet reads as a blank page of the same stock as
- * its neighbours instead of a bright white hole punched in the fan. A literal
- * #ffffff would be the one colour guaranteed to flash against every real page,
- * since a scanned or rendered PDF page is never pure white at its edges.
- *
- * It is shared here rather than per-plugin so the three widgets cannot drift into
- * three different "loading" colours for one gesture.
- */
-export const PDF_PLACEHOLDER_PAPER = "#fbfaf7";
-
 export function pdfPageRasterRefForDisplay(src, page, wantScale, interactive = true) {
   if (interactive) {
     ensurePdfPageRasterized(src, page, wantScale);

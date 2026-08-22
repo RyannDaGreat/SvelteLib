@@ -32,43 +32,37 @@
  * capture to land a non-empty `capture` ref, then screenshot the canvas region
  * the widget now renders into.
  *
- * ── A MEASURED HOST/HEADLESS-CHROME LIMITATION, NOT A PRESET DEFECT ─────────
- * Under this harness the capture reliably TIMES OUT (web/html2image.js's own
- * 15s CAPTURE_TIMEOUT_MS) on every preset, INCLUDING the widget's own shipped
- * DEFAULT_HTML — so this is provably not something the thirteen preset sources
- * did wrong. Isolated with a standalone repro (`window.name`/CDP-level polling
- * of a sandboxed srcdoc child frame's own requestAnimationFrame counter, no app
- * code involved): a `sandbox="allow-scripts"` iframe positioned
- * `position:fixed; left:-Npx` (ANY off-viewport negative offset,
- * web/html2image.js's own offscreen-not-display-none technique) gets exactly
- * ONE requestAnimationFrame tick and then the compositor stops scheduling more
- * — under BOTH new-headless and old-headless ("shell") Chrome alike, and
- * independent of `visibility`, `opacity`, `pointer-events` or `z-index` (all
- * tested; none change it). The SAME iframe ticks normally (5/5) the instant it
- * is positioned on-screen, even at opacity 0. web/html2image.js's
- * captureDocument() report() path is gated behind
- * `document.fonts.ready.then(() => requestAnimationFrame(() => requestAnimationFrame(finish)))`
- * — TWO rAF ticks — so an off-viewport frame that gets only one tick can never
- * reach `finish()`, and the postMessage handshake this file's parent listens
- * for never arrives; CAPTURE_TIMEOUT_MS is what finally reports it.
- * THIS IS OUTSIDE THIS TASK'S FILE OWNERSHIP (plugins/html2image.js +
- * tests/html2image_presets_test.js + this probe only — web/html2image.js is a
- * sibling file this brief does not grant write access to) and is a pre-existing
- * property of the capture mechanism itself, unrelated to preset content: ANY
- * capture attempted under this Puppeteer/headless-Chrome harness — including
- * one driven by hand with the widget's own default card — hits it. A real
- * (non-headless, non-Puppeteer) browser is not known to reproduce this; nothing
- * in Chrome's docs promises rAF for off-viewport compositor layers, and this
- * harness is the first place in the repo that has ever driven this capture
- * path end-to-end.
- * SO: the mechanism (insert -> write -> select -> real command -> asset write)
- * is exercised for real below and will report its true, honest outcome — this
- * file does not fake or skip past a timeout. If the environment this runs in
- * does not hit the rAF stall (a different Chrome build, a fix upstream, or a
- * future change to web/html2image.js's offscreen technique), the pairwise
- * litSetDistance checks below are the real pixel proof; if it DOES hit the
- * stall, the failures below are that measured limitation surfacing honestly,
- * not a false claim of pixel-verified presets.
+ * ── THE OFF-VIEWPORT rAF STALL IS FIXED; THIS IS A REAL PIXEL GATE ─────────
+ * This header used to say that every capture under this harness "reliably TIMES
+ * OUT" on web/html2image.js's 15 s CAPTURE_TIMEOUT_MS, that the stall was a
+ * Puppeteer/headless property, that "a real browser is not known to reproduce
+ * this", and therefore that the failures below should be read as an honest
+ * environment limitation rather than a defect. THAT DOCTRINE WAS OBSOLETE FIVE
+ * MINUTES AFTER IT WAS WRITTEN and the last clause of it was never true.
+ * e53112a6 fixed the CAUSE: the capture frame was positioned `left: -20000px`, and
+ * an OFF-VIEWPORT frame receives exactly ONE requestAnimationFrame tick before the
+ * compositor stops scheduling it, while captureDocument's report path needs TWO
+ * (fonts.ready -> rAF -> rAF). The frame now sits at the origin under
+ * `visibility: hidden; opacity: 0`, which ticks — measured 10/10 against 1/10 for
+ * both `left:-20000px` and `clip-path: inset(100%)`. Offscreen-frame throttling is
+ * ORDINARY compositor behaviour, so the old positioning was a latent defect in real
+ * editors too; "not known to reproduce" was reasoning standing in for a measurement.
+ * SO THE PAIRWISE PIXEL CHECKS BELOW ARE THE REAL GATE, and a capture that times out
+ * here is a REGRESSION to be fixed, never this file's stated limitation.
+ *
+ * ── A BOOT THAT CRASHED IS NOT A PRESET FAILURE, AND THIS PROBE USED TO CONFLATE
+ *    THEM. `window.__powerrp_app` exists well before the app works — it is set on the
+ * store, not on a painted frame. On a COLD `node_modules/.vite`, one run had the dep
+ * optimizer break a dynamic import ("Skia/WebGL init failed: Failed to fetch
+ * dynamically imported module ... @pdf-lib_fontkit.js", painted IN the splash) and
+ * this probe still scored "capture-html ran without throwing" and "capture wrote a
+ * non-empty asset ref" as PASSES while all fourteen screenshots were byte-identical
+ * (md5 acd42019...) — a dead host surfacing as thirteen pairwise-distinguishability
+ * reds. So the sweep now starts behind the same gate tests/prod_boot_probe.js
+ * states: `#boot-splash` is removed at the FIRST REAL CANVAS PAINT and `failed` is a
+ * one-way latch, so the splash SURVIVING with crash text is a crash even if a frame
+ * arrives later. A crashed boot throws the splash's own sentence instead of measuring
+ * pixels that mean nothing.
  *
  * ISOLATION (the asset_ux_probe.js rule, the probe.jpg incident): a throwaway
  * project directory (mkdtemp), a throwaway backend on an ephemeral port, a
@@ -188,6 +182,25 @@ try {
   }, PROJECT);
   await page.goto(`${pageBase}/`, { waitUntil: "networkidle0" });
   await page.waitForFunction(() => !!window.__powerrp_app, { timeout: BOOT_TIMEOUT_MS });
+  // THE BOOT-SUCCESS GATE — see this file's header. The splash is `position: fixed;
+  // inset: 0` and is REMOVED at the first real canvas paint, so its absence is the
+  // only honest "the app is up"; `data-failed="1"` is the one-way crash latch.
+  // Resolving on EITHER means a crash is reported the moment it is decided rather
+  // than after the full budget.
+  const boot = await page.waitForFunction(
+    () => {
+      const s = document.getElementById("boot-splash");
+      if (s === null) return { painted: true, text: "" };
+      if (s.getAttribute("data-failed") === "1") return { painted: false, text: s.innerText || s.textContent || "" };
+      return false;
+    },
+    { timeout: BOOT_TIMEOUT_MS, polling: 250 },
+  ).then((h) => h.jsonValue()).catch(() => ({ painted: false, text: "the first frame never painted and the splash never reported a crash" }));
+  // THROWN, not pushed onto `failures`: every check after this one would be measuring
+  // a dead page, and thirteen meaningless reds is precisely the report this gate
+  // exists to stop being produced.
+  if (!boot.painted) throw new Error(`PowerRP did not boot — the pixel checks below would be meaningless. Splash said: ${JSON.stringify(boot.text.replace(/\s+/g, " ").slice(0, 400))}`);
+  console.log("  ok   the boot splash lifted — the first frame painted");
   await new Promise((r) => setTimeout(r, BOOT_MS));
   const bootErrors = errors.length;
   if (bootErrors) console.log(`  (${bootErrors} console error(s) already present at boot — treated as baseline noise, not this probe's failure)`);

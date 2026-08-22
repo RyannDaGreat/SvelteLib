@@ -59,9 +59,22 @@
  * never pointed at. That is the same contract every other kind has; it is written
  * down because "why didn't my text change?" is the question a font variable
  * invites.
+ *
+ * ── THE KIND IS THE EVALUATOR'S ANSWER TOO, AND FOR A ROUND IT WAS NOT ───────
+ * A variable's declared kind decides what its stored STRING means. That sounds
+ * obvious and it was not implemented: `core/expressions.js` collected every
+ * non-hex string variable as a NUMBER equation regardless of kind, so the very
+ * binding this section describes — a Font row bound to `= note_font`, with
+ * `note_font` holding "jetbrains-mono" — reported *"= expression result 0 is not
+ * a valid string value"*, because the font id was parsed as `jetbrains - mono`.
+ * The kind map is now threaded into `evaluateState` (through
+ * `web/cameraFrame.evaluationAt`, the one seam every pixel consumer reaches), and
+ * `VAR_KIND_RESULT` below is the other half: which result an `=` equation in each
+ * kind must produce.
  */
 
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
+import { VEC2_ROW_KIND } from "./vector_values.js";
 
 /**
  * Pure function. The `select` row aspects a FONT-kind variable's editor needs —
@@ -132,6 +145,42 @@ export const VAR_KIND_ZEROS = {
 };
 
 /**
+ * THE EQUATION RESULT KIND each variable kind declares — the `resultMatchesKind`
+ * vocabulary (core/expressions.js), keyed by VAR_KINDS member.
+ *
+ * ── WHY THIS TABLE EXISTS AT ALL ─────────────────────────────────────────────
+ * A variable slot used to be numeric BY FIAT: every string under `state.vars`
+ * was collected as a NUMBER equation, because a variable could only ever be a
+ * number. Kinds ended that, and the fiat then produced the user's own bug report
+ * — a Font row bound to `= note_font`, where `note_font` is a font variable
+ * holding "jetbrains-mono", showed *"expression result 0 is not a valid string
+ * value"*: the font id was parsed as the expression `jetbrains - mono`, failed,
+ * and fell back to 0. So the DECLARATION, not the value, decides both halves —
+ * whether a string is an equation at all (`isVarEquation(value, kind)`), and
+ * what its result must be (this table).
+ *
+ * ── FONT IS "string", NOT "select", AND THAT IS DELIBERATE ───────────────────
+ * A font variable's ROW is a select over `fontVarRowAspects().options`, but the
+ * roster is registered at RUNTIME (`registerFontFamily`), so validating an
+ * equation's result against it would refuse a dynamically-loaded face in the
+ * bare-node CLI renderer, where nothing has registered it yet. The widget's own
+ * Font row is typed "string" for the same reason (it has no PROPS entry and its
+ * default is a non-hex string), so this keeps the variable and the row it feeds
+ * on identical terms rather than making the variable stricter than its consumer.
+ *
+ * @example VAR_KIND_RESULT.color // "color"
+ * @example VAR_KIND_RESULT.text // "string" (a text variable's equation must produce a string)
+ */
+export const VAR_KIND_RESULT = {
+  number: "number",
+  vec2: VEC2_ROW_KIND,
+  color: "color",
+  boolean: "boolean",
+  text: "string",
+  font: "string",
+};
+
+/**
  * WHAT EACH KIND IS FOR, and — where there is one — the boundary a user would
  * otherwise discover by being confused. Shown in the picker's tooltip.
  *
@@ -140,7 +189,7 @@ export const VAR_KIND_ZEROS = {
  */
 export const VAR_KIND_NOTES = {
   number: "A plain number — the default, and what every variable was before kinds existed. Scrub it, type it, or bind it to an equation.",
-  vec2: "A 2-vector — an [x, y] pair edited as two boxes plus a drag pad. Read it whole (= origin) or by component (= origin.x), and compose it with vector algebra: a widget bound to = origin + offset moves when either does.",
+  vec2: "A 2-vector — an [x, y] pair edited as two boxes plus a drag pad. Read it whole (= origin) into another 2-vector slot, or by component (= origin.x) into a number one, and compose it with vector algebra: an X bound to = (origin + offset).x moves when either does.",
   color: "A colour, edited with the swatch picker. Bind a widget's fill to it (= brandColor) to recolour a whole deck from one row.",
   boolean: "True or false. Useful driven through an equation — a widget's Visible row bound to = showNotes turns a whole layer on and off.",
   text: "A string. Bind a text widget's content to it (= caption) to write one line once and show it on many slides.",
@@ -303,7 +352,7 @@ export function withVarKindRenamed(varKinds, name, newName) {
  *     { varKinds: { brand: 'color' }, dropped: [] }
  *     >>> // an unknown kind is dropped, and SAYS SO
  *     >>> repairedVarKinds({brand: "quaternion"}).dropped[0].reason
- *     'not one of number, color, boolean, text, font'
+ *     'not one of number, vec2, color, boolean, text, font'
  *     >>> // a map that is not an object is discarded whole
  *     >>> repairedVarKinds("nonsense").varKinds
  *     {}

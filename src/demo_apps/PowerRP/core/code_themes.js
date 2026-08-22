@@ -242,8 +242,9 @@ export const CODE_PALETTES = {
     property: "#89b4fa",
     punct: "#9399b2", // <- the theme's overlay/punctuation tone
   },
-  // PROVENANCE: github.com/ayu-theme/vscode-ayu,
-  // themes/ayu-dark-color-theme.json @444ef929. MIT.
+  // PROVENANCE: github.com/ayu-theme/vscode-ayu, ayu-dark.json @444ef929 (the file
+  // is at the REPO ROOT at that commit; `themes/ayu-dark-color-theme.json`, which
+  // this line used to cite, is a 404 there — verified by fetching both). MIT.
   ayuDark: {
     bg: "#10141c",
     gutter: "#404758", // <- published #5a6378a6, composited over this theme's bg

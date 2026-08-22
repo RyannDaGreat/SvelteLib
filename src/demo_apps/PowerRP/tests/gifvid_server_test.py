@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["rp==0.1.1421", "fire==0.7.1"]
 # ///
 """
 ANIMATED GIFs ARE VIDEOS — the server half (workstream GIFVID_).
@@ -30,8 +30,15 @@ Deterministic fixtures: tests/fixtures/gifvid_animated.gif (4 frames, 11x7) and
 tests/fixtures/gifvid_still.gif (1 frame, 11x7) — under 1KB each, generated with
 ffmpeg's `testsrc`.
 
-Run (exit code gated):
-    /opt/homebrew/opt/python@3.10/bin/python3.10 tests/gifvid_server_test.py
+Run (exit code gated), the same command tests/run_all.mjs uses:
+    uv run tests/gifvid_server_test.py
+
+The PEP 723 block above is not decoration: `uv run` is the ONLY thing that reads
+it, and this file imports server/server.py, which imports `fire` at module scope.
+An empty `dependencies` list here is a ModuleNotFoundError at this file's own
+`import server` below -- the whole suite red for an environment reason, reported
+identically to a real defect (run_all.mjs:277 records that exact incident for the
+other four python suites).
 """
 
 import http.client

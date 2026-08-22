@@ -103,13 +103,24 @@
  * definition yields the same diagram in every copy of the app. It is NOT sound
  * here, because the "engine" is the whole host browser — its layout, its font
  * stack, its `@media` state. So this widget stores the RESULT, and the mermaid
- * pattern is deliberately not reused. It also means the CLI renders this widget
- * perfectly (an image is an image), which mermaid and latex cannot do.
+ * pattern is deliberately not reused.
  *
  * ── EXPORTS: NOTHING NEW, BY CONSTRUCTION ───────────────────────────────────
  * emit() returns a plain `image()` op on the stored asset ref, so the GPU
- * compositor, the PDF backend, the SVG backend and cli/render.js all draw it with
- * ZERO new code — it is raster ink everywhere, exactly like plugins/image.js.
+ * compositor, the PDF backend and the SVG backend all draw it with ZERO new code —
+ * it is raster ink everywhere, exactly like plugins/image.js.
+ *
+ * THE BARE-NODE CLI IS THE ONE EXCEPTION, AND THIS SECTION USED TO DENY IT. It
+ * claimed "the CLI renders this widget perfectly (an image is an image), which
+ * mermaid and latex cannot do", and named cli/render.js among the backends that draw
+ * it. MEASURED FALSE: bare node has no `createImageBitmap`, so `image` is a member of
+ * cli/render.js's own MEDIA_OPS set and a captured widget prints "1 media op(s) in
+ * this slide … WILL BE BLANK" and draws nothing. That is loud rather than silent —
+ * which is the whole point of that count — but it is still blank, and CLAUDE.md says
+ * so in the same words. cli/render_job.js DOES draw it in full, because it runs the
+ * real editor in headless Chrome; that is also the only place mermaid and latex
+ * render, so the comparison the old sentence drew never separated this widget from
+ * them at all.
  *
  * VECTOR EXPORT IS THE DESIGNED FOLLOW-UP, NOT AN OVERSIGHT (Amendment 3 route c).
  * No browser API flattens rendered HTML to SVG; the three real routes are
@@ -269,39 +280,6 @@ export const DEFAULT_HTML_FIRST_LINE = DEFAULT_HTML.split("\n")[0];
 export const DEFAULT_CAPTURE_W = 1280;
 export const DEFAULT_CAPTURE_H = 720;
 
-/**
- * ── WHY INSERTING DOES NOT AUTO-CAPTURE, AND WHAT IT DOES INSTEAD ────────────
- * The obvious cure for "boring on insert" is to run the first capture
- * automatically, so a freshly dropped widget shows the handsome card at once. It
- * was CONSIDERED AND REFUSED, on the grounds this widget's whole security argument
- * stands on:
- *
- *   AUTHOR-SUPPLIED SCRIPT RUNS ONLY UNDER AN EXPLICIT USER ACTION.
- *
- * Insert is not that action. It is the moment the user asks for a widget, not the
- * moment he asks to execute anything — and the gap matters because `html` is
- * ORDINARY DOCUMENT STATE: it arrives by paste, by an undo that restores a
- * different source, by opening someone else's deck, by a preset the EG program is
- * about to add. Auto-capture-on-insert makes "a widget appeared in my document" a
- * sufficient condition for running its script, and that is exactly the property
- * the sandbox-plus-consent design exists to deny. It would also write an asset
- * file into the project library as a side effect of a gesture that promised only
- * to place a box, and it would do so before the user had seen a single line of the
- * source he was executing.
- *
- * SO THE PLACEHOLDER CARRIES THE WEIGHT INSTEAD, and it is built to be worth
- * looking at rather than merely legible: a deep slate card, a bright cyan title, a
- * dimmed monospace PREVIEW OF THE SOURCE'S FIRST LINE, and a pill-shaped hint
- * naming the button. It previews what the widget is ABOUT to become and states the
- * one action that gets there — which is strictly more informative than the captured
- * picture would be, because the captured picture does not tell you it came from
- * HTML or how to change it.
- *
- * (If auto-capture is ever wanted anyway, the honest shape is a per-insert PROMPT —
- * "run this source now?" — not a silent execution. That is a UI question, and this
- * file is the wrong place to answer it.)
- */
-
 /** Placeholder colours — a DARK SLATE card that reads as a deliberate, designed
  * state rather than an error. Deliberately NOT the red plugins/mermaid.js and
  * plugins/latex.js use for a parse failure (an uncaptured widget is not broken —
@@ -420,7 +398,9 @@ export function hasCapture(state) {
 /**
  * Pure function. The in-widget "not captured yet" affordance — a DESIGNED CARD, not
  * a warning box: a dark rounded panel, the widget's name in cyan, a dimmed preview
- * of the source's own first line, and a pill naming the button that renders it.
+ * of the source's own first line, and a pill carrying UNCAPTURED_MESSAGE. THE PILL
+ * NAMES NO BUTTON: the widget renders itself (R7-43a), so the only thing left worth
+ * saying on the card is how to change the source.
  *
  * IT IS AN AFFORDANCE FIRST AND AN ERROR REPORT NEVER. The alternative this
  * replaces is the failure mode the codebase forbids — an uncaptured widget drawing
@@ -450,8 +430,8 @@ export function hasCapture(state) {
  * 'HTML to Image'
  * @example uncapturedAffordance(480, 270, "<div>hi</div>")[2].text
  * '<div>hi</div>'
- * @example uncapturedAffordance(480, 270, "<div>hi</div>")[4].text.startsWith("Press Capture")
- * true
+ * @example uncapturedAffordance(480, 270, "<div>hi</div>")[4].text
+ * 'HTML not rendered yet · double-click to edit the source'
  */
 export function uncapturedAffordance(w, h, html = "") {
   const pad = Math.min(PLACEHOLDER_PADDING_MAX, h * PLACEHOLDER_PADDING_FRACTION);
@@ -504,16 +484,18 @@ export function uncapturedAffordance(w, h, html = "") {
 /**
  * ── THE PRESET LIBRARY (R7-39) ────────────────────────────────────────────────
  * "I don't know how to test this because it's very boring looking right now.
- * Because there's no presets." Thirteen READY-TO-CAPTURE designs — each a
- * complete, self-contained HTML/CSS source an author can drop in and press
- * Capture on immediately. This is the widget's first impression, so every
+ * Because there's no presets." Thirteen designs — each a complete, self-contained
+ * HTML/CSS source an author drops in, after which the widget renders itself from it
+ * with no further gesture (R7-43a). This is the widget's first impression, so every
  * source aims for real typographic and colour quality rather than a placeholder
  * layout with a caption changed.
  *
  * EVERY PRESET WRITES EXACTLY `{html}` — the mermaid precedent
  * (plugins/mermaid.js: "each preset writes `definition` as one undo unit"),
- * applied to this widget's one meaningful leaf. Never the `capture` asset (that
- * would defeat the "capture is an explicit user action" law above), never
+ * applied to this widget's one meaningful leaf. Never the `capture` asset (a preset
+ * describes a SOURCE; the picture of it belongs to the auto-renderer, and a preset
+ * shipping one would hand every instance a fingerprint of somebody else's render),
+ * never
  * `captureW`/`captureH` (every design here is happy at the widget's own
  * DEFAULT_CAPTURE_W x DEFAULT_CAPTURE_H, so there is no same-key-set need to
  * open that door), and never a placement key.
@@ -1095,7 +1077,9 @@ export const html2imagePlugin = {
    *
    * TWO OUTCOMES AND NO THIRD: a captured widget emits the same `image()` op
    * plugins/image.js emits (which is why every backend already draws it), and an
-   * uncaptured one emits the LOUD amber affordance. There is deliberately no
+   * uncaptured one emits the DARK SLATE placeholder card (uncapturedAffordance —
+   * amber was the colour this widget shipped with for a day, retired above because
+   * amber says WARNING and an unrendered widget is not broken). There is deliberately no
    * "draw nothing" branch — a blank is the one thing this widget must never be,
    * because a blank cannot be told apart from a missing asset or a broken export.
    *

@@ -18,7 +18,8 @@
 import { interpolate } from "./interpolators.js";
 import { blendUnderMode, defaultModeFor, interpKeyFor, isInterpKey, modeClaimsTrees, modeForBlend, modeParamsFrom } from "./interp_modes.js";
 import { MORPH_KEY, morphModeForBlend, morphModeIsActive, universalMorphToken } from "./morph_property.js";
-import { componentDeltaIsColor, lerpedColorComponents, resolveColorComponentDelta } from "./vector_values.js";
+import { colorComponentDelta, resolveColorComponentDelta } from "./vector_values.js";
+import { reportOnce } from "./report.js"; // the fold cannot throw (it runs per frame), so a refused component keyframe SAYS SO instead
 
 /** Delete sentinel. A delta leaf of NONE deletes the key from the state. */
 export const NONE = null;
@@ -113,6 +114,18 @@ export function blendApplied(state, delta, alpha) {
 }
 
 /**
+ * THE ITEM MAP'S KEY in a document state (`{items, vars}`). Named here because
+ * the colour-component seam below must NOT fire one level above a paint: at the
+ * item-map level a delta `{t: {color: {r: 255}}}` looks exactly like a component
+ * wrapper, and `t` is a WIDGET, not a paint. The seam then refused it ("t has no
+ * colour slot") and the fold dropped a keyframe the diamond showed as set —
+ * MEASURED, on a plugin row keyed exactly `color` (plugins/text.js, trail.js,
+ * demo/corkboard.js). Testing the VALUE cannot separate the two: an item carries
+ * a string `type` just as a paint record does.
+ */
+const ITEM_MAP_KEY = "items";
+
+/**
  * Command (mutates `state` in place) — blendApplied's internal recursion.
  * Module-private on purpose: the fold (core/document.js slideState) uses the
  * COPYING blendApplied because folded states are CACHED and shared — an
@@ -130,7 +143,7 @@ export function blendApplied(state, delta, alpha) {
  * makes the result independent of the delta's key order, which the fold's
  * determinism requires.
  */
-function mutBlendApply(state, delta, alpha) {
+function mutBlendApply(state, delta, alpha, parentKey = null) {
   // Shallow is enough: a mode governs a leaf at THIS level, and each recursion
   // step takes its own snapshot of the sub-object it is about to mutate.
   const outgoing = { ...state };
@@ -188,7 +201,7 @@ function mutBlendApply(state, delta, alpha) {
     }
     if (val === NONE) {
       delete state[key];
-    } else if (componentDeltaIsColor(val)) {
+    } else if (parentKey !== ITEM_MAP_KEY && colorComponentDelta(key, val, state[key])) {
       // ── THE COLOUR-COMPONENT SEAM (R7-38; core/vector_values.js owns the
       // rules and the sentences). A channel keyframe writes a REAL delta at a
       // REAL path — `fill.color.r` — and this is where that delta is RESOLVED
@@ -219,9 +232,19 @@ function mutBlendApply(state, delta, alpha) {
       // unchanged and the surfaces that CAN speak (the Inspector row, the
       // equation error path) report the sentence. Never a corrupted paint, and
       // never a half-write that pretends it landed.
-      const components = alpha >= 1 ? val.color : lerpedColorComponents(state[key], val.color, alpha);
-      const resolved = resolveColorComponentDelta(state[key], components, key);
+      // THE ALPHA GOES TO THE RESOLVER, which is the only place that knows where
+      // the base COLOUR lives inside the paint. Lerping here against `state[key]`
+      // — the PAINT — meant a tagged solid or a gradient had no readable channel
+      // to lerp from, so every channel snapped to its target at the first
+      // interior frame while a bare hex tweened. MEASURED.
+      const resolved = resolveColorComponentDelta(state[key], colorComponentDelta(key, val, state[key]), key, alpha);
       if (resolved.paint !== undefined) state[key] = resolved.paint;
+      // AND THE REFUSAL IS REPORTED. vector_values' own docblock promises "it is
+      // never a silent no-op: the sentence is the caller's to report", and this
+      // arm used to drop it on the floor — which is what hid the snapping tween
+      // above and every mis-addressed channel keyframe. reportOnce (keyed on the
+      // sentence, which already names the slot) because the fold runs per frame.
+      else reportOnce(`vecui:${resolved.refusal}`, `PowerRP: ${resolved.refusal}`);
     } else if (isTree(val)) {
       // STRUCTURAL keyframing — a sparse per-element LIST keyframe: an
       // object-shaped delta over an ARRAY state addresses elements by index
@@ -234,7 +257,7 @@ function mutBlendApply(state, delta, alpha) {
       } else if (!isTree(state[key])) {
         state[key] = {};
       }
-      mutBlendApply(state[key], val, alpha);
+      mutBlendApply(state[key], val, alpha, key);
     } else if (key in state) {
       // THE ENDPOINT IS NOT A MODE'S CALL. At alpha 1 the answer IS the stored
       // target — that is what `applied()` means and what makes the fold

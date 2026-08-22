@@ -34,16 +34,23 @@
  * That also makes it testable in bare node with a stub app, which is what
  * tests/html2image_autorender_test.js does.
  *
- * ── THE FINGERPRINT IS WHAT TERMINATES THE LOOP ─────────────────────────────
- * This is the load-bearing sentence of the whole feature. A render writes TWO leaves
- * as one commit: the new asset ref AND the fingerprint of the source it was rendered
- * from. The watcher then re-scans (its own write woke it), finds the widget FRESH,
- * and stops. If the fingerprint write were ever dropped, split into a second commit,
- * or computed from different inputs than the staleness check reads, the widget would
- * be stale again immediately and the app would render in an infinite loop — burning
- * an asset file per iteration. That is why `sourceFingerprint` is called ONCE, on the
- * state the render actually used, and carried through with the result rather than
- * recomputed at commit time from a state that may have moved on.
+ * ── THE SCAN IS THE WHOLE DOCUMENT, NOT THE SLIDE ON SCREEN ─────────────────
+ * R7-43a's rule is that staleness is a property of the DOCUMENT, and `app.state()`
+ * is ONE SLIDE'S answer to it. Scanning only that was a hole with no error in it: a
+ * widget whose `html` is keyframed on slide 2 is simply absent from slide 1's state,
+ * so it rendered on NEITHER — the boot scan looked at slide 1, and `set slideIndex`
+ * wakes no document watcher, so arriving at slide 2 never re-asked. Such a deck
+ * presented and exported the PLACEHOLDER CARD forever. So `#slideStates` folds and
+ * evaluates every slide, and the render's keyframe is written on THE SLIDE ITS
+ * SOURCE LIVES ON.
+ *
+ * EARLIEST STALE SLIDE WINS, AND THAT IS WHAT KEEPS IT TO ONE RENDER. A widget
+ * inserted on slide 0 is stale on all N slides at once (the fold carries it
+ * forward); scheduling each would mint N assets for one picture. `#staleTargets`
+ * therefore keeps only the FIRST slide each id is stale on, so the write lands at
+ * the boundary where the source actually changed and the fold makes every later
+ * slide fresh. A source that genuinely differs on slide 5 is still stale there after
+ * that write, and the next scan renders it there — the walk converges from the front.
  *
  * ── DEBOUNCE, THEN SERIALIZE — TWO DIFFERENT PROBLEMS ───────────────────────
  * DEBOUNCE (per widget, RENDER_DEBOUNCE_MS) answers "the author is still typing".
@@ -59,6 +66,17 @@
  * coalesces any further changes into it: an edit during a render queues exactly one
  * more, never a stack of them. That is the brief's requirement and it falls out of
  * `pending` being a boolean rather than a list.
+ *
+ * ── THE FINGERPRINT IS WHAT TERMINATES THE LOOP ─────────────────────────────
+ * This is the load-bearing sentence of the whole feature. A render writes TWO leaves
+ * as one commit: the new asset ref AND the fingerprint of the source it was rendered
+ * from. The watcher then re-scans (its own write woke it), finds the widget FRESH,
+ * and stops. If the fingerprint write were ever dropped, split into a second commit,
+ * or computed from different inputs than the staleness check reads, the widget would
+ * be stale again immediately and the app would render in an infinite loop — burning
+ * an asset file per iteration. That is why `sourceFingerprint` is called ONCE, on the
+ * state the render actually used, and carried through with the result rather than
+ * recomputed at commit time from a state that may have moved on.
  *
  * ── EQUATION-DRIVEN HTML: THE BOUND, STATED HONESTLY ────────────────────────
  * `html` is an ordinary property, so it may be bound to an `=` equation — including
@@ -78,15 +96,26 @@
  * authoring choice, not something any preset or default produces, and the debounce
  * bounds the rate to at most one render per RENDER_DEBOUNCE_MS + render duration.
  *
- * ── UNDO REUSES THE OLD PICTURE, FOR FREE ───────────────────────────────────
- * Undoing an html edit restores the PREVIOUS html, capture ref AND fingerprint
- * together — they were written in one commit, so undo reverts them as one. The
- * restored fingerprint matches the restored html, the widget scans FRESH, and no
- * render fires. So undo is instant and reuses the old asset with no cache, no
- * bookkeeping and no special case anywhere in this file. That is the cheap win the
- * fingerprint design pays out, and it is the reason the fingerprint lives in the
- * DOCUMENT rather than in a side table in this service: a side table would not be
- * undone with it.
+ * ── UNDO FIGHTS THIS SERVICE, AND THE DEFECT IS OPEN ────────────────────────
+ * THIS PARAGRAPH USED TO CLAIM THE OPPOSITE — "UNDO REUSES THE OLD PICTURE, FOR
+ * FREE … they were written in one commit, so undo reverts them as one" — and no code
+ * path has ever produced that commit. The html edit is the USER'S undo entry; the
+ * render is a SEPARATE `app.commit` some hundreds of milliseconds later. So undoing
+ * an html edit pops the RENDER's entry and restores {new html, OLD picture, OLD
+ * fingerprint}: stale by construction. The watcher then re-renders, mints another
+ * asset, and that commit CLEARS `future` — so Redo dies, the next Ctrl-Z pops the
+ * asset it just made, and a slow series of undos never reaches the pre-edit source at
+ * all. MEASURED against the real core/undo.js and this class: five undos produced
+ * shot3…shot7.png with the html never leaving `<p>EDITED</p>`. Only undos issued
+ * INSIDE the debounce window get back.
+ *
+ * IT IS NOT FIXABLE IN THIS FILE, and that is why it is written down rather than
+ * worked around. The render's write must stop being its own undo transaction — either
+ * an `amend(doc)` on core/undo.js that replaces `present` without pushing or clearing
+ * `future`, or a non-undoable write seam on web/app.svelte.js (set `doc` + autosave +
+ * wake the watchers, skipping `undoLog.commit`). The fingerprint already guarantees a
+ * re-render for whatever state an undo restores, so neither costs correctness.
+ * `#writeCapture` below is the ONE place that would change.
  *
  * ── WHAT THIS SERVICE NEVER DOES ────────────────────────────────────────────
  * It does not run during PLAYBACK, EXPORT or in the CLI. It is a `web/` module the
@@ -96,6 +125,8 @@
  */
 
 import { CAPTURE_OF_KEY, sourceFingerprint, staleCaptureIds } from "../core/html2image_staleness.js";
+import { foldState, keyframed } from "../core/document.js";
+import { evaluateState } from "../core/expressions.js";
 import { html2imagePlugin } from "../plugins/html2image.js";
 
 /**
@@ -107,15 +138,53 @@ import { html2imagePlugin } from "../plugins/html2image.js";
 export const RENDER_DEBOUNCE_MS = 400;
 
 /**
+ * Pure function. Does this document ever DECLARE an item of `type`?
+ *
+ * THE CHEAP GATE IN FRONT OF THE ALL-SLIDES SCAN, and the reason a deck with no
+ * HTML-to-Image widget pays almost nothing for the walk described in this module's
+ * header. An item's `type` is written exactly once, into the delta of the slide that
+ * creates it (core/document.js drops a typeless item in the repair pipeline), so a
+ * raw walk of the deltas answers this EXACTLY — no folding, no evaluation, no
+ * heuristic — in one pass over the stored keyframes.
+ *
+ * @param {object} doc - a PowerRP document
+ * @param {string} type - the plugin type string to look for
+ * @returns {boolean}
+ *
+ * @example documentHasType({ slides: [{ delta: { items: { a: { type: "rect" } } } }] }, "html2image")
+ * false
+ * @example // declared on a LATER slide — the case the current-slide scan used to miss:
+ * documentHasType({ slides: [{ delta: {} }, { delta: { items: { w: { type: "html2image", html: "<p>hi</p>" } } } }] }, "html2image")
+ * true
+ * @example documentHasType({ slides: [] }, "html2image")
+ * false
+ */
+export function documentHasType(doc, type) {
+  return (doc?.slides ?? []).some(
+    (slide) => Object.values(slide?.delta?.items ?? {}).some((d) => d?.type === type),
+  );
+}
+
+/**
  * The service. ONE per app, created by the editor shell (web/App.svelte) and given
  * the app to read and write.
  *
  * A CLASS AND NOT MODULE-LEVEL STATE, because the probes and the bare-node test each
  * want their own instance with their own stub app — module state would leak a queue
  * between them and make the tests order-dependent.
+ *
+ * ── THE TWO APP SHAPES THIS SERVICE ACCEPTS ─────────────────────────────────
+ * The editor app carries a DOCUMENT (`app.doc`), and the scan folds every slide of
+ * it. tests/html2image_autorender_test.js drives the scheduler with a stub that is a
+ * plain items map and NO document, because debounce and serialization are not about
+ * slides. That is a stated part of this class's interface, not a fallback hiding a
+ * failure: an app with no document has no slide to name, so its `state()` IS the
+ * document and the walk below is the same walk over a one-slide deck. Exactly TWO
+ * methods decide it — `#evaluationInputs` (which reads) and `#writeCapture` (which
+ * writes) — and everything else is shape-blind.
  */
 export class Html2ImageAutoRender {
-  /** The app store (read `state()`, write through setPreview/commitPreview). */
+  /** The app store (read the document, write through #writeCapture). */
   #app;
   /** itemId → debounce timer handle, for widgets whose source is still settling. */
   #timers = new Map();
@@ -144,9 +213,9 @@ export class Html2ImageAutoRender {
   /** How many renders this service has completed — probes and tests assert on it,
    * and it is how "exactly one render for a burst of edits" is measured. */
   renderCount = 0;
-  /** The last failure, as `{itemId, message}`, or null. Kept so the widget's own
-   * copy can say what went wrong; a failure is ALSO reported to the console, because
-   * a silent failure here would leave a widget showing an old picture forever. */
+  /** The last failure, as `{itemId, message}`, or null. Kept so a probe can report
+   * what went wrong; a failure is ALSO reported to the console, because a silent
+   * failure here would leave a widget showing an old picture forever. */
   lastError = null;
   /** Injected renderer — `(app, {html, width, height}) => Promise<ref>`. Defaults to
    * the real capture pipeline, LAZILY imported (web/html2image.js touches `document`,
@@ -168,6 +237,98 @@ export class Html2ImageAutoRender {
   }
 
   /**
+   * Query. THE FOUR INPUTS `evaluateState` needs beyond the fold, taken from the app
+   * ONCE so a walk over N slides asks for them once rather than N times — and, more
+   * importantly, so it passes exactly what the canvas passes. `evaluateState`
+   * memoizes on state identity PLUS these four compared by reference, so on the
+   * ordinary deck the current slide's evaluation is a memo HIT on the pass the editor
+   * already ran; supplying anything else here would silently double the editor's
+   * evaluation work on every commit. (The state identity has its own condition —
+   * "THE MEMO HIT IS ON THE FOLD" below; do not read this sentence without it.)
+   *
+   * ALL FOUR OR NONE, AND `varKinds` IS THE ONE THAT PROVES IT. The list started as
+   * THREE — registry, script, content sizes — and dropping the fourth was not a
+   * partial win but the whole loss, MEASURED: `repairedDocument` writes
+   * `meta.varKinds` into EVERY document (an empty `{}` when the deck declares no
+   * kinds), the memo compares it by reference, and `{} === null` is false — so the
+   * three-input version missed the memo on EVERY document that exists, and worse,
+   * OVERWROTE the editor's entry with its own null-keyed one, making the editor's
+   * next `state()` miss too. That is precisely the doubling the paragraph above
+   * promises to avoid, arriving through the one input the paragraph forgot. It is
+   * also a semantic difference and not only a cost: with no kind map every variable
+   * declares "number" (core/var_kinds.js's `varKind`, "absent entries ARE number"), so
+   * a colour or string variable would be rendered from a DIFFERENT value than the
+   * canvas shows.
+   *
+   * `varKindsForEval()` is read rather than `doc.meta.varKinds`, because that method
+   * exists to hand out the RAW map — never a fresh `?? {}` — for exactly this memo.
+   *
+   * THE MEMO HIT IS ON THE FOLD, SO IT IS THE COMMON DECK AND NOT EVERY DECK. The
+   * scan folds with `foldState`, while `app.rawState()` additionally applies the
+   * slide's TRIGGER writes (core/exec_flow.withExecOverlay) and any staged PREVIEW
+   * delta. A deck with exec wires, or a moment mid-drag, therefore hands
+   * `evaluateState` a different fold and pays one evaluation — which is also the
+   * conservative answer for the preview: a picture must be rendered from what the
+   * document SAYS, not from a gesture the author has not committed.
+   *
+   * THE CONTENT-SIZE TABLE IS THE APP'S ONE TABLE, not a per-slide copy: it is
+   * identity-stable (web/contentSizes.js caches on a signature) and minting a fresh
+   * one per slide would miss that memo every time. It can only differ for a widget
+   * whose html is bound to `self.content.*`, which no preset or default produces.
+   *
+   * `null` for a DOCUMENT-LESS APP, which has no slides to evaluate — see this
+   * class's docblock. This is the ONE place that shape is decided.
+   */
+  #evaluationInputs() {
+    const app = this.#app;
+    if (!app.doc) return null;
+    return {
+      registry: app.registry,
+      script: app.projectScript(),
+      contentSizes: app.contentSizes(),
+      varKinds: app.varKindsForEval(),
+    };
+  }
+
+  /** Query. The evaluated state at one slide (alpha 1 — a scan asks about settled
+   * slides, never about a transition's midpoint). `inputs` comes from
+   * `#evaluationInputs`; `null` means the one-slide app, whose `state()` IS the
+   * answer. */
+  #evaluatedAt(slide, inputs) {
+    if (!inputs) return this.#app.state();
+    const { registry, script, contentSizes, varKinds } = inputs;
+    return evaluateState(foldState(this.#app.doc, slide, 1), registry, script, contentSizes, varKinds).state;
+  }
+
+  /** Query. Every `[slideIndex, evaluated state]` pair the scan must examine, in
+   * slide order. One pair for a document-less app; one per slide otherwise. */
+  #slideStates() {
+    const inputs = this.#evaluationInputs();
+    const count = inputs ? this.#app.doc.slides.length : 1;
+    return Array.from({ length: count }, (_, i) => [i, this.#evaluatedAt(i, inputs)]);
+  }
+
+  /**
+   * Query. `itemId → {slide, state}` for every stale widget in the document, keyed to
+   * the EARLIEST slide it is stale on (this module's header states why that, and only
+   * that, is the slide to write on).
+   *
+   * The `documentHasType` gate in front means a deck with no such widget — the
+   * overwhelming majority — never folds or evaluates a single slide here.
+   */
+  #staleTargets() {
+    const targets = new Map();
+    const type = html2imagePlugin.type;
+    if (this.#app.doc && !documentHasType(this.#app.doc, type)) return targets;
+    for (const [slide, state] of this.#slideStates()) {
+      for (const id of staleCaptureIds(state, type)) {
+        if (!targets.has(id)) targets.set(id, { slide, state: state.items[id] });
+      }
+    }
+    return targets;
+  }
+
+  /**
    * Command. THE ENTRY POINT: "the document may have changed — look for stale
    * pictures." Cheap and idempotent, so the app may call it after every commit
    * without thinking about it.
@@ -177,7 +338,7 @@ export class Html2ImageAutoRender {
    * cannot re-enter the effect that called it.
    */
   notify() {
-    for (const id of staleCaptureIds(this.#app.state(), html2imagePlugin.type)) this.#schedule(id);
+    for (const id of this.#staleTargets().keys()) this.#schedule(id);
   }
 
   /** Command. Debounces one widget: a change restarts its timer, so a burst settles
@@ -191,20 +352,48 @@ export class Html2ImageAutoRender {
   }
 
   /**
+   * Command. Writes the render's two leaves as ONE commit, keyframed on `slide`.
+   *
+   * NOT setPreview + commitPreview, for two reasons that both bite:
+   *   - commitPreview keyframes on the app's CURRENT slide, which is the wrong slide
+   *     whenever the stale source lives on another one — the picture would land on a
+   *     slide whose html it is not a picture of, and the real one would stay stale.
+   *   - setPreview REPLACES the app's staged preview delta wholesale, so a render
+   *     landing mid-drag threw the drag away.
+   * ONE `commit` for BOTH leaves — see this module's header: the picture and the
+   * provenance of the picture must land together or the loop never terminates. (This
+   * is also the one place the open UNDO defect above would be fixed.)
+   *
+   * A DOCUMENT-LESS APP IS ONE SLIDE — see this class's docblock.
+   */
+  #writeCapture(slide, id, ref, fingerprint) {
+    const app = this.#app;
+    const leaves = [[["items", id, "capture"], ref], [["items", id, CAPTURE_OF_KEY], fingerprint]];
+    if (!app.doc) {
+      app.setPreview(leaves);
+      app.commitPreview();
+      return;
+    }
+    let doc = app.doc;
+    for (const [path, value] of leaves) doc = keyframed(doc, slide, path, value);
+    app.commit(doc);
+  }
+
+  /**
    * Command (async). Renders ONE widget, if it is still stale and not already
    * rendering.
    *
-   * THE RE-CHECK AT THE TOP IS NOT REDUNDANT with notify()'s: the debounce means
+   * THE RE-SCAN AT THE TOP IS NOT REDUNDANT with notify()'s: the debounce means
    * RENDER_DEBOUNCE_MS passed since the scan that scheduled this, and in that window
-   * an undo may have restored a matching fingerprint or the item may have been
-   * deleted. Rendering a widget that is no longer stale would write an asset nobody
-   * asked for and, worse, restart the loop.
+   * an undo may have restored a matching fingerprint, the item may have been deleted,
+   * or the source may have moved to a different slide. Rendering a widget that is no
+   * longer stale would write an asset nobody asked for and, worse, restart the loop.
    */
   async #run(id) {
     if (this.#running.has(id)) { this.#pending.add(id); return; }
-    const state = this.#app.state().items?.[id];
-    if (!state || state.type !== html2imagePlugin.type) return;
-    if (!staleCaptureIds({ items: { [id]: state } }, html2imagePlugin.type).length) return;
+    const target = this.#staleTargets().get(id);
+    if (!target) return; // gone, or made fresh, during the debounce window
+    const { slide, state } = target;
 
     // THE FINGERPRINT IS TAKEN FROM THE STATE BEING RENDERED, before any await, and
     // carried to the commit. Recomputing it after the render would fingerprint a
@@ -222,13 +411,19 @@ export class Html2ImageAutoRender {
     this.#running.add(id);
     try {
       const ref = await this.#render(this.#app, request);
-      // ONE COMMIT, TWO LEAVES — see this module's header: the picture and the
-      // provenance of the picture must land together or the loop never terminates.
-      this.#app.setPreview([
-        [["items", id, "capture"], ref],
-        [["items", id, CAPTURE_OF_KEY], fingerprint],
-      ]);
-      this.#app.commitPreview();
+      // THE ITEM MAY HAVE BEEN PURGED WHILE THE RENDER WAS IN FLIGHT, and committing
+      // then wrote a TYPELESS ZOMBIE — a slide delta holding {capture, captureOf} for
+      // an id with no `type`, which deriveRenderTree tolerates and the NEXT load
+      // reports as `dropped item "w" — no type is ever set (orphaned keyframes)` on a
+      // deck the author never hand-edited. The existence check before the await cannot
+      // answer this; only a re-read after it can. Reported rather than silent: the
+      // rendered asset is now an orphan in the library and nobody else will say so.
+      const after = this.#stateOf(slide, id);
+      if (!after || after.type !== html2imagePlugin.type) {
+        console.warn(`HTML to Image: "${id}" was removed while its render was in flight — discarding the picture (asset ${ref} is now unreferenced).`);
+        return;
+      }
+      this.#writeCapture(slide, id, ref, fingerprint);
       this.renderCount++;
       this.#failed.delete(id);
       this.lastError = null;
@@ -249,9 +444,18 @@ export class Html2ImageAutoRender {
     }
   }
 
-  /** Query. Is a render in flight for this widget? The widget's own copy reads it to
-   * say "Rendering…" rather than "not rendered yet", so an in-progress render never
-   * looks like a failure. */
+  /** Query. One item's evaluated state on one slide, or undefined when the item does
+   * not exist there. The narrow read `#run` needs after its await — a full
+   * `#staleTargets()` would answer a different question (the item is still stale, of
+   * course: the write has not landed yet). */
+  #stateOf(slide, id) {
+    return this.#evaluatedAt(slide, this.#evaluationInputs())?.items?.[id];
+  }
+
+  /** Query. Is a render in flight for this widget? A PROBE AND TEST HOOK ONLY —
+   * nothing in the app reads it. (This docblock used to promise that "the widget's own
+   * copy reads it to say Rendering…"; emit() has exactly two branches, image or
+   * placeholder, and no "Rendering…" state exists anywhere in the codebase.) */
   isRendering(id) {
     return this.#running.has(id);
   }

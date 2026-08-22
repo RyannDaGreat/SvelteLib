@@ -85,7 +85,12 @@ function buildRegistry() {
  *
  * @returns {() => string}
  *
- * @example const mint = idMinter(); [mint(), mint()] // ["p1", "p2"]
+ * @example // Written as ONE expression: the doctest runner evaluates an expression,
+ * @example // and `const … ; …` is a statement followed by one, which it could not
+ * @example // parse — so this example sat OUTSIDE the gate (it was the whole of
+ * @example // doctest_test.js's UNPARSEABLE count) while claiming to specify the
+ * @example // minter's output.
+ * @example ((mint) => [mint(), mint()])(idMinter()) // ["p1", "p2"]
  */
 export function idMinter() {
   let n = 0;

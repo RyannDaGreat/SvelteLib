@@ -51,7 +51,7 @@ import { pdfPacketPlugin } from "./pdf_packet.js"; // a corner-stapled packet wi
 import { particlesPlugin } from "./particles.js";
 import { latexPlugin } from "./latex.js";
 import { mermaidPlugin } from "./mermaid.js";
-import { html2imagePlugin } from "./html2image.js"; // author HTML/CSS, press Capture, render a FROZEN image asset — the html never executes at playback (Amendment 3's "capture at author time, frozen at play"). Retired type `html_capture` migrates here (core/document.js RETIRED_ITEM_TYPES)
+import { html2imagePlugin } from "./html2image.js"; // author HTML/CSS, and the widget renders ITSELF to a FROZEN image asset when its source changes (a stored fingerprint decides staleness — R7-43a retired the Capture button, and the word with it); the html never executes at playback (Amendment 3's "capture at author time, frozen at play"). Retired type `html_capture` migrates here (core/document.js RETIRED_ITEM_TYPES)
 import { qrcodePlugin } from "./qrcode.js";
 import { plaintextPlugin } from "./plaintext.js";
 import { bentoPlugin } from "./bento.js";

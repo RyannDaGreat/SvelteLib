@@ -34,7 +34,7 @@ import {
   RETIRED_ITEM_TYPES, itemTypeMigrations, withItemTypesMigrated,
   repairedDocument, newDocument, uuid,
 } from "../core/document.js";
-import { evaluateState } from "../core/expressions.js";
+import { evaluateState, displayToStored, storedToDisplay } from "../core/expressions.js";
 
 const registry = createRegistry();
 await registerPlugins(registry);
@@ -74,22 +74,55 @@ test("1d. BOUNDS protocol: localBounds is declared, so culling and band select c
   assert.deepEqual(emptyPlugin.localBounds({ w: 20, h: 20 }), { x: 0, y: 0, w: 20, h: 20 });
   // NEGATIVE EXTENTS protocol: a stored w/h may be negative (a flip). The plugin
   // reads what it is handed; the sign is resolved upstream at one map. What must
-  // hold here is that it does not throw or invent a sign of its own.
-  assert.deepEqual(emptyPlugin.localBounds({ w: -20, h: 20 }), { x: 0, y: 0, w: -20, h: 20 });
+  // hold here is that it does not throw or invent a sign of its own. BOTH extents
+  // now carry w's sign, because BOTH arms are w (see 1f): x from 0 to -20 and y
+  // from 20 to 0 is the same region the old {0, 0, -20, 20} named.
+  assert.deepEqual(emptyPlugin.localBounds({ w: -20, h: 20 }), { x: 0, y: 20, w: -20, h: -20 });
 });
 
 test("1e. the anchors: `pt` is the CENTRE and keeps its id, plus the four axis tips", () => {
   const a = emptyPlugin.anchors({ w: 20, h: 20 });
   const byId = new Map(a.map((p) => [p.id, p]));
   assert.deepEqual(byId.get("pt"), { id: "pt", x: 10, y: 10 }, "`pt` is the centre — the id every legacy equation names");
-  assert.deepEqual(byId.get("+x"), { id: "+x", x: 20, y: 10 });
-  assert.deepEqual(byId.get("-x"), { id: "-x", x: 0, y: 10 });
-  assert.deepEqual(byId.get("+y"), { id: "+y", x: 10, y: 20 });
-  assert.deepEqual(byId.get("-y"), { id: "-y", x: 10, y: 0 });
+  assert.deepEqual(byId.get("plusx"), { id: "plusx", x: 20, y: 10 });
+  assert.deepEqual(byId.get("minusx"), { id: "minusx", x: 0, y: 10 });
+  assert.deepEqual(byId.get("plusy"), { id: "plusy", x: 10, y: 20 });
+  assert.deepEqual(byId.get("minusy"), { id: "minusy", x: 10, y: 0 });
   // The tips are the visible ends of the drawn cross, which is what makes them
   // worth publishing: the display size moves them, and that is its whole job.
   const big = new Map(emptyPlugin.anchors({ w: 100, h: 100 }).map((p) => [p.id, p]));
-  assert.equal(big.get("+x").x, 100, "a larger display size moves the arm tip");
+  assert.equal(big.get("plusx").x, 100, "a larger display size moves the arm tip");
+});
+
+test("1f. THE DISPLAY SIZE IS ONE NUMBER: the cross is square at any box height", () => {
+  // The defect this pins: the vertical arm used to come from `h`, which has NO
+  // editor at all (no inspector row, resizable:false), so it sat at its default
+  // while the Display size row moved `w`. At w=60 the cross drew a 30-unit
+  // horizontal half-arm against a 10-unit vertical one and localBounds reported
+  // 60x20 — an "axis cross" with unequal axes, which the header never described.
+  const a = new Map(emptyPlugin.anchors({ w: 60, h: 20 }).map((p) => [p.id, p]));
+  const arm = (id, axis) => Math.abs(a.get(id)[axis] - a.get("pt")[axis]);
+  assert.equal(arm("plusx", "x"), 30);
+  assert.equal(arm("minusx", "x"), 30);
+  assert.equal(arm("plusy", "y"), 30, "the vertical half-arm is w/2 too — ONE display size");
+  assert.equal(arm("minusy", "y"), 30);
+  // ...and the ink follows the arms, centred on the box centre the cross hangs on.
+  assert.deepEqual(emptyPlugin.localBounds({ w: 60, h: 20 }), { x: 0, y: -20, w: 60, h: 60 });
+});
+
+test("1g. EVERY anchor id the empty publishes is SPELLABLE by the equation grammar", () => {
+  // The defect this pins: the four tips shipped as `+x`/`-x`/`+y`/`-y`, which
+  // REF_RE ([A-Za-z0-9_] only) cannot tokenize — so the display grammar threw
+  // `Unknown variable "box_"` and a stored `@e_+x.x` never resolved, while
+  // CanvasView's anchor-bind happily wrote one for any arrow dropped on a tip.
+  // tests/stored_ref_split_test.js sweeps EVERY plugin for this; the assertion is
+  // repeated here because this widget is the one that broke it, and because the
+  // "no underscore" half is invisible until someone reaches for `x_pos`.
+  const state = { items: { ab12cd34: { type: "empty", name: "Box" } }, vars: {} };
+  for (const { id } of emptyPlugin.anchors({ w: 20, h: 20 })) {
+    assert.equal(displayToStored(`box_${id}.x`, state), `@ab12cd34_${id}.x`, `display grammar cannot read "box_${id}.x"`);
+    assert.equal(storedToDisplay(`@ab12cd34_${id}.x`, state), `box_${id}.x`, `stored grammar cannot write back "${id}"`);
+  }
 });
 
 // ── §2. THE PURE MIGRATION ───────────────────────────────────────────────────

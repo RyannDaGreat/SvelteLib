@@ -295,7 +295,7 @@ documentation — open it to see its exact knobs.
 - `cropbox` — Crop Box.
 - `blur` — Blur Layer.
 - `magnifier` — Magnifier.
-- `empty` — Empty. A blender-style empty: a full transform (position, rotation, scale) with no geometry, drawn as an axis cross in the editor only and referencable by equations through its `pt` centre anchor and its `+x`/`-x`/`+y`/`-y` axis tips. Replaces the retired `anchor_point`, which is migrated to it loudly on load with its `pt` anchor id unchanged.
+- `empty` — Empty. A blender-style empty: a full transform (position, rotation, scale) with no geometry, drawn as an axis cross in the editor only and referencable by equations through its `pt` centre anchor and its `plusx`/`minusx`/`plusy`/`minusy` axis tips. The tips are spelled in words because an equation reference has no `+`/`-` — `my_empty.plusx.x` reads, `my_empty.+x.x` does not tokenize at all. Its `Display size` row is ONE number (blender's `empty_display_size`), used as the arm span on both axes. Replaces the retired `anchor_point`, which is migrated to it loudly on load with its `pt` anchor id unchanged.
 - `particles` — Particles. A deterministic, seeded emitter (recordable state).
 - `clock_analog` / `clock_digital` — Analog / Digital Clock.
 

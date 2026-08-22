@@ -239,10 +239,22 @@ const VIDEO_PRESETS = [
     // shadow with no border to silhouette draws nothing). REVISIT and drop to 0
     // once a browser-based distinctness gate exists that can render real
     // decoded video content.
-    description: "No frame at all — just a soft ambient shadow lifting the clip off the page, for a clip that should read as content rather than a framed object.",
+    // THE SHADOW'S BLUR IS PART OF THE SAME ACCOMMODATION, and used to be 0 with
+    // the description still promising a soft shadow — a blur-0 shadow is a HARD
+    // silhouette copy offset 14px down (image.js's "Magazine Bleed" is the row
+    // that ships one deliberately, and says so). MEASURED on this gate: with no
+    // decoded frame the only thing casting a shadow is the 1px stroke, so a wide
+    // blur smears it to nothing — blur 10 falls to 4.78 lit-set levels from the
+    // untouched default, under the 5 the gate requires, and blur 24 to 4.32.
+    // blur 9 is the WIDEST that still clears the gate, at 5.18 (no headroom at
+    // all), so 6 ships instead: at 6 this row is no longer the default's closest
+    // neighbour, and the family's narrowest pair is "Rounded Player Card" <-> this
+    // one at 6.10. The truly ambient blur this treatment wants is part of the same
+    // REVISIT.
+    description: "No frame at all — just a soft-edged shadow lifting the clip off the page, for a clip that should read as content rather than a framed object.",
     props: {
       stroke: "#000000", strokeWidth: 1, cornerRadius: 0, opacity: 1,
-      shadow: { dx: 0, dy: 14, blur: 0, color: "#000000", opacity: 0.5 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
+      shadow: { dx: 0, dy: 14, blur: 6, color: "#000000", opacity: 0.5 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF,
       ...NO_CROP,
     },
   },

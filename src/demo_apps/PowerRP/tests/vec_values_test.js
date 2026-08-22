@@ -324,13 +324,37 @@ test("a NEW vector kind needs no operator, evaluator or algebra edit", () => {
 test("the algebra's source mentions no kind name and no arity", () => {
   // A STRUCTURAL guard on the generality claim: the day someone writes
   // `if (kind === "pos")` inside an operator, this fails. Prose cannot catch it.
+  //
+  // THE REGION IS BOUNDED AT BOTH ENDS, AND THE PATTERNS ARE THE PROPERTY, NOT A
+  // SPELLING OF IT. This test used to slice from the marker to END OF FILE and
+  // grep for `kind === "pos"` and `.length === 2` — which the file satisfied by
+  // wording alone: `axesForArity` branches on `n === 2/3/4` with literal axis
+  // names and `makeVector` reads `VECTOR_KINDS[kind]`, both inside the slice,
+  // and it passed. Those two are the NAMING layer and the tail of the file is the
+  // kind-aware ADDRESS BRIDGE; the markers now bound exactly the operators the
+  // claim is about, and the patterns catch any spelling of an arity or a kind
+  // lookup rather than one.
+  // COMMENTS ARE STRIPPED FIRST: the guard is about what the CODE branches on,
+  // and the region's own header has to be able to NAME the things it forbids
+  // (`VECTOR_KINDS`, `pos`) without tripping its own check.
+  const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
   const src = readFileSync(new URL("../core/vector_values.js", import.meta.url), "utf8");
-  const algebra = src.slice(src.indexOf("// ── THE ALGEBRA"));
+  const start = src.indexOf("// ── THE ALGEBRA: ");
+  const end = src.indexOf("// ── THE ADDRESS BRIDGE");
+  assert.ok(start > 0 && end > start, "the algebra region must be bounded at both ends");
+  const algebra = stripComments(src.slice(start, end));
   for (const forbidden of ['"pos"', '"size"', '"color"'])
-    assert.ok(!algebra.includes(`kind === ${forbidden}`),
-      `the algebra must not branch on ${forbidden}`);
-  assert.ok(!/\.length === [234]\b/.test(algebra),
+    assert.ok(!algebra.includes(forbidden),
+      `the algebra must not mention ${forbidden}`);
+  assert.ok(!/=== [234]\b/.test(algebra),
     "the algebra must not branch on a specific arity");
+  assert.ok(!algebra.includes("VECTOR_KINDS"),
+    "the algebra must not read the kind table — that is the address bridge's job");
+  // The guard is only worth having if it can FAIL: the naming layer it now
+  // excludes really does contain both patterns.
+  const naming = stripComments(src.slice(src.indexOf("// ── THE VALUE LAYER"), start));
+  assert.ok(/=== [234]\b/.test(naming) && naming.includes("VECTOR_KINDS"),
+    "the excluded naming layer must be the thing the guard would have caught");
 });
 
 test("VECTOR_KINDS is the only place component names live", () => {

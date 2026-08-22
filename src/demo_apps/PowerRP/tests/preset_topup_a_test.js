@@ -36,10 +36,17 @@
  *   signal. MEASURED floor after authoring: 10.87 ("(DEFAULT)" vs "Tight fan
  *   ±20°"). Bound set to 8 — real headroom below 10.87, but deliberately BELOW
  *   the rect/particles value of 10, which this family cannot clear with the
- *   variety an 11-row table needs (two dead-identical-default rows were found
- *   and fixed during authoring by chasing 10; the true floor a spread-out
- *   eleven-row geometry table clears is 8, not 10, and shipping a borrowed 10
- *   here would be a bound calibrated against a DIFFERENT widget's picture).
+ *   variety an 11-row table needs: the true floor a spread-out eleven-row
+ *   geometry table clears is 8, not 10, and shipping a borrowed 10 here would be
+ *   a bound calibrated against a DIFFERENT widget's picture. TWO PRE-EXISTING
+ *   ROWS WERE CHANGED DURING AUTHORING, FOR TWO DIFFERENT REASONS — this
+ *   paragraph used to call both of them dead-identical-default rows, which was
+ *   true of only one. "Classic ±45°" WAS one (it wrote the plugin's own defaults
+ *   byte-for-byte); "Tight fan ±20°" was not (its old values are 30.43 levels from
+ *   the default) and moved because it collided at 7.06 with "Wide deck, high
+ *   pivot", a row the same top-up added — which is also why it, and not some
+ *   untouched row, is the 10.87 narrowest pair quoted above.
+ *   plugins/paper_peacock.js states both at the rows.
  *
  *   `image_stack` draws `videoV5Frame` ops, which decode nothing in bare node
  *   (no `createImageBitmap` — the CLAUDE.md manifest's documented cli/render.js
@@ -54,7 +61,10 @@
  *   swatches" a thin nonzero shadow rather than by softening the test.
  *   MEASURED floor: 15.30 ("Photo pile" vs "Polaroid drop"). Bound set to 10 —
  *   the rect/particles value, reused because this family clears it with solid
- *   headroom (unlike paper_peacock).
+ *   headroom (unlike paper_peacock). "Photo pile" is a PRE-EXISTING row that the
+ *   same top-up re-tuned WITHOUT the gate requiring it (its old values scored
+ *   11.12, clearing the bound); plugins/image_stack.js records that, since the
+ *   floor quoted here is measured against the new ones.
  *
  * Every bound above sits strictly below its own family's measured floor; none
  * is picked by reputation, all three are printed at run time so a future
@@ -196,7 +206,10 @@ function assertAllDistinct(frames, blank, minSeparation, label) {
     // angleC/M/Y/K appear only for the ink channels `mode` actually screens,
     // edgeLo/edgeHi only when edgeInk > 0, inkA/inkB only in duotone.
     const CORE = ["mode", "pitch", "worldLocked", "dotShape", "dotGain", "gamma", "posterize", "edgeInk", "grain", "paperColor", "registration"];
-    const MODE_ANGLES = { cmyk: ["angleC", "angleM", "angleY", "angleK"], rgb: ["angleC", "angleM", "angleY", "angleK"], duotone: ["angleC", "angleK"], mono: ["angleK"] };
+    // rgb screens THREE channels, not four: comic_shader.js's RGB branch reads
+    // uAngleC/uAngleK/uAngleM as Red/Green/Blue and never reads uAngleY, so an
+    // `angleY` on an rgb row is an inert key and this list must not demand one.
+    const MODE_ANGLES = { cmyk: ["angleC", "angleM", "angleY", "angleK"], rgb: ["angleC", "angleM", "angleK"], duotone: ["angleC", "angleK"], mono: ["angleK"] };
     for (const preset of comicPlugin.presets) {
       const keys = new Set(Object.keys(preset.props));
       for (const k of CORE) assert.ok(keys.has(k), `demo_comic/"${preset.name}" is missing common-core key "${k}"`);

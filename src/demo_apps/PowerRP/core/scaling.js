@@ -69,7 +69,23 @@
  * two-line change in one file rather than a search for multiply sites.
  *
  * DOM-free and dependency-free: this module imports NOTHING, so it runs in bare
- * node (the core/ rule) and is covered by tests/scale_wholistic_test.js.
+ * node (the core/ rule) and is covered by tests/scale_wholistic_test.js and
+ * tests/scaling_test.js.
+ *
+ * ── PROVENANCE, because `git log` on this file does not explain itself ────────────
+ * The SCALE_ workstream landed scattered across three commits by a shared-tree race,
+ * and NONE of their messages mention it:
+ *   830d4964 "Animated GIFs are videos" — this file, tests/scale_wholistic_test.js,
+ *     dragKinds' MODAL_TOGGLES/memberPivot/wholisticMemberPairs, the generated I/W
+ *     shortcut entries, and App.svelte's modalToggles wiring
+ *   435e92e1 "Drawing an arrow onto an anchor now BINDS it" — CanvasView's modalToggle
+ *   15a7d333 "Compound property rows" — app.svelte.js's `modalToggle`
+ * That matters beyond tidiness: the "Individual origins UNSATISFIABLE" boot error
+ * that 7eca576d and 5726e5f0 both attributed to other agents ("BASELINE RED, NOT
+ * OURS") was shipped by 830d4964 itself — the I entry's `when` needed a
+ * multiSelection axis the prober lacked until c94918a2. Written here rather than
+ * fixed in the log because history is immutable; this is the a314880e note in the
+ * one place a reader of this file will actually find it.
  */
 
 /**
@@ -103,7 +119,6 @@ export const SCALING_BEHAVIORS = Object.freeze(["linear", "none"]);
 export const SHARED_SCALING = Object.freeze({
   // ── LENGTHS: canvas units, so they scale ──────────────────────────────────
   strokeWidth: "linear",
-  strokeOffset: "linear", // ±1 is a fraction of the stroke width, but BEYOND ±1 it detaches into a parallel contour measured in canvas units (core/properties.js) — a length
   cornerRadius: "linear",
   gaussianBlur: "linear",
   softEdges: "linear",
@@ -137,6 +152,16 @@ export const SHARED_SCALING = Object.freeze({
   strokeStart: "none", // 0..1 fractions of the stroke's own length — they follow it
   strokeEnd: "none",
   strokeMiter: "none", // already measured in MULTIPLES of the half stroke width, so it scales with the stroke by construction
+  // strokeOffset is the SAME argument as strokeMiter and used to say the opposite
+  // ("linear — beyond ±1 it detaches into a parallel contour measured in canvas
+  // units"). That sentence is false in BOTH regimes: render_gpu/ir.js
+  // strokeInsideFraction(o) = (1−o)/2 is a fraction OF THE STROKE WIDTH, and past ±1
+  // strokeDetachedNearDistance(width, o) = (|o|−1)·width/2 is again a multiple of it —
+  // there is no canvas length anywhere in the formula. Since strokeWidth IS "linear",
+  // the drawn offset already scales with the gesture; scaling the number too applies k
+  // twice and CHANGES THE ALIGNMENT: a fully-inside stroke (o=−1) at k=2 became o=−2,
+  // a detached ring floating a full width off the edge.
+  strokeOffset: "none",
   "rotationAnchor.x": "none", // the gesture repositions items itself; an anchor is a bound point, not a size
   "rotationAnchor.y": "none",
 });
@@ -289,16 +314,17 @@ function readKey(state, key) {
 }
 
 /**
- * Query (reads a live registry). WHICH OF A PLUGIN'S NUMBER ROWS HAVE AN ANSWER —
- * the gap made COUNTABLE.
+ * Pure function. WHICH OF A PLUGIN'S NUMBER ROWS HAVE AN ANSWER — the gap made
+ * COUNTABLE.
  *
  * WHY THIS EXISTS. The header's measurement (913 of 1303 number keys live in one
  * plugin each) means wholistic coverage is a long tail that will be filled in over
  * many sessions, and an unanswered row is INVISIBLE by construction: it simply does
  * not scale, exactly as it does not today. This turns "which rows still need
- * declaring" from a thing nobody can see into a list. It is a QUERY rather than a
- * pure function only in the sense that its input is the roster; given a plugin it
- * is deterministic.
+ * declaring" from a thing nobody can see into a list. Its CALLER walks the roster;
+ * this function is handed one plugin and touches nothing but that argument and the
+ * module constant above, so it is pure — it was labelled "Query (reads a live
+ * registry)" and this module imports NOTHING, which made the label unsatisfiable.
  *
  * ONLY NUMBER ROWS ARE COUNTED. An angle row is structurally answered (rowScaling
  * returns "none" for it with nothing declared), and a colour/boolean/select row has

@@ -41,7 +41,7 @@ export { QUALITY_CRF, CRF_MIN, CRF_MAX, DEFAULT_CRF };
  * OffscreenCanvas). Rejects LOUDLY if the encode yields no blob.
  *
  * EXPORTED so a probe can time THE function this path actually calls rather than
- * a lookalike: tests/browser_encode_measure_probe.js measures PNG encode against
+ * a lookalike: tests/browser_encode_measure.mjs measures PNG encode against
  * the WASM encoder it replaces, and a second copy of the call would make that
  * comparison a comparison of two probes.
  *

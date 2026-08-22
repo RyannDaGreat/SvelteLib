@@ -264,6 +264,18 @@ export function stackLayout(n, w, h, shiftX, shiftY) {
 // has no on/off switch dividing its rows the way paper_peacock's shadow group
 // does, so there is nothing to stay sparse ABOUT; uniform is the established
 // idiom here and the new rows keep it uniform.
+//
+// THAT TOP-UP ALSO RE-TUNED ONE PRE-EXISTING ROW, WHICH WENT UNRECORDED UNTIL
+// NOW. "Photo pile" was {shiftX 0.12, shiftY 0.3, alphaExponent 0.4, cardRadius
+// 0.06, shadowOpacity 0.45, shadowBlur 0.05} — "a lazy downward step" — and is
+// now the shallower down-and-across drift below. THE GATE DID NOT REQUIRE IT:
+// measured, the old values clear their nearest row ("Polaroid drop") by 11.12
+// lit-set levels against tests/preset_topup_a_test.js's bound of 10, so they
+// would have passed untouched; the new ones score 15.30, which is the floor that
+// file quotes. Kept rather than reverted — a second flip of one shipped row's
+// picture is worse than one recorded flip, and these values are what the family's
+// stated headroom is measured against — but written down, because a shipped row's
+// look changing silently is the defect, not the values it changed to.
 const PRESETS = [
   { name: "Riffle", description: "A tight sideways fan with hard corners — a deck being riffled, every card readable.", props: { shiftX: 0.28, shiftY: 0.02, alphaExponent: 0.25, cardRadius: 0.01, shadowOpacity: 0.25, shadowBlur: 0.01 } },
   { name: "Receding drift", description: "A long diagonal that fades away fast, so the pile reads as depth rather than as cards.", props: { shiftX: 0.22, shiftY: 0.22, alphaExponent: 1.2, cardRadius: 0.02, shadowOpacity: 0.35, shadowBlur: 0.04 } },

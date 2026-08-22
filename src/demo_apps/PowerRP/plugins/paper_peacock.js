@@ -721,6 +721,19 @@ export const paperPeacockPlugin = {
   // heavier, unmistakably different shadow than an author gets for free by
   // placing the widget and touching nothing.
   //
+  // "Tight fan ±20°" WAS CHANGED TOO, FOR A DIFFERENT REASON, and the two are
+  // easy to confuse: it was {fanAngle: 20, hRatio: 1.2} (pageCount inherited) and
+  // is now {pageCount: 4, fanAngle: 20, hRatio: 2.2}. It was NOT a dead row —
+  // measured, the old values sit 30.43 lit-set levels from the untouched default.
+  // What they collided with is a row THIS SAME TOP-UP ADDED, "Wide deck, high
+  // pivot", at 7.06 against tests/preset_topup_a_test.js's calibrated bound of 8.
+  // The newcomer could have moved instead; the incumbent did, so the four-sheet
+  // count is now part of the named look and its description says so. Note what
+  // that traded: the new values are 10.87 from the default where the old were
+  // 30.43, so this row IS now the family's closest pair, and the number that file
+  // quotes as its measured floor. Recorded because a shipped row's picture must
+  // never change without a written reason.
+  //
   // Two idioms carried through from the original four, extended in kind:
   // FULL-LOOK rows set the whole seven-key group (fan geometry + shadow)
   // together, PARTIAL rows touch only fan geometry OR only shadow — the same

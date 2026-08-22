@@ -609,8 +609,14 @@ test("grammar: call parsing + point .x/.y projection", () => {
   assert.deepEqual(tokenize("f(a, b).x").map((t) => t.kind), ["ref", "op", "ref", "comma", "ref", "op", "dot", "ref"]);
   // A call is a POINT; using it unprojected in arithmetic is a loud error.
   assert.throws(() => evalAst(parseExpression("closest_to_rim(a,b) + 1"), () => 0, () => ({ x: 1, y: 2 })), /returns a point/);
-  // Only .x / .y are valid projections.
-  assert.throws(() => parseExpression("f(a).z"), /Expected \.x or \.y/);
+  // THE COMPONENT NAME IS CHECKED AT RUNTIME, NOT AT PARSE (R7-38 follow-up).
+  // The parser cannot know the arity of what it is projecting — a colour result
+  // has r/g/b/a and a size result has w/h — so it accepts any identifier and the
+  // value refuses the ones it does not have. A POINT's vocabulary is still x/y
+  // alone, and it says so.
+  assert.equal(parseExpression("f(a).z").prop, "z", "the parser accepts any component name");
+  assert.throws(() => evalAst(parseExpression("f(a).z"), () => 0, () => ({ x: 1, y: 2 })), /has no component "z"/);
+  assert.throws(() => parseExpression("(a + b)."), /Expected a component name/);
   assert.equal(evalAst(parseExpression("f(a,b).y + 1"), () => 0, () => ({ x: 3, y: 4 })), 5);
 });
 test("function table: names, overloads, arity/kind/unknown errors", () => {

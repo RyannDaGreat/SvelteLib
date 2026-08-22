@@ -225,6 +225,16 @@ export const VECTOR_KINDS = {
  * `size` is the obvious parallel (and matches `COMPOUNDS.wh`'s existing "Size"
  * label), but it is awaiting confirmation and should be renamed if the user
  * prefers another word. Nothing else depends on the spelling: it is one key here.
+ *
+ * AND IT COLLIDES, WHICH IS THE FIRST REAL COST THE FLAG PREDICTED. Seven widgets
+ * declare a REAL numeric row called `size` — the font size (plugins/text.js,
+ * plaintext.js, number.js, labeled_circle.js, visual_node.js, clock_digital.js,
+ * demo/text_morph.js) — so `= title.size` names two things. THE STORED PROPERTY
+ * WINS: `core/expressions.js readVectorAddress` declines the synthesized address
+ * whenever the item has a value at that key, because a stored value is a fact
+ * about the document and an address is a convenience over one. Before that rule,
+ * `= t.size` evaluated to a 2-vector and every consumer saw "[object Object]".
+ * Renaming this address (`wh`, `extent`) would remove the collision entirely.
  */
 export const VECTOR_ADDRESS_FOR_COMPOUND = { xy: "pos", wh: "size" };
 
@@ -512,6 +522,12 @@ export function withColorChannel(color, axis, value) {
   if (!bytes) return null;
   const i = VECTOR_KINDS.color.axes.indexOf(axis);
   if (i < 0) return null;
+  // A NON-NUMERIC CHANNEL IS NOT A DARK COLOUR, IT IS "#NaN3456". rgbToHex
+  // stringifies whatever it is handed, so an equation string reaching here
+  // (`"= 100"` at fill.color.r) produced a hex with NaN digits in it and NO
+  // error anywhere — MEASURED. null is what every caller already reads as "not a
+  // colour", so the refusal path reports it instead.
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
   const out = bytes.slice();
   // Alpha is addressed as a fraction; every other channel is already a byte.
   out[i] = i === 3 ? value * COLOR_CHANNEL_MAX : value;
@@ -755,6 +771,48 @@ export function paintColorPath(paint) {
 }
 
 /**
+ * Pure function. Is `v` a PAINT VALUE — the shape a paint property (`fill`,
+ * `stroke`, `background`) or a plugin's plain colour row actually stores?
+ *
+ * ── WHY THE ADDRESS SEAM NEEDS THIS AND `paintColorPath` CANNOT BE IT ────────
+ * `paintColorPath` answers `['solid']` for EVERY untagged object, deliberately —
+ * that is what lets it type solid and both gradients from one line. But the
+ * equation grammar hands it whatever sits before a `.color` segment, and
+ * `fill.linear.stops.1.color` puts a STOP RECORD (`{offset, color}`) there. An
+ * untagged record then read as a paint, its `solid` slot came back undefined, and
+ * a stop colour — the very address this module's header points gradient authors
+ * at — was refused with *"is not a colour"*. MEASURED, and it is why the test
+ * lives in the caller's dispatch rather than inside paintColorPath: a stop record
+ * is not a paint with no colour, it is not a paint at all.
+ *
+ * THE THREE LEGAL SHAPES, and nothing else: a STRING (a bare hex, or any spelling
+ * `parseColor` takes), an ARRAY (`[r, g, b, a]` in 0..1, ir.js:100), or a TAGGED
+ * object — every multi-sub-state paint carries `type`, which is exactly what a
+ * record of some other kind does not.
+ *
+ * Args:
+ *   v (*): any value found at a paint path
+ *
+ * Returns:
+ *   boolean
+ *
+ * Examples:
+ *     >>> isPaintValue("#7aa2f7")
+ *     true
+ *     >>> isPaintValue({type: "linearGradient", linear: {stops: []}})
+ *     true
+ *     >>> // a gradient STOP is not a paint, even though it has a colour in it:
+ *     >>> isPaintValue({offset: 1, color: "#ffffff"})
+ *     false
+ *     >>> isPaintValue(undefined)
+ *     false
+ */
+export function isPaintValue(v) {
+  if (typeof v === "string" || Array.isArray(v)) return true;
+  return !!v && typeof v === "object" && typeof v.type === "string";
+}
+
+/**
  * Pure function. THE REFUSAL SENTENCE for addressing `.color` on a paint that
  * has none — the loud half of paintColorPath, kept beside it so the two can
  * never disagree about which kinds are refused.
@@ -919,6 +977,142 @@ export function componentDeltaIsColor(delta) {
   return names.length > 0 && names.every((n) => axes.includes(n));
 }
 
+/** Pure function. `obj` walked down `path`; undefined for any missing step. A
+ *  local two-liner rather than an import of core/deltas.js `getPath`, which would
+ *  close an import cycle — deltas.js imports THIS module. */
+const valueAt = (obj, path) => path.reduce((o, k) => (o == null ? undefined : o[k]), obj);
+
+/**
+ * Pure function. THE VALUE A COLOUR-CHANNEL KEYFRAME CAPTURES — the current
+ * number at `rel` (`["fill","color","r"]`, `["color","a"]`,
+ * `["fill","linear","stops","1","color","g"]`) on a stored item, or undefined
+ * when `rel` is not a channel address or there is no colour there.
+ *
+ * ── WHY A KEYFRAME NEEDS THIS AND A PLAIN PATH READ DOES NOT WORK ───────────
+ * A channel is a VIEW over a colour, not a stored leaf: the document holds
+ * `fill: "#7aa2f7"` and nothing at all at `fill.color.r`. So the Inspector's
+ * diamond — which captures "the value as it stands" before writing a keyframe —
+ * read `undefined` and called `keyframed(doc, i, path, undefined)`. MEASURED,
+ * and it fails TWICE: `hasKeyframe` stays false so the diamond never lights (the
+ * control reports nothing about its own click), and the write leaves
+ * `{fill: {color: {}}}` in the delta — an EMPTY component wrapper, which the fold
+ * does not recognise as a channel keyframe and merges instead, destroying the
+ * author's colour. Reading the channel out of the colour is what makes a channel
+ * diamond an ordinary keyframe.
+ *
+ * IT MIRRORS `readVectorAddress`'s DISPATCH, which is the same question asked on
+ * the read side: a prefix that IS a paint answers through `paintColorPath`;
+ * anything else (a `shadow.color`, a plugin row keyed `color`, a gradient stop)
+ * names the colour outright.
+ *
+ * Args:
+ *   item (object): the item's STORED state
+ *   rel (Array<string|number>): the path below the item
+ *
+ * Returns:
+ *   number|undefined
+ *
+ * Examples:
+ *     >>> colorChannelKeyframeValue({fill: "#123456"}, ["fill", "color", "r"])
+ *     18
+ *     >>> // a tagged paint answers from its remembered solid slot, as the read side does:
+ *     >>> colorChannelKeyframeValue({fill: {type: "solid", solid: "#123456"}}, ["fill", "color", "g"])
+ *     52
+ *     >>> // a plugin row keyed exactly `color` — the property IS the colour:
+ *     >>> colorChannelKeyframeValue({color: "#123456"}, ["color", "b"])
+ *     86
+ *     >>> // an OFF paint has no colour, so there is nothing to capture:
+ *     >>> colorChannelKeyframeValue({fill: {type: "none"}}, ["fill", "color", "r"])
+ *     undefined
+ *     >>> colorChannelKeyframeValue({x: 5}, ["x"])
+ *     undefined
+ */
+export function colorChannelKeyframeValue(item, rel) {
+  const axis = rel[rel.length - 1];
+  if (rel.length < 2 || rel[rel.length - 2] !== COLOR_ADDRESS || !isVectorAxis(COLOR_ADDRESS, axis)) return undefined;
+  const prefix = rel.slice(0, -2);
+  const prefixValue = prefix.length ? valueAt(item, prefix) : undefined;
+  const source = isPaintValue(prefixValue) ? prefixValue : valueAt(item, rel.slice(0, -1));
+  const path = paintColorPath(source);
+  if (path === null) return undefined;
+  return colorChannelValue(path.length ? source[path[0]] : source, axis) ?? undefined;
+}
+
+/**
+ * Pure function. Is `delta` a bare CHANNEL SET — `{r, g, …}` with nothing else in
+ * it? The inner half of `componentDeltaIsColor`, exported because a property
+ * whose own key IS `color` writes this shape WITHOUT the wrapper (see
+ * `colorComponentDelta`).
+ *
+ * @example isColorChannelSet({r: 255}) // true
+ * @example isColorChannelSet({r: 255, a: 0.5}) // true
+ * @example isColorChannelSet({z: 1}) // false (not a declared axis)
+ * @example isColorChannelSet({}) // false (a keyframe of nothing is not one)
+ * @example isColorChannelSet("#ff0000") // false
+ */
+export function isColorChannelSet(delta) {
+  if (!isPlainObject(delta)) return false;
+  const axes = VECTOR_KINDS[COLOR_ADDRESS].axes;
+  const names = Object.keys(delta);
+  return names.length > 0 && names.every((n) => axes.includes(n));
+}
+
+/**
+ * Pure function. THE FOLD'S ONE QUESTION: standing at `key` with `delta` about to
+ * land on `target`, is this a COLOUR-CHANNEL keyframe, and if so which channels?
+ * Returns the channel set, or null for every other delta in the document model.
+ *
+ * ── TWO SPELLINGS, BECAUSE THE ADDRESS HAS TWO SHAPES ───────────────────────
+ * `fill.color.r` puts the wrapper one level below the PAINT's key, so the fold
+ * standing on `fill` sees `{color: {r}}`. But a plugin may declare a row whose
+ * key IS the colour — `plugins/text.js` Color, `trail.js`, `demo/corkboard.js`
+ * all declare `{key: "color", kind: "color"}` — and then `t.color.r` puts a BARE
+ * channel set at a key called `color`. Both are the same feature and both were
+ * broken before this function existed: the second fell to the fold's generic
+ * `isTree` arm, which replaced the author's hex with `{r: 255}`. MEASURED.
+ *
+ * ── THE TARGET IS PART OF THE QUESTION, AND IT IS NOT THE WHOLE OF IT ───────
+ * Asking what the delta lands ON rejects every non-paint record — a `vars` map,
+ * an effects bundle, a stop list — which is what keeps this out of the way of
+ * deltas that merely look alike. IT CANNOT, HOWEVER, TELL AN ITEM FROM A PAINT,
+ * and that is stated rather than papered over: `{t: {color: {r: 255}}}` at the
+ * ITEM-MAP level is shape-identical to a component wrapper, and a WIDGET carries
+ * a string `type` (`"text"`) exactly as a paint record does (`"solid"`). The only
+ * honest separator there is the LEVEL, so the caller excludes the item map BY
+ * NAME — see core/deltas.js ITEM_MAP_KEY, which is where that argument lives.
+ *
+ * AN ABSENT TARGET STILL COUNTS, deliberately: a channel over a slot the state
+ * does not have must reach the resolver and be REFUSED there, so the fold leaves
+ * the key absent. Falling through instead would create `{color: {r: 255}}` at a
+ * paint slot — the unspellable shape this module's header rejects.
+ *
+ * Args:
+ *   key (string): the key the fold is standing on
+ *   delta (*): the delta subtree at that key
+ *   target (*): the state value the delta lands on (may be undefined)
+ *
+ * Returns:
+ *   object|null: the `{r?, g?, b?, a?}` channels, or null
+ *
+ * Examples:
+ *     >>> colorComponentDelta("fill", {color: {r: 255}}, "#123456")
+ *     { r: 255 }
+ *     >>> // a row whose own key IS the colour writes the bare set:
+ *     >>> colorComponentDelta("color", {r: 255}, "#123456")
+ *     { r: 255 }
+ *     >>> // a target that is not a paint at all answers null:
+ *     >>> colorComponentDelta("vars", {color: {r: 255}}, {speed: 5})
+ *     null
+ *     >>> colorComponentDelta("fill", {stops: []}, "#123456")
+ *     null
+ */
+export function colorComponentDelta(key, delta, target) {
+  if (target !== undefined && !isPaintValue(target)) return null;
+  if (componentDeltaIsColor(delta)) return delta[COLOR_ADDRESS];
+  if (key === COLOR_ADDRESS && isColorChannelSet(delta)) return delta;
+  return null;
+}
+
 /**
  * Pure function. Resolves a component wrapper over a stored PAINT, yielding the
  * paint with its addressable color updated — or a REFUSAL SENTENCE when this
@@ -978,6 +1172,10 @@ export function componentDeltaIsColor(delta) {
  *   paint (*): the stored paint value the delta lands on
  *   components (object): the `{r?, g?, b?, a?}` wrapper's contents
  *   slot (string): the paint's own key, for the refusal sentence ("fill")
+ *   alpha (number): the fold's tween strength. Defaults to 1 — the ENDPOINT, so
+ *     a caller that only wants the resolved value is unchanged. Below 1 each
+ *     channel lerps from the RESOLVED base colour's own value for that channel
+ *     (lerpedColorComponents), which is the half the fold could not do itself.
  *
  * Returns:
  *   {paint: *} on success, or {refusal: string} — exactly one key
@@ -1002,14 +1200,41 @@ export function componentDeltaIsColor(delta) {
  *     '"fill.color" is a material, which has no single colour — address its knobs at fill.material.params instead.'
  *     >>> resolveColorComponentDelta({type: "material", material: {}}, {r: 255}, "fill").paint
  *     undefined
+ *     >>> // MID-TWEEN, the channel lerps from the base's own value — and it does
+ *     >>> // so through a TAGGED paint exactly as through a bare hex:
+ *     >>> resolveColorComponentDelta({type: "solid", solid: "#123456"}, {r: 255}, "fill", 0.5).paint.solid
+ *     '#893456'
+ *     >>> // an equation typed into a channel row is REFUSED, not baked into the hex:
+ *     >>> resolveColorComponentDelta("#123456", {r: "= 100"}, "fill").paint
+ *     undefined
  */
-export function resolveColorComponentDelta(paint, components, slot = COLOR_ADDRESS) {
+export function resolveColorComponentDelta(paint, components, slot = COLOR_ADDRESS, alpha = 1) {
   const token = slot === COLOR_ADDRESS ? COLOR_ADDRESS : `${slot}.${COLOR_ADDRESS}`;
   const refusal = paintColorRefusal(paint, token);
   if (refusal) return { refusal };
   const path = paintColorPath(paint);
   const base = path.length === 0 ? paint : paint[path[0]];
-  const folded = foldColorComponent(base, components);
+  // A CHANNEL THAT IS NOT A NUMBER IS REFUSED BEFORE IT CAN BE BAKED IN. The
+  // Inspector's channel rows are plain `kind: "number"` rows, so NumericField
+  // happily stores `"= 100"` at `fill.color.r`; the fold then reached
+  // withColorChannel and produced "#NaN3456" with no error, and the evaluator
+  // never saw a slot because the fold had already resolved the path away.
+  // MEASURED. An equation gets its own sentence, because "not a number" would
+  // read as a typo when the author deliberately typed a formula.
+  for (const [axis, v] of Object.entries(components ?? {}))
+    if (typeof v !== "number" || !Number.isFinite(v))
+      return {
+        refusal: typeof v === "string"
+          ? `"${token}.${axis}" cannot hold an equation (${JSON.stringify(v)}) — a colour CHANNEL is resolved by the fold, before equations run. Bind the whole colour instead: put the formula on "${slot}".`
+          : `"${token}.${axis}" is ${JSON.stringify(v)}, which is not a number — a colour channel takes one.`,
+      };
+  // THE TWEEN LERPS FROM THE RESOLVED BASE COLOUR, NOT FROM THE PAINT. This used
+  // to be the caller's job (core/deltas.js), which had only the PAINT in hand —
+  // so over a tagged solid or a gradient `colorChannelValue` answered null and
+  // every channel SNAPPED to its target at the first interior frame while a bare
+  // hex tweened. MEASURED (#4d3456 at 0.25 over a bare hex, #ff3456 over a tagged
+  // one). Here `base` is already the colour, so the two shapes cannot diverge.
+  const folded = foldColorComponent(base, alpha >= 1 ? components : lerpedColorComponents(base, components, alpha));
   if (folded === null)
     return {
       refusal: base === undefined
@@ -1100,12 +1325,17 @@ function isPlainObject(x) {
   return x !== null && typeof x === "object" && Object.getPrototypeOf(x) === Object.prototype;
 }
 
-// ── THE ALGEBRA: NAMED n-VECS AS NUMPY-STYLE VALUES (R7-38b / R7-38c) ────────
+// ── THE VALUE LAYER: THE TAG, THE CONSTRUCTOR AND THE NAMING (R7-38b/c) ──────
 //
-// Everything below is RANK- AND ARITY-AGNOSTIC by construction. No function in
-// this section mentions `pos`, `size`, `color`, or a length. That is the whole
-// point: the user's "we might have others in the future ... even arbitrary
-// tensors" is satisfied by a declaration entry, never by an edit here.
+// This section is METADATA, not algebra, and it sits deliberately OUTSIDE the
+// guarded region that begins below: naming a 2-vec's components x/y (and w/h) is
+// exactly the "per-kind metadata used to address components, and nothing else"
+// the header describes. tests/vec_values_test.js used to slice its structural
+// guard from HERE to the END OF FILE, which put both this naming layer and the
+// kind-aware ADDRESS BRIDGE at the bottom inside a check named "the algebra
+// mentions no kind name and no arity" — so the guard could only be satisfied by
+// SPELLING (`n === 2` slips past a `.length === 2` regex), never by the property
+// it claims. The three markers now bound the region that name is about.
 
 /** The tag marking a value as a numeric vector/tensor. A SYMBOL-FREE string key
  *  so a vector survives JSON round-tripping unchanged — an equation's RESULT can
@@ -1163,11 +1393,14 @@ export function makeVector(data, kind = null) {
  * Pure function. The DEFAULT component names for a bare vector of `n` elements —
  * how an unkinded arithmetic result still answers to `.x` / `.r`.
  *
- * IT IS A FALLBACK, NOT A TYPE SYSTEM. A 2-vec gets x/y and a 4-vec gets r/g/b/a
- * because those are the only arities the shipped kinds use and the names are
- * unambiguous at each. A 3-vec gets BOTH readings (x/y/z and r/g/b) because a
- * 3-vec is genuinely either. Any other arity gets none — positional only — which
- * is the honest answer rather than an invented naming.
+ * IT IS A FALLBACK, NOT A TYPE SYSTEM. A 4-vec gets r/g/b/a because that is the
+ * only arity-4 kind shipped. AN ARITY THAT SEVERAL SHIPPED KINDS SHARE CARRIES
+ * EVERY READING, because the value genuinely is either: a 3-vec answers to x/y/z
+ * AND r/g/b, and — by the same rule — a 2-vec answers to x/y AND w/h, since `pos`
+ * and `size` are both 2-vecs and an arithmetic result carries no kind. Omitting
+ * w/h was measured as the reason `(b.size * 2).w` had no component to reach even
+ * after the grammar allowed the projection. Any other arity gets none —
+ * positional only — which is the honest answer rather than an invented naming.
  *
  * Args:
  *   n (number): the vector's length
@@ -1176,8 +1409,9 @@ export function makeVector(data, kind = null) {
  *   string[]|null
  *
  * Examples:
+ *     >>> // a 2-vec is either a position or a size, so it answers to both:
  *     >>> axesForArity(2)
- *     ['x', 'y']
+ *     ['x', 'y', 'w', 'h']
  *     >>> axesForArity(4)
  *     ['r', 'g', 'b', 'a']
  *     >>> // a 3-vec is either a point or a colour, so it answers to both:
@@ -1187,11 +1421,20 @@ export function makeVector(data, kind = null) {
  *     null
  */
 export function axesForArity(n) {
-  if (n === 2) return ["x", "y"];
+  if (n === 2) return ["x", "y", "w", "h"];
   if (n === 3) return ["x", "y", "z", "r", "g", "b"];
   if (n === 4) return ["r", "g", "b", "a"];
   return null;
 }
+
+// ── THE ALGEBRA: NAMED n-VECS AS NUMPY-STYLE VALUES (R7-38b / R7-38c) ────────
+//
+// Everything from here to THE ADDRESS BRIDGE is RANK- AND ARITY-AGNOSTIC by
+// construction. No function in this region mentions `pos`, `size`, `color`, an
+// arity, or `VECTOR_KINDS` at all. That is the whole point: the user's "we might
+// have others in the future ... even arbitrary tensors" is satisfied by a
+// declaration entry, never by an edit here — and tests/vec_values_test.js checks
+// this REGION for those spellings rather than trusting the sentence.
 
 /**
  * Pure function. THE ONE DISPATCH PREDICATE for the whole algebra — "is this a
@@ -1433,6 +1676,13 @@ export function vectorMapVariadic(fn, args) {
     out.push(fn(...args.map((arg) => vectorValues(arg)?.[i] ?? arg)));
   return makeVector(out);
 }
+
+// ── THE ADDRESS BRIDGE: WHERE KINDS COME BACK IN ─────────────────────────────
+//
+// The algebra's guarded region ENDS here. These two functions are kind-aware ON
+// PURPOSE — they are the map between a declared vector kind and the storage a
+// document holds — so they sit outside the guard rather than being excused
+// inside it.
 
 /**
  * Pure function. A vector VALUE for a named kind, built from a source the

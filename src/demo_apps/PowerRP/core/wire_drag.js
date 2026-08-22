@@ -354,9 +354,18 @@ function withDetached(items, detach) {
  * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 100, y: 0}, type: "visual", style: "straight"}], 50, 2, 6).to.item // "b"
  * @example // …and missed from far off it
  * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 100, y: 0}, type: "visual", style: "straight"}], 50, 40, 6) // null
- * @example // a BEZIER is measured on its curve: the chord's midpoint is on the line
- * @example // between the beads, but the drawn cable bows away from it
- * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 200, y: 200}, type: "visual", style: "bezier"}], 100, 100, 4) // null
+ * @example // A BEZIER IS MEASURED ON ITS CURVE, and the honest demonstration is NOT
+ * @example // at the midpoint: wirePathD pushes both control points out by the same
+ * @example // reach, so they are symmetric about the chord's midpoint and the curve
+ * @example // passes exactly through it. (This example asserted the opposite until
+ * @example // 2026-08-22 — the same arithmetic slip the suite caught in its own
+ * @example // fixture. Measured, not reasoned:)
+ * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 200, y: 200}, type: "visual", style: "bezier"}], 100, 100, 4).to.item // "b"
+ * @example // A QUARTER of the way along, the drawn cable has bowed well off the
+ * @example // straight line between the beads — the chord's quarter point misses…
+ * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 200, y: 200}, type: "visual", style: "bezier"}], 50, 50, 4) // null
+ * @example // …and the CURVE's own point at that parameter hits.
+ * @example wireAt([{from: {item: "a", port: "o", x: 0, y: 0}, to: {item: "b", port: "i", x: 200, y: 200}, type: "visual", style: "bezier"}], 59.375, 31.25, 4).from.item // "a"
  * @example wireAt([], 0, 0, 10) // null
  */
 export function wireAt(wires, wx, wy, tol = 0) {

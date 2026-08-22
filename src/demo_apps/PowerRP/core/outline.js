@@ -892,35 +892,72 @@ export function ringSectorOutline({ cx, cy, rx, ry, inner, a0, a1, cap = "pie" }
 
 /**
  * Pure function. A polygon outline with SAMPLED rounded corners: each vertex is
- * cut back by radius `r` along both incident edges and bridged by a quadratic
+ * cut back by its radius along both incident edges and bridged by a quadratic
  * fillet SAMPLED into CORNER_SEGMENTS+1 points (so the result stays a pure point
  * list — the all-polyline shapeshifter convention — unlike roundedPolygonPathD
- * which emits `Q` commands). `r` is clamped to half the shortest edge. r <= 0
- * returns the input unchanged. Generalizes the corner-rounding used across the
- * polygon-based families (polygon/star, cross, quad, corner rect).
+ * which emits `Q` commands). `r` is one radius for every corner, or a PER-VERTEX
+ * array parallel to `points` (a corner the caller wants left SHARP asks for 0 —
+ * calloutOutline's tail does). A corner whose radius resolves to 0 contributes
+ * its bare vertex, not a fillet. r <= 0 everywhere returns the input unchanged.
+ * Generalizes the corner-rounding used across the polygon-based families
+ * (polygon/star, cross, quad, corner rect).
+ *
+ * THE CAP IS PER CORNER — half of each of ITS OWN two incident edges — which is
+ * the tightest bound that cannot overlap: two adjacent fillets each eat at most
+ * half of the edge between them, so at worst they meet at its midpoint.
+ * IT USED TO BE ONE GLOBAL min(edge)/2 OVER THE WHOLE POLYGON, and that is a
+ * different rule wearing the same name: ONE short edge anywhere silently
+ * flattened EVERY corner. Measured on the shipped ss_callout presets at that
+ * widget's own 200×200 box, where the tail's base is the short edge: of the TEN
+ * rows asking for a radius, EIGHT drew less than they asked and THREE drew
+ * exactly 0.0px. Whisper Bubble asked 46.8px and drew nothing — four square
+ * corners; Pill Bubble, described as "a fully rounded pill", asked 78.0px and
+ * drew 16.0px. The family's row help — "Rounds the bubble body's corners, from a
+ * sharp rectangle to a soft rounded bubble" — described a picture no value of the
+ * knob could produce.
+ *
+ * COINCIDENT CONSECUTIVE VERTICES ARE DROPPED FIRST (with their radii), because
+ * a duplicate vertex is not a corner: it is a zero-length edge, which under ANY
+ * cap rule forces both of its ends sharp and emits seg+1 copies of one point.
+ * Exact equality, not a tolerance: a merely NEAR-duplicate leaves a real (tiny)
+ * edge, and capping that corner to it is the correct answer, not a defect.
  *
  * @example roundedVerts([[0, 0], [20, 0], [20, 20], [0, 20]], 0) // [[0, 0], [20, 0], [20, 20], [0, 20]] (r<=0 unchanged)
  * @example roundedVerts([[0, 0], [20, 0], [20, 20], [0, 20]], 5)[0] // [0, 5] (first fillet starts 5 up the left edge)
  * @example roundedVerts([[0, 0], [20, 0], [20, 20], [0, 20]], 5).length // 36 (4 corners x 9 samples)
+ * @example roundedVerts([[0, 0], [100, 0], [100, 100], [0, 100], [0, 90]], 20)[0] // [0, 20] (this corner's own edges are 90 and 100 long — the 10-long edge elsewhere does not cap it)
+ * @example roundedVerts([[0, 0], [20, 0], [20, 20], [20, 20], [0, 20]], 5).length // 36 (the duplicate vertex is dropped, not left to flatten every fillet)
+ * @example roundedVerts([[0, 0], [20, 0], [20, 20], [0, 20]], [5, 0, 0, 0]).length // 12 (one rounded corner: 9 samples + 3 bare vertices)
  */
 export function roundedVerts(points, r, seg = CORNER_SEGMENTS) {
-  if (!(r > 0) || points.length < 3) return points;
-  const n = points.length;
-  let minEdge = Infinity;
-  for (let i = 0; i < n; i++) {
-    const a = points[i], b = points[(i + 1) % n];
-    minEdge = Math.min(minEdge, Math.hypot(b[0] - a[0], b[1] - a[1]));
+  const perVertex = Array.isArray(r);
+  if (!(perVertex ? r.some((v) => v > 0) : r > 0) || points.length < 3) return points;
+  // Drop coincident consecutive vertices (including the wrap-around pair), radii
+  // in lockstep, so no measurement below ever sees a zero-length edge.
+  const verts = [], radii = [];
+  for (let i = 0; i < points.length; i++) {
+    const last = verts[verts.length - 1];
+    if (last && last[0] === points[i][0] && last[1] === points[i][1]) continue;
+    verts.push(points[i]);
+    radii.push(perVertex ? (r[i] ?? 0) : r);
   }
-  const rr = Math.min(r, minEdge / 2);
-  const trimTo = (from, to) => {
+  while (verts.length > 1 && verts[0][0] === verts[verts.length - 1][0] && verts[0][1] === verts[verts.length - 1][1]) {
+    verts.pop(); radii.pop();
+  }
+  if (verts.length < 3) return points;
+  const n = verts.length;
+  const half = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]) / 2;
+  const trimTo = (from, to, rr) => {
     const dx = to[0] - from[0], dy = to[1] - from[1];
     const len = Math.hypot(dx, dy) || 1;
     return [from[0] + (dx / len) * rr, from[1] + (dy / len) * rr];
   };
   const out = [];
   for (let i = 0; i < n; i++) {
-    const v = points[i], prev = points[(i - 1 + n) % n], next = points[(i + 1) % n];
-    const entry = trimTo(v, prev), exit = trimTo(v, next);
+    const v = verts[i], prev = verts[(i - 1 + n) % n], next = verts[(i + 1) % n];
+    const rr = Math.min(radii[i], half(v, prev), half(v, next));
+    if (!(rr > 0)) { out.push(v); continue; }
+    const entry = trimTo(v, prev, rr), exit = trimTo(v, next, rr);
     for (let k = 0; k <= seg; k++) {
       const p = quadraticBezierPoint({ x: entry[0], y: entry[1] }, { x: v[0], y: v[1] }, { x: exit[0], y: exit[1] }, k / seg);
       out.push([p.x, p.y]);
@@ -1453,12 +1490,26 @@ export function gearOutline(w, h, { teeth = 8, innerRatio = 0.7, toothWidth = 0.
  * → cloud-less pointer). A rounded-rect body with a triangular tail spliced into
  * the BOTTOM edge, pointing to (tailX, tailY) in local space (free-drag: the tip
  * may be anywhere). `tailWidth` is the tail base width as a fraction of w;
- * `cornerRadius` rounds the body corners. The tail's own short edges auto-clamp
- * to a near-sharp point.
+ * `cornerRadius` rounds the body corners.
+ *
+ * THE TAIL IS SHARP BY DECLARATION, not by arithmetic accident: its three
+ * vertices ask roundedVerts for radius 0, because the knob's row help promises
+ * only "the bubble body's corners" and a rounded tip is a lollipop, not a
+ * pointer. This used to fall out of the global min-edge cap — which is exactly
+ * why the BODY was sharp too (see roundedVerts, where that defect is measured).
+ *
+ * A TAIL BASE FLUSH WITH A BODY EDGE IS ONE VERTEX, NOT TWO. Drag the tip past
+ * the box and the base clamp lands baseL on 0 (or baseR on w), so [baseL, bodyH]
+ * coincides with the body's bottom-left corner. That point IS the body corner —
+ * the left edge meets the tail edge there — so it is emitted ONCE, carrying the
+ * body radius. Emitting the duplicate instead left a zero-length edge, which is
+ * what suppressed the rounding on every off-box-tail preset.
  *
  * @example calloutOutline(100, 80, {cornerRadius: 0, tailX: 20, tailY: 100, tailWidth: 0.2})[0].some(([, y]) => y >= 99) // true (tail tip reaches y≈100)
  * @example calloutOutline(100, 80, {cornerRadius: 0, tailX: 20, tailY: 100, tailWidth: 0.2}).length // 1
  * @example calloutOutline(100, 80, {tailWidth: 0})[0].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) // true (zero width — a needle-thin pointer, not a NaN)
+ * @example calloutOutline(100, 80, {cornerRadius: 1, tailX: -50, tailY: 100, tailWidth: 0.2})[0].some(([x, y]) => x === 0 && y === 0) // false (a flush tail base no longer flattens the body's corners)
+ * @example calloutOutline(100, 80, {cornerRadius: 1, tailX: 20, tailY: 100, tailWidth: 0.2})[0].some(([x, y]) => x === 20 && y === 100) // true (the tail TIP stays sharp at any radius)
  */
 export function calloutOutline(w, h, { cornerRadius = 0.2, tailX = null, tailY = null, tailWidth = 0.22 } = {}) {
   const bodyH = h * 0.78; // body occupies the top; tail hangs below
@@ -1469,11 +1520,16 @@ export function calloutOutline(w, h, { cornerRadius = 0.2, tailX = null, tailY =
   const baseW = Math.max(0, Math.min(tailWidth, 0.9)) * w;
   const baseCx = Math.max(baseW / 2, Math.min(tipX, w - baseW / 2));
   const baseL = baseCx - baseW / 2, baseR = baseCx + baseW / 2;
-  // Raw body corners CW from TL, with the tail spliced onto the bottom edge.
-  const verts = [
-    [0, 0], [w, 0], [w, bodyH], [baseR, bodyH], [tipX, tipY], [baseL, bodyH], [0, bodyH],
-  ];
-  return [roundedVerts(verts, cornerRadius * Math.min(w, bodyH) / 2)];
+  const rad = cornerRadius * Math.min(w, bodyH) / 2;
+  // Body corners CW from TL with the tail spliced into the bottom edge, and a
+  // radius PER VERTEX (see the two rules above): `rad` for a body corner, 0 for
+  // a tail vertex, and ONE vertex where a flush base meets a body corner.
+  const verts = [[0, 0], [w, 0], [w, bodyH]], radii = [rad, rad, rad];
+  if (baseR < w) { verts.push([baseR, bodyH]); radii.push(0); }
+  verts.push([tipX, tipY]); radii.push(0);
+  if (baseL > 0) { verts.push([baseL, bodyH]); radii.push(0); }
+  verts.push([0, bodyH]); radii.push(rad);
+  return [roundedVerts(verts, radii)];
 }
 
 /**

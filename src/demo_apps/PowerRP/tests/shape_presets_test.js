@@ -2,10 +2,11 @@
  * THE GEOMETRIC-SHAPE PRESET GATE — bare node, real Skia, real pixels.
  * Run: node src/demo_apps/PowerRP/tests/shape_presets_test.js
  *
- * Covers `polygon`, `donut` and `circle` (two families). Every subject here is
- * PURE VECTOR — path, polyline, ellipse — which is exactly what cli/render.js's
- * software Skia surface exists for, so this needs no Chrome and carries no
- * capture-hang risk. tests/arrow_presets_test.js is the structural template.
+ * Covers `polygon`, `donut`, `circle` (two families) and the ten shapeshifter
+ * families listed below. Every subject here is PURE VECTOR — path, polyline,
+ * ellipse — which is exactly what cli/render.js's software Skia surface exists
+ * for, so this needs no Chrome and carries no capture-hang risk.
+ * tests/arrow_presets_test.js is the structural template.
  *
  * ── WHAT IT PROVES ───────────────────────────────────────────────────────────
  *  1. No two presets in a family render the same picture, and none renders the
@@ -47,6 +48,25 @@
  * enough apart to be worth a separate row" is a judgement, so each family below
  * carries a pair it REJECTS and the narrowest pair it KEEPS, both measured on
  * this fixture, with the bound between them.
+ *
+ * ── THE FRAME MUST CONTAIN THE SHAPE, AND THE BOX MUST BE THE AUTHORED ONE ───
+ * A bound measured on a CLIPPED subject is a bound on the fixture, not on the
+ * family, and it reads exactly like a tight family — which is how ss_banner came
+ * to carry a bound of 2. Its outward forks (negative notchDepth) span −0.45·w to
+ * 1.45·w, so at the default box "Outward Fork" and "Sharp Outward Points" had
+ * their whole left flare off-canvas and met the gate on a 40px band: a measured
+ * 2.78 that was an artifact of the crop. So a family whose geometry leaves its
+ * box declares its own `world` (the rect the camera frames) — the shape shrinks,
+ * every pixel of it is present, and the number means what it says.
+ *
+ * The same applies to the BOX. ss_callout's tail tip is stored in absolute
+ * box-local pixels, and every one of its presets picked those numbers against the
+ * plugin's own 200×200 seed (plugins/shapeshifter.js says so at its defaults).
+ * Rendered at the 280×280 default box, `tailY: 220` lands 1.6px below a body that
+ * now ends at 218.4 — a tail nobody authored, and two presets differing only in
+ * tail width collapse onto each other. It declares `box` and is measured where it
+ * was drawn. A family whose knobs are all FRACTIONS of the box (every other one
+ * here) is scale-free and needs neither override.
  */
 
 import assert from "node:assert/strict";
@@ -66,16 +86,19 @@ function test(name, fn) {
 
 const roster = builtinRoster();
 const W = 320;
-const VIEW = fitRectView({ x: 0, y: 0, w: W, h: W }, W, W);
+const WORLD = { x: 0, y: 0, w: W, h: W };     // the world rect the camera frames
+const VIEW = fitRectView(WORLD, W, W);
 const BOX = { x: 0, y: 0, w: 280, h: 280 };   // the subject, inset in the canvas
 const IDENTITY = { x: 0, y: 0, rotation: 0, scale: 1 };
+// An empty scene is the background everywhere, so BLANK is the same image under
+// any view — one is enough for the per-family worlds below.
 const BLANK = readPng(await renderToPng([], VIEW, { width: W, height: W }));
 
 /** Query (renders). One frame from a plugin state, through `stamp` if the family
- *  needs a post-emit seam. */
-async function frame(plugin, state, stamp) {
+ *  needs a post-emit seam, under `view` (the family's frame — see the header). */
+async function frame(plugin, state, stamp, view) {
   const ops = stamp(state, plugin.emit(state, null, IDENTITY));
-  return readPng(await renderToPng(ops, VIEW, { width: W, height: W }));
+  return readPng(await renderToPng(ops, view, { width: W, height: W }));
 }
 
 /** Pure function. No post-emit seam — most widgets draw everything in emit(). */
@@ -129,13 +152,20 @@ const FAMILIES = [
   // Every subject here is the SAME `path` IR op the rest of this file already
   // covers (subpathsPathD of a pure core/outline.js generator), so no new stamp
   // or reduction is needed — asEmitted + litSet, exactly like `polygon`. Bounds
-  // are MEASURED per family (not copied from polygon's 17): a shape whose look
-  // is dominated by a large filled body (cornerRect, callout) separates far less
-  // per-pixel than a thin silhouette family even when the geometry is genuinely
-  // different, because the differing region (a corner, a tail sliver) is a small
-  // share of a big filled area. Each bound sits below its measured narrowest KEEP
-  // with margin, and above zero — the anchors are the real narrowest pair found
-  // by a full pairwise sweep over (DEFAULT + all presets), not a picked pair.
+  // are MEASURED per family (not copied from polygon's 17): a shape whose look is
+  // dominated by a large filled body (cornerRect) separates far less per-pixel
+  // than a thin silhouette family even when the geometry is genuinely different,
+  // because the differing region — a corner — is a small share of a big filled
+  // area. Each bound sits below its measured narrowest KEEP with margin, and
+  // above zero — the anchors are the real narrowest pair found by a full pairwise
+  // sweep over (DEFAULT + all presets), not a picked pair.
+  //
+  // THAT ARGUMENT USED TO NAME `callout` BESIDE cornerRect, AND IT WAS COVER FOR
+  // A DEFECT. Its rows measured 0.80 apart not because a tail sliver is small but
+  // because the corner radius never rendered (core/outline.js roundedVerts); the
+  // sentence was true-sounding and made a bound of 0.5 look calibrated. With the
+  // radius drawing, that family's narrowest pair is 7.05 — the widest floor of
+  // any shapeshifter family here. A low bound is a symptom to chase first.
   {
     type: "ss_arrow", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
     bound: 20,
@@ -145,22 +175,44 @@ const FAMILIES = [
   },
   {
     type: "ss_banner", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
-    bound: 2,
-    // Narrowest KEEP measured: 2.78 (Outward Fork vs Sharp Outward Points, two
-    // different outward-flare depths — a real geometric difference at a shape
-    // whose forked notch is a small share of the banner's filled area).
-    anchors: "keep 2.78 (Outward Fork vs Sharp Outward Points) — narrowest pair in the family",
+    // THE WHOLE BANNER, flares included: a negative notchDepth forks the ends
+    // OUTWARD to -0.45·w .. 1.45·w at the deepest preset (-126 .. 406 for the
+    // 280 box), so the default 0..320 frame cut both flares off. See the header.
+    world: { x: -130, y: -120, w: 540, h: 540 },
+    bound: 4,
+    // 3.08 — notchDepth -0.20 against -0.21, one notch 2.8px deeper than the
+    //        other. A REAL COLLISION: the same ribbon, imperceptibly deeper.
+    // 5.05 — Flat Banner against Barely Notched, the narrowest KEEP: no notch at
+    //        all against the family's deliberately faintest one (0.02 = 5.6px).
+    // THIS FAMILY'S BRACKET IS THE TIGHTEST HERE, and that is a property of the
+    // preset list, not of the fixture: "Barely Notched" exists to sit just off
+    // flat, so a rejectable pair only 0.01 of depth apart measures 4.70 and would
+    // pass. The gate still does its job (a duplicate row measures ~0); it just
+    // cannot also police fine spacing in a family that ships a near-flat row.
+    anchors: "reject 3.08 (notchDepth -0.20 vs -0.21) / keep 5.05 (Flat Banner vs Barely Notched)",
   },
   {
     type: "ss_callout", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
-    bound: 0.5,
-    // Narrowest KEEP measured: 0.80 (Sharp Callout vs Whisper Bubble). A callout
-    // is a large rounded body with a thin tail — real corner-radius/tail
-    // differences move very little of the frame, so this family's floor is far
-    // below polygon's. The bound sits below every measured pair with margin
-    // while still being strictly positive (rules out a true pixel-identical
-    // duplicate, which would measure exactly 0).
-    anchors: "keep 0.80 (Sharp Callout vs Whisper Bubble) — narrowest pair in the family",
+    // THE AUTHORED BOX (the plugin's own 200x200 seed, which every preset's
+    // absolute tailX/tailY was picked against) and a frame that contains the
+    // tails: they reach local x -60..340, y -20..340, and do NOT scale with the
+    // box. Both stated in the header.
+    box: { x: 0, y: 0, w: 200, h: 200 },
+    world: { x: -70, y: -50, w: 420, h: 420 },
+    bound: 5,
+    // 3.61 — the same bubble with its tail tip moved 2% of the box (tailX 55 vs
+    //        59). A REAL COLLISION; the finer knob nudges are nearer still
+    //        (cornerRadius 0.30 vs 0.32 = 0.48, tailWidth 0.30 vs 0.32 = 1.47).
+    // 7.05 — the DEFAULT against Speech Bubble, the narrowest KEEP: a rounder
+    //        body with a wider tail one step down-left.
+    // THIS BOUND USED TO BE 0.5, and the reason is worth keeping: the corner
+    // radius did not render at all (core/outline.js roundedVerts capped every
+    // corner by the polygon's shortest edge, which the tail base makes tiny or
+    // ZERO), so the family's widest visual axis was inert and every pair
+    // collapsed. The number was then explained by "a rounded corner is a small
+    // share of a large filled body" — a true-sounding sentence for a picture that
+    // was never drawn. A bound that low is a symptom to chase, not a calibration.
+    anchors: "reject 3.61 (tail tip nudged 2% of the box) / keep 7.05 (DEFAULT vs Speech Bubble)",
   },
   {
     type: "ss_cornerRect", familyId: "presets", base: {}, stamp: asEmitted, distance: litSet, metric: "lit-set",
@@ -221,10 +273,13 @@ for (const spec of FAMILIES) {
   const family = presetFamiliesOf(plugin).find((f) => f.id === spec.familyId);
   assert.ok(family?.presets?.length, `${spec.type}/${spec.familyId} declares no presets — every assertion below would be vacuous`);
 
-  const base = { ...plugin.defaults, ...BOX, ...spec.base };
-  const frames = [{ name: "(DEFAULT)", png: await frame(plugin, base, spec.stamp) }];
+  // `world`/`box` default to the shared fixture; a family overrides one only for
+  // the reason stated in the header (geometry outside the box / absolute coords).
+  const view = spec.world ? fitRectView(spec.world, W, W) : VIEW;
+  const base = { ...plugin.defaults, ...(spec.box ?? BOX), ...spec.base };
+  const frames = [{ name: "(DEFAULT)", png: await frame(plugin, base, spec.stamp, view) }];
   for (const preset of family.presets)
-    frames.push({ name: preset.name, png: await frame(plugin, { ...base, ...preset.props }, spec.stamp) });
+    frames.push({ name: preset.name, png: await frame(plugin, { ...base, ...preset.props }, spec.stamp, view) });
 
   test(`${spec.type}/${spec.familyId}: ${family.presets.length} presets and the default all render a DIFFERENT picture`, () => {
     let narrowest = null;
@@ -287,7 +342,7 @@ const MIN_RING_SEPARATION = 1.15;
   const base = { ...donut.defaults, ...BOX };
   const rows = [{ name: "(DEFAULT)", inner: base.inner }, ...presets.map((p) => ({ name: p.name, inner: p.props.inner }))];
   const frames = [];
-  for (const row of rows) frames.push({ name: row.name, png: await frame(donut, { ...base, inner: row.inner }, asEmitted) });
+  for (const row of rows) frames.push({ name: row.name, png: await frame(donut, { ...base, inner: row.inner }, asEmitted, VIEW) });
 
   test(`donut: ${presets.length} presets and the default are separated as RINGS, not as pixel means`, () => {
     let narrowest = null;

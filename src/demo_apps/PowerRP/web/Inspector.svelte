@@ -857,16 +857,24 @@
    * edited axis still commits; only the chained write is withheld, so the lock
    * degrades to doing nothing rather than to doing damage.
    *
+   * THAT TEST MUST BE ON THE *RAW* VALUE, AND FOR A DAY IT WAS NOT. `state` here
+   * is the EVALUATED state (`sel.state`), where an `= self.w / 2` height has
+   * ALREADY resolved to a number — so the `typeof !== "number"` guard above could
+   * never fire for the case it was written for, and editing W with the chain
+   * locked replaced the equation with a literal. Vector2Pad's rule (an
+   * equation-bound axis is inert) is the same rule; this is where it was missing.
+   *
    * The arithmetic itself is core's (`aspectLockedPair`), shared with the canvas
    * resize gesture so a dragged handle and a typed number cannot disagree.
    */
   function aspectChainWrite(key, value, state, itemId) {
     if (itemId == null || (key !== "w" && key !== "h")) return null;
     if (!aspectLocked(state) || typeof value !== "number") return null;
+    const other = key === "w" ? "h" : "w";
+    if (isEquationValue(sel.plugin, [other], getPath(app.rawState(), ["items", itemId, other]))) return null;
     const before = { w: state?.w, h: state?.h };
     if (typeof before.w !== "number" || typeof before.h !== "number") return null;
     const after = aspectLockedPair(key, value, before);
-    const other = key === "w" ? "h" : "w";
     if (after[other] === before[other]) return null;
     return [["items", itemId, other], after[other]];
   }
@@ -2223,14 +2231,41 @@
            reconstitute it, and showing four numbers where the swatch belongs
            would replace the colour editor with its own decomposition. -->
       {#if node.editor === "self"}
-        {@render valueControl(node, state, {
+        <!-- THE Tier-0 ƒ RIDES ALONG, and it had to be added back: this branch
+             rendered the control ALONE, so every plain colour row that gained
+             channel children (`shadow.color`, `innerShadow.color`, a plugin row
+             keyed `color`) BECAME a compound and silently LOST its equation
+             toggle — `= brandColor` was unreachable on rows that had it the day
+             before. MEASURED, through tests/multiselect_equation_probe.js. The
+             gate, the paths and both buttons are propRow's own (equationCapable /
+             eqToggle / equationEntry), so a channel parent and a leaf row cannot
+             disagree about when ƒ appears or what clicking it writes. -->
+        {@const selfCtx = {
           itemMode: opts.keyframes !== false && !opts.disabled,
           disabled: !!opts.disabled,
           onpreview: opts.onpreview, oncommit: opts.oncommit, itemId,
           resolvedMax: typeof node.max === "function" ? node.max(state) : (node.max ?? null),
           hoverPreview: opts.hoverPreview,
           writePaths: opts.multi ? multiPaths(writeKey(node)) : null,
-        })}
+        }}
+        {@const selfEqCapable = equationCapable(node, selfCtx.itemMode)}
+        {@const selfEqStored = selfEqCapable ? rowStored(node) : null}
+        {@const selfEqActive = selfEqCapable && equationActive(node, selfEqStored)}
+        {@const selfEqPaths = selfEqCapable
+          ? (opts.multi ? multiPaths(writeKey(node)) : [["items", pickedItemId, ...writeKey(node).split(".")]])
+          : null}
+        {#if selfEqCapable}
+          <div class="numfield">
+            {@render eqToggle(node, selfEqPaths, selfEqActive)}
+            {#if selfEqActive}
+              {@render equationEntry(node, selfEqPaths, selfEqStored)}
+            {:else}
+              {@render valueControl(node, state, selfCtx)}
+            {/if}
+          </div>
+        {:else}
+          {@render valueControl(node, state, selfCtx)}
+        {/if}
       {:else if !open}
         {#each leaves as leaf (leaf.key)}
           {@render valueControl(leaf, state, {

@@ -1056,7 +1056,9 @@
     // everywhere else: it lives in doc.meta, not in the fold, so an evaluation that
     // omits it sees every script-driven property fall back to its default — and a
     // "is there anything left to unbind?" gate reading defaults would answer about a
-    // document the user is not looking at.
+    // document the user is not looking at. THE VARIABLE KINDS (a.varKindsForEval())
+    // ride the same argument: without them a font or text variable's literal is read
+    // as an equation and this hypothetical would disagree with the real evaluation.
     // FROZEN ON BOTH AMBIENT AXES, and for one reason: this is a HYPOTHETICAL state
     // (the fold WITHOUT the preview delta) evaluated at the same instant as
     // `app.state()`. Simulated state must not advance twice for one frame, and the
@@ -1064,7 +1066,7 @@
     // evaluation and the real one, so an unfrozen read would make two evaluations of
     // one instant disagree, which is the ephemerality the recordable kind excludes.
     // (W3-P, R7-24 freeze audit, 2026-08-06.)
-    return { raw, evaluated: withSimulationFrozen(() => withPointerFrozen(() => evaluateState(raw, a.registry, a.projectScript()).state)) };
+    return { raw, evaluated: withSimulationFrozen(() => withPointerFrozen(() => evaluateState(raw, a.registry, a.projectScript(), null, a.varKindsForEval()).state)) };
   }
 
   /**

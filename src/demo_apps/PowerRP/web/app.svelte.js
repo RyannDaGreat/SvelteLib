@@ -25,6 +25,10 @@ import {
 // these read/write doc.meta.varKinds beside meta.script rather than the vars
 // subtree. core/var_kinds.js owns every rule.
 import { VAR_KIND_ZEROS, varKind, withVarKind, withVarKindRenamed } from "../core/var_kinds.js";
+// A COLOUR CHANNEL has no stored leaf of its own (`fill.color.r` is a view over
+// the hex at `fill`), so the keyframe upsert reads its value through the address
+// grammar rather than through getPath — see storedValueAtPath.
+import { colorChannelKeyframeValue } from "../core/vector_values.js";
 import { setPath, getPath, blendApplied, applied } from "../core/deltas.js";
 import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta, retargetedPayload, retargetRefusal, retargetReport } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport, and its selection-targeted retarget
 import { clipboardKind, propertySubsetKind, pasteBadge, pasteIntent } from "./pasteAffordance.js"; // what the paste button's badge and tooltip say (WORKSTREAM UU half 2)
@@ -86,7 +90,7 @@ import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/mate
 import { sectionTriState, sectionToggleAction, sectionJumpTarget, jumpArrow, itemBakePaths } from "../core/section_keyframes.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
-import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy
+import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME, osClipboardTagging, foreignImagePaste, untaggedCopyNotice } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy + THE OWNERSHIP RULE a paste is decided by (see #isForeignFilePaste)
 import * as projectApi from "./projectApi.js";
 // THE STORAGE SEAM (web/assetStore.js). Assets and documents move through
 // assetStore()/projectStore(), NOT through projectApi directly, so the same
@@ -1296,7 +1300,7 @@ export class PowerRPApp {
     // FROM THE RAW STATE, WHICH ALSO BREAKS A CIRCLE: contentSizesFor needs only
     // each item's type/src/page, all raw literals, and asking it for the EVALUATED
     // state here would call this method again and recurse forever.
-    return evaluateState(this.rawState(), this.registry, this.projectScript(), this.contentSizes());
+    return evaluateState(this.rawState(), this.registry, this.projectScript(), this.contentSizes(), this.varKindsForEval());
   }
 
   /** The PROJECT SCRIPT source — one always-present string (repairedDocument fills
@@ -1364,11 +1368,21 @@ export class PowerRPApp {
    * keyframe must copy there is that schema default — core/expressions.js owns
    * the lookup. Without this the knob's ◆ keyed `undefined` and read as a control
    * that does nothing, which is worse than not having one. Every non-sparse slot
-   * takes the first line, byte-identically. */
+   * takes the first line, byte-identically.
+   *
+   * A COLOUR CHANNEL IS THE SECOND SPARSE FAMILY, and it is sparse for a
+   * different reason: `fill.color.r` is a VIEW over the hex at `fill`, so nothing
+   * is ever stored at that path even on an item that has been fully authored.
+   * Without the third line the channel diamond keyed `undefined`, which fails
+   * twice — `hasKeyframe` stays false so the diamond never lights, and the write
+   * leaves `{fill: {color: {}}}` in the delta, an empty wrapper the fold merges
+   * instead of resolving, destroying the colour. MEASURED, through
+   * tests/colorfield_probe.js. core/vector_values.js owns the address grammar. */
   storedValueAtPath(path) {
     const raw = getPath(this.rawState(), path);
     if (raw !== undefined || path[0] !== "items") return raw;
-    return materialParamDefaultAt(path.slice(2), this.rawState().items?.[path[1]]);
+    const item = this.rawState().items?.[path[1]];
+    return materialParamDefaultAt(path.slice(2), item) ?? colorChannelKeyframeValue(item, path.slice(2));
   }
 
   /** The referencable display name of an anchor ("circle_tm") — what the
@@ -4356,7 +4370,7 @@ export class PowerRPApp {
         if (bakes.has(memberId)) continue; // a member belongs to ONE group (no nested groups)
         const perSlide = [];
         for (const slide of ungroupBakeSlides(origDoc, memberId, g.itemId)) {
-          const state = evaluateState(foldState(origDoc, slide, 1), this.registry, origDoc.meta.script ?? "").state;
+          const state = evaluateState(foldState(origDoc, slide, 1), this.registry, origDoc.meta.script ?? "", null, origDoc.meta?.varKinds ?? null).state;
           // THE PROJECT IS NOT OPTIONAL HERE, even though this call only wants a
           // member's WORLD TRANSFORM and never looks at a URL. deriveRenderTree's
           // third argument defaults to "", and resolveAssetRef THROWS on a
@@ -4813,17 +4827,39 @@ export class PowerRPApp {
    * pasteable widget payload … run the registry paste"), and it is deliberately
    * biased toward the element: pasting the widget when the user meant the
    * screenshot is one Ctrl+Z, whereas the old bias silently flattened a widget
-   * into a bitmap and lost its editability. A user who wants the screenshot
-   * copies it AFTER the widget copy is stale, or pastes into a slide where no
-   * internal copy exists.
+   * into a bitmap and lost its editability.
+   *
+   * ── THE BIAS APPLIED TO A CASE THAT IS NOT AMBIGUOUS, AND THAT WAS THE BUG ──
+   * (user, 2026-08-22: "why can't i copy and paste images into birdseye anymore i
+   * have to drag + drop an external image. it refuses to recognize when I have an
+   * image in my clipboard that's different from the image copied from copying
+   * nodes.") This method used to return "foreign" only for a NON-image file, so a
+   * bare `image/png` lost to the in-app clipboard UNCONDITIONALLY. The two escape
+   * hatches this docblock offered — "copies it AFTER the widget copy is stale, or
+   * pastes into a slide where no internal copy exists" — were BOTH FICTIONAL:
+   * the internal clipboard is a localStorage mirror plus a server session, nothing
+   * clears either and neither is scoped to a slide. So the first widget copy a
+   * browser ever made disabled system-image paste PERMANENTLY, and drag-and-drop
+   * was the only way left in. It shipped with d39e13f0 (2026-07-30) and was not
+   * touched by the 77-commit merge; the node work merely made the user copy often
+   * enough to meet it.
+   *
+   * THE DECISION NOW LIVES IN web/clipboard.js, beside the marker it reasons about
+   * (`foreignImagePaste`), and it turns on whether this browser can TAG a copy at
+   * all (`osClipboardTagging`, a capability check — `ClipboardItem.supports` — not a
+   * remembered write, so a fresh tab is as well informed as one that has copied ten
+   * times). Where we CAN tag, an image arriving with NO marker is PROOF it is not
+   * ours: a copy writes marker and PNG as one ClipboardItem, and a screenshot
+   * replaces the pasteboard whole. That does not overturn ROUND 3 #36 — it removes
+   * the case that ruling was about. Where we cannot tag, the element still wins as
+   * before and `untaggedCopyNotice` says why, rather than the paste doing nothing
+   * anyone can explain.
    */
   #isForeignFilePaste(payload, files, types) {
-    if (!files.length) return false; // nothing foreign on the clipboard at all
-    if (types.includes(POWERRP_CLIPBOARD_MIME)) return false; // our marker: ours
-    // Our copy only ever writes an IMAGE, so any non-image file is foreign no
-    // matter what we hold internally. An image alone is ambiguous, and the
-    // ruling resolves the ambiguity toward the element.
-    return files.some((f) => !f.type.startsWith("image/"));
+    const tagging = osClipboardTagging();
+    const shadowed = untaggedCopyNotice(files, types, tagging);
+    if (shadowed) console.warn(shadowed);
+    return foreignImagePaste(files, types, tagging);
   }
 
   /** Command (one undo unit). Inserts a tagged clipboard payload into the
@@ -6058,14 +6094,26 @@ export class PowerRPApp {
     return varKind(this.varKindsState(), name);
   }
 
+  /** THE SAME MAP, RAW — `doc.meta.varKinds` or null, never a freshly-built `{}`.
+   * evaluateState takes it as its memo's fifth key and compares BY REFERENCE, so
+   * `varKindsState()`'s `?? {}` would hand it a new object every call and defeat
+   * the memo on every frame. Every evaluateState call site in this file uses this
+   * one; every UI reader uses varKindsState(). */
+  varKindsForEval() {
+    return this.doc.meta?.varKinds ?? null;
+  }
+
   /** Command. Retypes a variable, ONE undo unit — the kind AND the value together.
    *
    * THE VALUE MUST MOVE WITH THE KIND, and it is the whole reason this is not a
    * two-line setter. A colour variable still holding `0` renders a swatch of
    * nothing and every equation reading it gets a number where a hex string was
    * promised; the row would look retyped while the document had not been. So the
-   * value is RESET TO THE NEW KIND'S ZERO on the current slide, in the same
-   * commit — a visible, undoable change rather than a silent mismatch.
+   * value is RESET TO THE NEW KIND'S ZERO — every slide's keyframe is removed and
+   * ONE new keyframe is written on the current slide, in the same commit: a
+   * visible, undoable change rather than a silent mismatch. Clearing only the
+   * current slide would leave a keyframe of the OLD kind on every other one,
+   * which is the same mismatch wearing a different slide number.
    *
    * IT DELIBERATELY DOES NOT CONVERT. There is no honest number -> colour map, and
    * inventing one (0 -> black? 0 -> #000000?) would fabricate an authored value. A
@@ -6081,7 +6129,15 @@ export class PowerRPApp {
       console.error(`PowerRP: "${kind}" is not a variable kind (known: ${Object.keys(VAR_KIND_ZEROS).join(", ")})`);
       return false;
     }
-    const doc = keyframed(this.doc, this.slideIndex, ["vars", name], VAR_KIND_ZEROS[kind]);
+    // EVERY SLIDE'S KEYFRAME GOES, not just this one's. The kind is DOCUMENT-WIDE
+    // (meta.varKinds), so leaving keyframes of the old kind on other slides is the
+    // exact mismatch the reset exists to prevent — measured: `speed` keyed 5 on
+    // slide 1 and 9 on slide 2, retyped to colour on slide 1, left slide 2 handing
+    // a ColorField the number 9. `deleteVariable` already walks every slide for the
+    // same reason; a retype is a delete-and-recreate of the VALUE.
+    let doc = this.doc;
+    for (let i = 0; i < doc.slides.length; i++) doc = unkeyframed(doc, i, ["vars", name]);
+    doc = keyframed(doc, this.slideIndex, ["vars", name], VAR_KIND_ZEROS[kind]);
     this.commit({ ...doc, meta: { ...doc.meta, varKinds: withVarKind(this.varKindsState(), name, kind) } });
     return true;
   }
@@ -8103,7 +8159,7 @@ export class PowerRPApp {
    *  placement for inserts that don't come from a canvas drop (the same
    *  cameraRect(evaluateState(foldState(…))) idiom exportPng uses). */
   #viewCenter() {
-    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state, this.doc.meta);
+    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript(), null, this.varKindsForEval()).state, this.doc.meta);
     return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
   }
 
@@ -8657,7 +8713,7 @@ export class PowerRPApp {
   async exportPng() {
     // THE renderer via the shared pixel service; the camera determines the
     // output size/aspect (evaluated state — its properties may be equations).
-    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state, this.doc.meta);
+    const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript(), null, this.varKindsForEval()).state, this.doc.meta);
     // THE DRAIN (#281): a PNG export gets ONE chance at its pixels, so it waits
     // for every async raster the frame needs and REFUSES rather than saving a
     // file with a hole where a PDF page, image, LaTeX or Mermaid diagram should
@@ -8703,7 +8759,7 @@ export class PowerRPApp {
     const { clampPage, pdfPageCount } = await import("../render_gpu/gpu/pdf_page_raster.js");
     const { resolveSilhouetteBorders } = await import("../render_gpu/skia/silhouette.js");
     const { ensureCanvasKit } = await import("../render_gpu/skia/browser_canvaskit.js");
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript(), null, this.varKindsForEval()).state;
     const rect = cameraRect(state, this.doc.meta);
 
     // (a) WARM UP the vector ingest for every pdf_page node BEFORE deriving the
@@ -8809,7 +8865,7 @@ export class PowerRPApp {
     const { isSyntheticImageRef } = await import("../render_gpu/pdf_backend.js");
     const { resolveSilhouetteBorders } = await import("../render_gpu/skia/silhouette.js");
     const { ensureCanvasKit } = await import("../render_gpu/skia/browser_canvaskit.js");
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript(), null, this.varKindsForEval()).state;
     const rect = cameraRect(state, this.doc.meta);
 
     // Any image src that is a URL (asset-server case) must be inlined for a
@@ -9086,7 +9142,7 @@ export class PowerRPApp {
   #selectionRenderJob() {
     const rect = this.selectionWorldAABB();
     if (!rect || rect.w <= 0 || rect.h <= 0) return null;
-    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
+    const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript(), null, this.varKindsForEval()).state;
     const selected = new Set(this.selectedIds());
     const nodes = deriveRenderTree(state, this.registry, this.projectName()).filter((n) => selected.has(n.itemId));
     return { rect, nodes };

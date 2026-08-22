@@ -68,10 +68,15 @@ const CUSTOM = customProps([
 // backdropScale — see above), matching tests/material_authority_presets_test.js's
 // discipline check.
 //
-// lightAngle IS STORED IN RADIANS (display:"degrees" only bridges the dial;
-// rainyWindowUniformParams passes it straight through) — each value below is
-// literal radians with its degree reading in a comment, the same convention
-// god_rays/sky presets use for their own angle rows.
+// lightAngle IS STORED IN RADIANS: its row declares display:"degrees", and that
+// flag means the DIAL shows degrees while the DOCUMENT holds radians
+// (core/properties.angleStorageUnit, pinned by tests/angle_units_test.js), so
+// rainyWindowUniformParams passes it straight through. Each value below is
+// therefore literal radians with its degree reading in a `/* -75° */` comment —
+// a convention this table STARTED and raycast_dither's streakAngle rows copied
+// (they cite this one). NOT god_rays or sky: god_rays declares no angle row at
+// all, and sky's presets deliberately EXCLUDE lightAngle (sky.js states why), so
+// neither family has an angle row to have set a precedent with.
 const PRESETS = [
   {
     name: "Drizzle on a Car Window",

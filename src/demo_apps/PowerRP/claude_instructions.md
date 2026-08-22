@@ -7049,3 +7049,82 @@ manifest/concerns to have a handle on the history of this problem"
 **20 —** "whats the new widget called"
 
 **21 —** "it looks lieke you forgot t copy my verbatim"
+
+
+## THE 2026-08-22 AUDIT OF THE 77-COMMIT PULL
+
+### Why it happened
+
+The user hit `= expression result 0 is not a valid string value` on a Font row bound to
+a font VARIABLE and asked: *"why is this erroring. We recently pulled a ton of commits.
+were they buggy"* — then *"You have to analyze deeply. Did they make other mistakes too"*.
+
+### How it was done (the method matters more than the count)
+
+Eight reviewers over thematic slices of the 77 commits (evaluator/vectors/var-kinds,
+frame domain, html2image, empties/anchors, infra, paint geometry, and two preset
+batches), each reading every diff AND running the suites that cover it. Every finding
+then went to THREE independent skeptics with different lenses — REPRODUCE (build the
+failing input or it is refuted), DESIGN INTENT (is this the documented design working
+as stated?), BLAST RADIUS (who calls it, and is it already guarded?) — and survived
+only on a 2-of-3 majority. 230 agents. **68 confirmed, 6 refuted.**
+
+By severity: 1 crash, 11 wrong-output, 7 regressions, 36 FALSE CLAIMS (a docblock, a
+commit message or a test name the code contradicts), 13 risks. That the largest
+category by far is false claims is the finding worth keeping: this project's rule is
+that a false sentence in a docblock IS a defect, and a 77-commit wave produced 36 of
+them — mostly where a commit fixed something and left the doctrine describing the old
+design standing, the exact failure CLAUDE.md's own "when a commit reverts a design, the
+same commit must revert its doctrine" paragraph was written about.
+
+### The user's bug, precisely
+
+`8b6fd606` ("A colour variable is not a broken equation") exempted a HEX literal from
+the "every string variable is an equation" fiat, and nothing else. A `font` variable
+stores a font ID, so `"jetbrains-mono"` parsed as the expression `jetbrains - mono`,
+evaluated to 0, and the Font row refused the 0. That commit's own docblock named the
+correct fix and called it "the right fix": thread `meta.varKinds` into `evaluateState`
+so a slot's kind comes from the DECLARATION. Done — see the evaluator entries below.
+
+### What was fixed (67 of the 68, across nine leases, each verified independently)
+
+Nine agents with DISJOINT FILE LEASES fixed their own area and were then checked by an
+independent verifier that re-ran everything itself rather than reading the report. Five
+verifiers found something — an incomplete fix, or a NEW false claim introduced BY a fix
+— and corrected it in-lease. That second pass is the reason the count is trustworthy.
+
+The defects worth naming beyond the user's own:
+  `= t.size` was hijacked on every text-bearing widget by the new w/h vector address;
+  `= b.fill.linear.stops.1.color` and `shadow.color.r` were refused because anything
+    ending in `color` was assumed to be a paint;
+  a colour-channel keyframe SNAPPED over any tagged solid or gradient, and an equation
+    typed into a channel row folded to `#NaN3456` with no error at all;
+  `.r`/`.w` projection after arithmetic died with the exact TypeError its commit
+    claimed to have eliminated;
+  BOTH python suites crashed under the gate (`ModuleNotFoundError: fire` — no PEP 723);
+  `SHARED_SCALING.strokeOffset = "linear"` double-scaled the stroke alignment;
+  `stepFrameDomain`'s step budget counted the whole-roster sweep, so a deck reported a
+    false "exec cycle" at ~500 items and stopped stepping at all past ~1000;
+  a stale html2image widget on any slide but the current one never rendered;
+  the empty's axis-tip anchors were named `+x`/`-x`/`+y`/`-y`, which the equation
+    grammar cannot spell — the ids are now `plusx`/`minusx`/`plusy`/`minusy`, and
+    `tests/stored_ref_split_test.js` is green again.
+
+### What was NOT fixed, and why (the honest half)
+
+Eighteen items, each with a stated reason. The ones that matter:
+  **THE DOCTEST GATE DOES NOT EXECUTE `>>>` BLOCKS**, only `@example` records — so
+    every example written in the `>>>` style (core/vector_values.js, core/var_kinds.js)
+    sits OUTSIDE the gate and can rot unseen. That is a hole in the gate itself, not in
+    a file, and it is why one stale example survived to be found by an audit.
+  **THE FRAME DOMAIN STILL OPENS TWO SIMULATION STEPS PER LIVE FRAME** on a deck that
+    uses it (the equation pass's and derive's), so each gets part of the interval. Decks
+    WITHOUT frame nodes are now byte-identical again (the gate that was missing); the
+    real fix is ONE clock reading per rAF tick, in render_gpu/particle_clock.js.
+  **THE AUTO-RENDERER STILL FIGHTS UNDO** — its write must stop being its own undo
+    transaction, which is a change in web/app.svelte.js's undo layer, not in the
+    renderer.
+  Two commits' TREES DO NOT LOAD (`457946cb` deleted plugins/anchor_point.js while
+    plugins/index.js still imported it; `ec510317` imported EXACT_DECIMALS six minutes
+    before shapes.js exported it). HEAD is fine; those commits are not bisectable, and
+    nothing in a working tree can repair history.

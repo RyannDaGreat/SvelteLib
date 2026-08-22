@@ -106,7 +106,7 @@ import { outputPropertyAt, outputPropertyDescriptors, outputPropertyInjection, o
 // gradient direction dial's own math. `direction2` (below) is built on it rather
 // than on a second atan2, so the function library and the dial can never disagree
 // about which way 90° points.
-import { PROPS, GRADIENT_STOPS_LIST, linearEndpointsToAngle } from "./properties.js";
+import { PROPS, NUMERIC_ROW_KINDS, GRADIENT_STOPS_LIST, linearEndpointsToAngle } from "./properties.js";
 import {
   LIST_ROW_KIND, ACTIVE_FIELD, elementFieldKind, elementFieldValue, elementStorageKey,
   listPathKind, listStoragePath,
@@ -154,9 +154,14 @@ import { getStrokeMaterial, hasStrokeMaterial } from "../render_gpu/skia/stroke_
 // VECTORS AS VALUES (R7-38b): the equation host's operators dispatch through
 // these so `b.pos + c.pos` is a vector sum rather than a coercion TypeError.
 import {
-  isNumericTensor, vectorBinaryOp, vectorMapFunction, vectorMapVariadic, makeVector,
+  isNumericTensor, vectorBinaryOp, vectorMapFunction, vectorMapVariadic, makeVector, vectorValues,
   VECTOR_KINDS, isVectorAxis, vectorFor, vectorToStored, colorChannelValue, paintColorPath, paintColorRefusal,
+  VEC2_ROW_KIND, isVec2Value, isPaintValue, axesForArity,
 } from "./vector_values.js";
+// A VARIABLE'S DECLARED KIND (core/var_kinds.js) decides whether its stored string
+// is an equation or a literal, and what an equation there must evaluate to. The
+// map itself is doc.meta.varKinds, threaded into evaluateState by its callers.
+import { varKind, VAR_KIND_RESULT, VAR_KIND_ZEROS } from "./var_kinds.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
 //
@@ -826,12 +831,18 @@ export function parseExpression(src) {
   function factor() {
     if (takeOp("-")) return { kind: "neg", arg: factor() };
     let node = primary();
-    // Optional member projection ".x"/".y" on a point-valued primary (a call
-    // result, or a parenthesized point). Only x/y are valid coords.
+    // Optional member projection on a compound-valued primary — a call result
+    // (a point) or a parenthesized VECTOR. ANY IDENTIFIER IS ACCEPTED HERE and
+    // the component is validated AT RUNTIME (`projectComponent`), because the
+    // parser does not know the arity of what it is projecting: a colour result
+    // has r/g/b/a and a size result has w/h, and an `.x`-only rule refused both
+    // — `(b.fill.color * 0.5).r` died with the exact "Cannot convert object to
+    // primitive value" the vector work exists to eliminate (it fell through to
+    // the token-splice path, which emits a native `*`). MEASURED.
     if (takeKind("dot")) {
       const p = tokens[pos];
-      if (p?.kind !== "ref" || (p.value !== "x" && p.value !== "y"))
-        throw new Error(`Expected .x or .y at ${p?.start ?? clean.length} in "${clean}"`);
+      if (p?.kind !== "ref")
+        throw new Error(`Expected a component name after "." at ${p?.start ?? clean.length} in "${clean}"`);
       pos++;
       node = { kind: "member", obj: node, prop: p.value };
     }
@@ -954,6 +965,13 @@ export function evalAst(ast, lookup, callFn = null) {
       ? evalAst(ast.then, lookup, callFn)
       : evalAst(ast.else, lookup, callFn);
     case "member": {
+      // THE RESTRICTED EVALUATOR ONLY EVER PROJECTS A FUNCTION RESULT, which is a
+      // POINT (evalAstPoint refuses anything else), so x/y stays its whole
+      // vocabulary — the parser's widening above is for the COMPILED path, where
+      // the object can be a vector of any arity. Loud rather than `undefined`: a
+      // silently absent component is a plausible wrong number that paints.
+      if (ast.prop !== "x" && ast.prop !== "y")
+        throw new Error(`A point has no component "${ast.prop}" — only .x and .y`);
       const pt = evalAstPoint(ast.obj, lookup, callFn);
       return pt[ast.prop];
     }
@@ -2057,11 +2075,29 @@ function storedBodyToDisplay(src, state) {
  * @example isNumericSlot({defaults: {}}, ["points", 9, "x"]) // true (a DECLARED list's number field — index-independent)
  * @example isNumericSlot({defaults: {}}, ["points"]) // false (the list itself is not a number)
  * @example // isNumericSlot(rectPlugin, ["fill","material","params","rimStrength"], atmosphereRect) // true (the MATERIAL SCHEMA's default is a number)
+ * @example isNumericSlot({defaults: {}}, ["delay"]) // true (PROPS declares it numeric and NO plugin defaults it)
  */
 export function isNumericSlot(plugin, path, item = null) {
   const def = getPath(plugin.defaults, path);
   if (typeof def === "number") return true;
   if (typeof def === "string" && def.startsWith("self.")) return true;
+  // A PROPS-DECLARED NUMERIC ROW THE PLUGIN DEFAULTS NOTHING AT. Read LAST among
+  // the value-shaped tests and ONLY when the plugin says nothing at the path, so
+  // every existing answer is untouched: a plugin default of another type
+  // (name "Text", fill "#7aa2f7") still wins and still says no.
+  //
+  // WHY IT HAD TO BE ADDED (measured through tests/item_vars_probe.js): `delay`
+  // is a PROPS row declared with DELIBERATELY NO DEFAULT — "absent means 0, and 0
+  // must stay byte-identical to every document written before this property
+  // existed". The Inspector renders it as an ordinary numeric field with the same
+  // ƒ affordance every other numeric row has, so typing the LEGACY bare form
+  // (`self.vars.lambda`, what every other numeric row accepts) stored a string
+  // that nothing ever collected: no equation, no error, the picture just never
+  // bound. `= self.vars.lambda` worked, because resultKindForSlot reads PROPS
+  // FIRST — and that asymmetry between the two spellings is the defect. PROPS is
+  // the manifest's single source of truth for a property's kind; this makes the
+  // legacy path read it too.
+  if (NUMERIC_ROW_KINDS.includes(PROPS[path.join(".")]?.kind) && def === undefined) return true;
   // A DECLARED LIST's numeric element field. Its kind comes from the DECLARATION,
   // so the answer does not depend on how many elements the plugin's DEFAULT list
   // happens to hold: `points.9.x` is a number slot on a five-vertex default, and
@@ -2114,7 +2150,7 @@ export function withMarkerPreserved(src, rewrite) {
 
 /**
  * Pure function. Is this VARIABLE's stored value an equation, as opposed to a
- * literal of a non-numeric kind?
+ * LITERAL of its declared kind?
  *
  * ── WHY THIS PREDICATE HAD TO EXIST (workstream COMPOUND_, backburner CX) ────
  * A variable's string value used to be an equation BY FIAT: every string under
@@ -2127,43 +2163,36 @@ export function withMarkerPreserved(src, rewrite) {
  * the author's colour with a fallback. MEASURED, on a colour variable created
  * through the panel; it is why this function is not a tidy-up.
  *
- * THE ANSWER IS READ FROM THE VALUE, NOT FROM meta.varKinds, and that is
- * deliberate rather than a shortcut. `evaluateState` takes a folded STATE and has
- * no document meta in hand, so consulting the kind map would mean threading it
- * through the one seam every pixel consumer calls — a large change to fix a
- * question the value can already answer. It is also the SAFER of the two: the
- * kind map is viewer-authored metadata that a damaged document can disagree with,
- * while the value is what the equation engine would actually have to evaluate.
- * A colour literal is not a valid expression under any kind.
+ * ── THE ANSWER COMES FROM THE DECLARATION (the user's own bug report) ────────
+ * THIS FUNCTION USED TO READ THE ANSWER OUT OF THE VALUE ALONE, refusing only a
+ * hex colour, and its docblock argued that threading `meta.varKinds` through
+ * `evaluateState` was "the right fix" but too large. The user then hit exactly
+ * what the value-only reading cannot answer: a Font row bound to `= note_font`,
+ * where `note_font` is a `font` variable holding "jetbrains-mono", reported
+ * *"= expression result 0 is not a valid string value"* — the font id had been
+ * parsed as the expression `jetbrains - mono`, failed as an unknown variable, and
+ * fallen back to 0. There IS no predicate over the value that admits `speed * 2`
+ * and rejects `jetbrains-mono`; both are legal expression source. So the kind map
+ * is threaded (see `evaluateState`'s `varKinds` argument), and the rule is:
  *
- * THE UNIVERSAL "=" ALWAYS WINS, so a colour variable CAN still be bound to a
- * formula (`= brandColor`) exactly like any other slot — the escape hatch is
- * untouched. What is excluded is only a bare literal that could never parse as
- * an expression: a hex colour.
+ *   `number`  — a bare string is an EQUATION, exactly as it has always been.
+ *               This is what keeps every pre-kinds document byte-identical, and
+ *               it is what an ABSENT declaration resolves to (`varKind`).
+ *   anything  — only a leading "=" makes it an equation. A bare string is a
+ *   else        LITERAL of that kind: a font id, a colour name, prose, an option.
  *
- * ── THE `text` KIND IS A KNOWN, NAMED BOUNDARY, NOT A SILENT ONE ────────────
- * A `text` variable holding prose ("Hello world") is STILL collected as an
- * equation here and will still report an expression error. That is deliberate
- * and it is the honest state of the feature rather than a fix pretended at:
- *   • A bare string in a variable has meant "an equation" for the whole life of
- *     this engine, and `speed * 2` is exactly such a string. There is no
- *     predicate that admits `speed * 2` and rejects `Hello world` without
- *     PARSING, and switching the fiat to a parse test would silently reclassify
- *     every existing deck's variables — a large behaviour change smuggled in as a
- *     bug fix, on the one path every pixel consumer calls.
- *   • The hex case is different in kind, not merely in degree: `#ffffff` is what
- *     the app ITSELF writes when the author picks a colour, so it is reachable
- *     with no way to avoid it, and it can never be a valid expression under any
- *     reading. Prose is at least something the author typed on purpose.
- * SO: colour, boolean, number and font variables are correct today; a `text`
- * variable works when its content parses (a bare word, which is the common case
- * for an id or a font name) and reports loudly when it does not. Closing this
- * properly means threading `meta.varKinds` into `evaluateState` so the slot's
- * kind comes from the DECLARATION — the right fix, and a plumbing change through
- * `web/cameraFrame.evaluationAt` (the one seam that threads `meta.script` for
- * every pixel consumer) rather than a line here.
+ * THE UNIVERSAL "=" ALWAYS WINS in every kind, so a colour, text or font variable
+ * can still be bound to a formula (`= brandColor`) exactly like any other slot.
+ *
+ * The hex-colour refusal below is KEPT rather than folded into the kind rule: it
+ * is what makes an UNDECLARED colour variable (a document written before kinds,
+ * or one whose `meta.varKinds` entry was dropped by `repairedVarKinds`) still
+ * read as a literal instead of reporting an expression error on its first frame.
  *
  * @param {*} value A variable's stored value.
+ * @param {string} kind The variable's DECLARED kind (core/var_kinds.js
+ *   `varKind`). Defaults to "number", which is both the app-wide default and the
+ *   pre-kinds behaviour, so a caller with no kind map in hand is unchanged.
  * @returns {boolean}
  *
  * @example isVarEquation("speed * 2") // true (the legacy bare-string equation)
@@ -2172,10 +2201,14 @@ export function withMarkerPreserved(src, rewrite) {
  * @example isVarEquation("#fff") // false (the 3-digit spelling too)
  * @example isVarEquation(0.5) // false (a number is not a slot at all)
  * @example isVarEquation(true) // false
+ * @example isVarEquation("jetbrains-mono", "font") // false (a font id is a LITERAL — the user's bug)
+ * @example isVarEquation("Hello world", "text") // false (prose is a literal too)
+ * @example isVarEquation("= titleFont", "font") // true (the escape hatch survives in every kind)
  */
-export function isVarEquation(value) {
+export function isVarEquation(value, kind = "number") {
   if (typeof value !== "string") return false;
   if (EQ_PREFIX_RE.test(value)) return true;
+  if (kind !== "number") return false; // a declared non-number kind stores LITERALS
   return !isHexColor(value);
 }
 
@@ -2672,6 +2705,11 @@ export function resultMatchesKind(v, kind, options = null) {
     // instead of returning a bare false. `null` is legal — it is the `node`
     // type's zero, i.e. a deliberately unwired input.
     case "noderef": return v === null || isNodeRef(v);
+    // A VEC2 (a `vec2` ROW or a vec2 VARIABLE) accepts either spelling of a
+    // 2-vector: the PLAIN stored tuple the document holds, or the tagged vector
+    // the algebra produces (`= origin + offset`). The slot boundary stores the
+    // plain one — see vec2Spelled — so the tag never reaches a saved document.
+    case VEC2_ROW_KIND: return isVec2Value(v) || (isNumericTensor(v) && vectorValues(v).length === 2);
     default: return false;
   }
 }
@@ -3107,8 +3145,12 @@ function stringSeed(s) {
  * EXPORTED so core/plugin_assets.js's jail hands plugin assets THIS function
  * rather than its own. That copy's docblock claimed to mirror this one and did
  * not: it seeded `(seed|0) + 0x6d2b79f5` and then added the same constant again
- * on the first call, putting its stream TWO steps ahead of the equation
- * evaluator's for the same seed. So `random(7)` meant one thing in an equation
+ * on the first call, putting its stream ONE step ahead of the equation
+ * evaluator's for the same seed — the old first value was this one's SECOND.
+ * (This sentence said TWO until 2026-08-22, and the arithmetic says one: the
+ * extra addition happens once, before the first mix, so the streams are offset
+ * by a single step. core/plugin_assets.js states the same fact; two docblocks
+ * about one divergence must not disagree about its size.) So `random(7)` meant one thing in an equation
  * and a different thing in a plugin asset — a divergence no test could see,
  * because both halves were self-consistent and each was only ever compared
  * against itself.
@@ -3248,7 +3290,7 @@ const ARITHMETIC_OPS = new Set(["+", "-", "*", "/", "%"]);
  * @example emitJsFromAst(parseExpression("1 + 2")) // '__op("+", 1, 2)'
  * @example emitJsFromAst(parseExpression("a * 2 + b")) // '__op("+", __op("*", a, 2), b)'
  * @example emitJsFromAst(parseExpression("-x")) // '__neg(x)'
- * @example emitJsFromAst(parseExpression("f(a).x")) // 'f(a).x'
+ * @example emitJsFromAst(parseExpression("f(a).x")) // '__proj(f(a), "x")'
  * @example emitJsFromAst(parseExpression("a ? b : c")) // '(a ? b : c)'
  */
 function emitJsFromAst(ast) {
@@ -3263,7 +3305,10 @@ function emitJsFromAst(ast) {
     // a call — a call would evaluate BOTH branches, which would read `@@` on a
     // simulation's first step (evalAst's own note) and break every guard equation.
     case "cond": return `(${emitJsFromAst(ast.test)} ? ${emitJsFromAst(ast.then)} : ${emitJsFromAst(ast.else)})`;
-    case "member": return `${emitJsFromAst(ast.obj)}.${ast.prop}`;
+    // THROUGH THE HOST, not a bare `.prop`: the object may be a VECTOR whose
+    // components are named per arity, and a missing one must be a sentence rather
+    // than `undefined` quietly entering arithmetic (see projectComponent).
+    case "member": return `__proj(${emitJsFromAst(ast.obj)}, ${JSON.stringify(ast.prop)})`;
     case "call": return `${ast.name}(${ast.args.map(emitJsFromAst).join(", ")})`;
   }
   throw new Error(`Cannot emit JS for AST node: ${JSON.stringify(ast)}`);
@@ -3302,8 +3347,8 @@ export function compileEquationFn(clean) {
   }
   let fn;
   try {
-    const body = new Function("scope", "__op", "__neg", `with(scope){ return (${toJsExpr(clean)}\n); }`);
-    fn = (scope) => body(scope, applyArithmetic, negateValue);
+    const body = new Function("scope", "__op", "__neg", "__proj", `with(scope){ return (${toJsExpr(clean)}\n); }`);
+    fn = (scope) => body(scope, applyArithmetic, negateValue, projectComponent);
   } catch (jsErr) {
     throw restrictedErr ?? jsErr; // prefer the back-compat restricted message
   }
@@ -3374,6 +3419,38 @@ function unwrapOperand(v) {
 }
 
 /**
+ * Pure function. THE EQUATION HOST'S COMPONENT PROJECTION — what `(…).name`
+ * compiles to (`__proj`), for both things the grammar can project: a VECTOR
+ * produced by arithmetic, and the POINT a library function returns.
+ *
+ * WHY IT IS A HOST CALL AND NOT A BARE `.name`. A vector's components are named
+ * per ARITY (core/vector_values.axesForArity), which the parser cannot know, so
+ * the grammar accepts any identifier and the check lands here. A bare `.name`
+ * would answer `undefined` for a wrong component, and `undefined` entering
+ * arithmetic is a NaN with no sentence attached — the silent wrongness this
+ * codebase forbids. The message names the components the value actually has,
+ * which is the whole difference between "you cannot do that" and "here is what
+ * you can do".
+ *
+ * REF PROXIES ARE RESOLVED FIRST, exactly as applyArithmetic does and for the
+ * same reason: a proxy is not the value, and testing it would always miss.
+ *
+ * @example projectComponent(makeVector([1, 2]), "y") // 2
+ * @example projectComponent(makeVector([255, 0, 0, 255]), "r") // 255
+ * @example projectComponent(makeVector([30, 20]), "w") // 30 (a 2-vec answers to a size reading too)
+ * @example projectComponent({x: 3, y: 4}, "x") // 3 (a library function's point)
+ */
+function projectComponent(value, name) {
+  const v = unwrapOperand(value);
+  const component = v == null ? undefined : v[name];
+  if (typeof component === "number") return component;
+  const data = vectorValues(v);
+  if (data)
+    throw new Error(`a ${data.length}-vector has no component "${name}" — this one has ${(axesForArity(data.length) ?? []).join(", ") || "no named components, only positions"}`);
+  throw new Error(`${JSON.stringify(v)} has no component "${name}" — only a vector or a point does`);
+}
+
+/**
  * Pure function. A function ARGUMENT declared "number" → either a tensor (left
  * whole, for the elementwise map) or a plain number (coerced as it always was).
  *
@@ -3410,6 +3487,26 @@ function numericOrTensorArg(arg) {
 function colorSpelled(v, kind) {
   if (kind !== "color" || !isNumericTensor(v)) return v;
   return vectorToStored("color", v) ?? v;
+}
+
+/**
+ * Pure function. A VECTOR result landing in a `vec2` slot re-spells itself as the
+ * PLAIN `[x, y]` tuple that kind stores; everything else passes through untouched.
+ *
+ * The colorSpelled rule, applied to the other composite kind and at the same
+ * boundary: the algebra produces a TAGGED vector (`= origin + offset`), and the
+ * tag is a runtime wrapper that must never reach a saved document
+ * (core/var_kinds.js VAR_KIND_ZEROS says the same from the other side). A
+ * WRONG-ARITY vector is not converted — it falls through to the ordinary "is not
+ * a valid vec2 value" refusal rather than being padded or truncated.
+ *
+ * @example vec2Spelled(5, "number") // 5 (untouched)
+ * @example vec2Spelled(makeVector([1, 2]), "vec2") // [1, 2]
+ * @example vec2Spelled(makeVector([1, 2, 3]), "vec2") // the 3-vec, unconverted (refused downstream)
+ */
+function vec2Spelled(v, kind) {
+  if (kind !== VEC2_ROW_KIND || !isNumericTensor(v)) return v;
+  return vectorToStored("pos", v) ?? v;
 }
 
 /** Control-flow sentinel: a detected dependency cycle. Carries the exact chain
@@ -3552,13 +3649,26 @@ export function inReaderFrame(point, readerInfluence) {
  * the presenter's "does this slide follow the pointer?" answer — derived from the
  * pass that actually ran rather than from a source scan.
  *
+ * THE VARIABLE KINDS (`varKinds`, doc.meta.varKinds — see core/var_kinds.js) are
+ * the second thing the folded state does not contain, and they are threaded for the
+ * same reason the script is: a variable's DECLARED kind decides whether its stored
+ * string is an equation or a LITERAL (`isVarEquation`), and what an equation there
+ * must evaluate to (`VAR_KIND_RESULT`). PASSING NOTHING IS THE PRE-KINDS ENGINE,
+ * EXACTLY — every variable then declares "number", a bare string is an equation and
+ * every result is validated as a number, so an un-threaded caller is byte-identical.
+ * It is PART OF THE MEMO KEY, compared BY REFERENCE like `contentSizes`: retyping a
+ * variable does not move the fold (the kind lives in doc.meta), so without the key
+ * the canvas would serve the pre-retype evaluation until something else moved.
+ * Pass `doc.meta.varKinds` itself, never a `?? {}` freshly-built empty object — a
+ * new object every call would defeat the memo on every frame.
+ *
  * @example evaluateState({vars: {speed: 5}, items: {a1: {type: "rect", x: "speed * 2"}}}, registry).state.items.a1.x // 10
  * @example evaluateState({vars: {speed: 5}, items: {}}, registry).clock // null (no equation read the clock)
  * @example evaluateState({vars: {}, items: {a1: {type: "rect", x: "mouse_x"}}}, registry).pointer // {x: 0, y: 0, left: false} (the frozen regime)
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
  */
 
-export function evaluateState(state, registry, script = "", contentSizes = null) {
+export function evaluateState(state, registry, script = "", contentSizes = null, varKinds = null) {
   const memo = evalMemo.get(state);
   // A CLOCK-FREE result is cached forever (the overwhelming majority — this is the
   // memo drag latency depends on). A clock-READING one is only reused while the
@@ -3597,17 +3707,18 @@ export function evaluateState(state, registry, script = "", contentSizes = null)
   // pointer-READING result carries the axis (`pointer === null` otherwise), so a
   // document with no `mouse_*` keyword is untouched.
   if (memo && memo.registry === registry && memo.script === script && memo.contentSizes === contentSizes
+    && memo.varKinds === varKinds
     && (memo.result.clock === null || memo.result.clock === particleTime())
     && (memo.result.pointer === null || memo.result.pointer === pointerInput())
     && (!memo.result.simulated || memo.result.simGeneration === simulationGeneration()))
     return memo.result;
-  const result = computeEvaluatedState(state, registry, script, contentSizes);
-  evalMemo.set(state, { registry, script, contentSizes, result });
+  const result = computeEvaluatedState(state, registry, script, contentSizes, varKinds);
+  evalMemo.set(state, { registry, script, contentSizes, varKinds, result });
   return result;
 }
 
 /** Pure-core of evaluateState (see its docs); uncached. Full-JS, lazy engine. */
-function computeEvaluatedState(state, registry, script = "", contentSizes = null) {
+function computeEvaluatedState(state, registry, script = "", contentSizes = null, varKinds = null) {
   // INTRINSIC CONTENT SIZES ENTER HERE AND NOWHERE ELSE (core/content_size.js).
   // Injected onto the evaluated items as a `content` object, so `self.content.aspect`
   // resolves through the ORDINARY property resolver — no new grammar and no new
@@ -3628,9 +3739,16 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   //    any-type engine, byte-identical); a UNIVERSAL leading "=" opens the slot
   //    to ANY kind (color/string/boolean/select), validated post-eval.
   const slots = new Map(); // key ("items.a1.x") → slot
-  for (const [name, value] of Object.entries(state.vars ?? {}))
-    if (isVarEquation(value))
-      slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value, kind: "number" });
+  // A VARIABLE'S SLOT KIND COMES FROM ITS DECLARATION (`meta.varKinds`), not from
+  // its value — the fix for the user's `= note_font` report, argued in full at
+  // isVarEquation and core/var_kinds.js VAR_KIND_RESULT. With NO map threaded
+  // every variable declares "number" and this loop is byte-identical to the
+  // pre-kinds fiat, which is what keeps every un-threaded caller unchanged.
+  for (const [name, value] of Object.entries(state.vars ?? {})) {
+    const declared = varKind(varKinds, name);
+    if (isVarEquation(value, declared))
+      slots.set(`vars.${name}`, { key: `vars.${name}`, path: ["vars", name], src: value, kind: VAR_KIND_RESULT[declared] });
+  }
   for (const [id, item] of Object.entries(state.items ?? {})) {
     // An item whose `type` hasn't folded in yet DOES NOT EXIST YET (the
     // imaginary-slide semantics) — legitimate mid-document state when a creation
@@ -3694,7 +3812,13 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // as if the author had asked for zero — silently, since the schema default is
   // what a sparse knob resolves to at paint time. That was half of the R6-7 defect.
   const fallbackFor = (path) => {
-    if (path[0] !== "items") return 0; // variables have no plugin defaults
+    // A VARIABLE FALLS BACK TO ITS KIND'S ZERO, not to a bare 0: that is the value
+    // the slot would hold if the equation had never been written (core/var_kinds.js
+    // VAR_KIND_ZEROS), and it is a LEGAL value of the kind, so a failed colour
+    // variable hands its readers a colour rather than a number they must refuse a
+    // second time. An undeclared variable's zero IS 0, so this is byte-identical
+    // for every pre-kinds document.
+    if (path[0] !== "items") return VAR_KIND_ZEROS[varKind(varKinds, path[1])];
     const item = state.items[path[1]];
     const rel = path.slice(2);
     const knobDefault = materialParamDefaultAt(rel, item);
@@ -4008,28 +4132,68 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     const decl = VECTOR_KINDS[kind];
     const token = `${slugs.toSlug.get(itemId) ?? itemId}.${rel.join(".")}`;
     if (decl.via === "composite") {
-      // `<paintKey>.color[.axis]` — the paint is whatever sits before `color`.
+      // ── `…color[.axis]` HAS TWO READINGS AND THEY ARE TOLD APART BY THE VALUE ──
+      // A PAINT ADDRESS (`fill.color`) — the prefix names a paint property, and
+      // `color` is the address `paintColorPath` maps onto whichever shape the
+      // document holds. This is the whole R7-38 feature.
+      // A COLOUR PROPERTY (`shadow.color`, a plugin row keyed exactly `color`, a
+      // gradient stop's `stops.1.color`) — nothing named `color` sits BESIDE a
+      // paint there; the path names a colour outright.
+      //
+      // The old code assumed the first reading for every path ending in `color`,
+      // and `paintColorPath` types EVERY untagged object as a paint — so a stop
+      // record was read as one and `= b.fill.linear.stops.1.color` was refused
+      // with "is not a colour", the very address this module's header points
+      // gradient authors at. `shadow.color.r` was refused the same way, and a
+      // bare `color` row was refused for the opposite reason (an empty prefix
+      // returned NOT_A_VECTOR before anything looked). All three are one bug:
+      // the branch never asked whether the prefix WAS a paint. MEASURED.
       const paintPath = rel.slice(0, rel.indexOf(kind));
-      if (paintPath.length === 0) return NOT_A_VECTOR; // a bare `.color` names no paint
-      settleGeometry(itemId, false);
-      const paint = getPath(out.items[itemId], pathToStored(paintPath));
-      if (paint === undefined)
-        throw new Error(`Item "${slugs.toSlug.get(itemId) ?? itemId}" has no property "${paintPath.join(".")}"`);
-      const refusal = paintColorRefusal(paint, token);
-      if (refusal) throw new Error(refusal);
-      const color = getPath(paint, paintColorPath(paint)) ?? paint;
-      if (axis) {
-        const channel = colorChannelValue(color, axis);
-        if (channel === null) throw new Error(`"${token}" is not a colour — got ${JSON.stringify(color)}`);
-        return channel;
+      const colorPath = rel.slice(0, rel.indexOf(kind) + 1);
+      // A PAINT PREFIX MUST BE NON-EMPTY. An empty one would read the ITEM, which
+      // carries a string `type` (`"text"`) and so passes isPaintValue — the widget
+      // is not a paint, it is the thing the property is on.
+      const prefixValue = paintPath.length ? getPath(out.items[itemId], pathToStored(paintPath)) : undefined;
+      if (isPaintValue(prefixValue)) {
+        settleGeometry(itemId, false);
+        const paint = getPath(out.items[itemId], pathToStored(paintPath));
+        const refusal = paintColorRefusal(paint, token);
+        if (refusal) throw new Error(refusal);
+        const color = getPath(paint, paintColorPath(paint)) ?? paint;
+        if (axis) {
+          const channel = colorChannelValue(color, axis);
+          if (channel === null) throw new Error(`"${token}" is not a colour — got ${JSON.stringify(color)}`);
+          return channel;
+        }
+        return vectorFor(kind, color) ?? (() => {
+          throw new Error(`"${token}" is not a colour — got ${JSON.stringify(color)}`);
+        })();
       }
-      return vectorFor(kind, color) ?? (() => {
-        throw new Error(`"${token}" is not a colour — got ${JSON.stringify(color)}`);
-      })();
+      // A COLOUR PROPERTY. Only the COMPONENT form needs this seam: the WHOLE read
+      // falls through to the ordinary stored path, so `= t.color` hands back the
+      // author's own spelling ("#f80", "red") rather than a re-spelled 4-vector,
+      // and the property behaves like every other stored property it is.
+      if (!axis) return NOT_A_VECTOR;
+      settleGeometry(itemId, false);
+      const stored = getPath(out.items[itemId], pathToStored(colorPath));
+      if (stored === undefined)
+        throw new Error(`Item "${slugs.toSlug.get(itemId) ?? itemId}" has no property "${colorPath.join(".")}"`);
+      const channel = colorChannelValue(stored, axis);
+      if (channel === null) throw new Error(`"${token}" is not a colour — got ${JSON.stringify(stored)}`);
+      return channel;
     }
     // A LEAVES vector: its components are stored leaves on the item itself, so
     // the whole geometry must settle before they are read.
     if (rel.length !== (axis ? 2 : 1)) return NOT_A_VECTOR; // `pos` only at the top level
+    // THE WIDGET'S OWN PROPERTY AT THIS KEY WINS OVER THE SYNTHESIZED ADDRESS.
+    // `size` is the w/h vector's address AND a real numeric row on seven widgets
+    // (the font size — plugins/text.js, plaintext.js, number.js, labeled_circle.js,
+    // visual_node.js, clock_digital.js, demo/text_morph.js). Without this, `= t.size`
+    // read the 2-vector and every consumer got "[object Object]" where the author
+    // asked for a font size — MEASURED, and it is why the address is flagged as an
+    // unconfirmed gap-fill in vector_values.VECTOR_ADDRESS_FOR_COMPOUND. A stored
+    // value is a fact about the document; the address is a convenience over one.
+    if (getPath(out.items[itemId], [kind]) !== undefined) return NOT_A_VECTOR;
     settleGeometry(itemId, false);
     const target = unsignedState(out.items[itemId]); // THE FLIP SEAM, as every pre-derivation reader does
     if (axis) {
@@ -4366,7 +4530,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   const scopeGet = (name, slot, selfId) => {
     // THE ARITHMETIC HOST IS SERVED FIRST, AND IT MUST BE. `has: () => true`
     // routes EVERY free identifier through this function, INCLUDING the `__op` /
-    // `__neg` that toJsExpr emits — so the closure binding in compileEquationFn
+    // `__neg` / `__proj` that toJsExpr emits — so the closure binding in compileEquationFn
     // is shadowed by the `with(scope)` and never reached (measured: "__op is not
     // a function" from every arithmetic equation). Answering here is what makes
     // the emitted call tree resolve. The names are double-underscored precisely
@@ -4374,6 +4538,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     // sit ABOVE the document-reference lookup so no deck can shadow them.
     if (name === "__op") return applyArithmetic;
     if (name === "__neg") return negateValue;
+    if (name === "__proj") return projectComponent; // the COMPONENT projection `(…).r` compiles to
     switch (name) {
       case "undefined": return undefined;
       case "NaN": return NaN;
@@ -4497,7 +4662,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     status.set(slot.key, "eval");
     stack.push(slot.key);
     try {
-      const v = colorSpelled(runExpression(slot), slot.kind);
+      const v = vec2Spelled(colorSpelled(runExpression(slot), slot.kind), slot.kind);
       // RESULT-KIND VALIDATION. Number-kind slots keep the exact legacy message
       // ("evaluates to NaN/Infinity"); any-type "=" slots validate against the
       // property kind and fail LOUDLY on a mismatch (→ default, never a silent

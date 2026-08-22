@@ -104,9 +104,16 @@ exports.compute = (inputs, self) => ({out: Math.hypot(inputs.a, inputs.b)});
 //     outputs: {out: (prev?.total ?? 0)},
 //     fired:   [],          // exec output keys that pulse THIS frame
 //   });
-// Declaring \`step\` makes this node SIMULATED: its state is not saved, it resets
-// when the presentation restarts, and the deck must render in contiguous frame
-// ranges rather than strided ones.
+// A custom node is SIMULATED whether or not you declare \`step\`: its state is not
+// saved, it resets when the presentation restarts, and the deck must render in
+// contiguous frame ranges rather than strided ones. This comment used to say
+// declaring \`step\` was what made it so, which read as "a compute-only spec is
+// free" — it is not. The widget answers the simulated question unconditionally,
+// because the answer would otherwise depend on COMPILING every spec in the
+// document before a render job could shard, and a wrong "not simulated" is a
+// strided shard that renders the wrong frames (core/custom_node.js states the
+// whole argument, and the dead predicate that once claimed otherwise is gone).
+// What \`step\` adds is state that survives from one frame to the next.
 `;
 
 /**

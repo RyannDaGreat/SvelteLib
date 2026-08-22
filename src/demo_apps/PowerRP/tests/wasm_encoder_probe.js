@@ -2,7 +2,7 @@
  * THE IN-PAGE WASM ENCODER, ON A PLAIN-HTTP LAN ORIGIN — does it work, and is it
  * actually FASTER than the PNG-per-frame upload it is meant to replace?
  *
- * tests/browser_encode_measure_probe.js measured the old path. This one measures
+ * tests/browser_encode_measure.mjs measured the old path. This one measures
  * the new one on the same deck at the same sizes, and produces a real .mp4 that
  * node then DECODES (ffprobe/ffmpeg) rather than merely weighing. Three claims are
  * on trial:

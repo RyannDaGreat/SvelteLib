@@ -180,13 +180,19 @@ export function nodeExecKind(plugin, state) {
  * ── A FRAME-DOMAIN NODE FIRES FROM `frameStep`, NOT FROM `execEvent` ────────
  * `core/exec_frame.js` is the SECOND domain, and its event sources fire once per
  * RENDERED FRAME rather than at a slide boundary — so they declare `frameStep` where
- * a slide-domain event declares `execEvent`. Both are "something that fires an exec
- * pin", so both satisfy the same three gates above; only the name of the hook
- * differs. Without this clause the gate reported a correct Schmitt trigger as having
- * *"no `execEvent` predicate — nothing would ever fire it"*, which was false and
- * pointed at the wrong fix. The `exec: {}` / EXEC_ITEM_REFS half of the gate applies
- * to a frame node UNCHANGED and deliberately: its wire is stored the same way and a
- * duplicated copy would fire at the original just as silently.
+ * a slide-domain event declares `execEvent`. Both satisfy the "nothing would ever
+ * fire it" gate; only the name of the hook differs. Without this clause the gate
+ * reported a correct Schmitt trigger as having *"no `execEvent` predicate — nothing
+ * would ever fire it"*, which was false and pointed at the wrong fix. The `exec: {}`
+ * / EXEC_ITEM_REFS half of the gate applies to a frame node UNCHANGED and
+ * deliberately: its wire is stored the same way and a duplicated copy would fire at
+ * the original just as silently.
+ *
+ * THE TWO HOOKS PART COMPANY ON THE SECOND GATE, and reading them as interchangeable
+ * was a defect: `execEvent` with no exec output is a predicate nothing can hear, but
+ * `frameStep` with no exec pins AT ALL is an ordinary stateful node — its `fired` is
+ * optional, and an integrator that publishes one DATA output never wanted a pin. So
+ * only `execEvent` disqualifies a plugin the ports call PURE.
  *
  * @param {object} plugin - a widget plugin
  * @param {object} [state] - a state to ask for ports
@@ -201,6 +207,9 @@ export function nodeExecKind(plugin, state) {
  * @example execKindProblem({...wired, execEvent: () => true}) // null
  * @example // a FRAME-domain node fires from `frameStep` instead, and is equally sound:
  * @example execKindProblem({...wired, frameStep: () => ({})}) // null
+ * @example // …and a stateful node with NO exec pins at all is sound too — `fired` is
+ * @example // optional, so an integrator may carry state and publish only DATA:
+ * @example execKindProblem({type: "i", defaults: {}, ports: () => ({outputs: [{key: "out", type: "number"}]}), frameStep: () => ({})}) // null
  */
 export function execKindProblem(plugin, state) {
   const kind = nodeExecKind(plugin, state);
@@ -219,8 +228,18 @@ export function execKindProblem(plugin, state) {
   // EITHER DOMAIN'S FIRING HOOK COUNTS — see the docblock. A frame node's
   // `frameStep` is what fires its pins, exactly as `execEvent` is on the slide axis.
   const hasPredicate = typeof plugin?.execEvent === "function" || framed;
+  // BUT ONLY `execEvent` DISQUALIFIES A PURE ONE, AND THE TWO HOOKS ARE GENUINELY
+  // DIFFERENT HERE. `execEvent`'s whole contract is *"return true and my exec output
+  // fires"*, so declaring it with no exec output is a predicate nothing can hear —
+  // the sentence below. `frameStep` returns `{state?, fired?, outputs?}` with every
+  // field OPTIONAL (core/exec_frame.js): an integrator or a latch that carries state
+  // between frames and publishes only a DATA output never wanted an exec pin, and it
+  // is a sound frame node. Counting `framed` here refused that plugin outright — and
+  // did it with a sentence naming an `execEvent` it does not declare, which points at
+  // the wrong fix. `hasPredicate` still counts `frameStep` for the `event` branch
+  // below, where the node HAS an exec output and something must be able to fire it.
   if (kind === "pure")
-    return hasPredicate ? `exec_flow: "${plugin?.type}" declares an \`execEvent\` predicate but no exec output port — it could fire and nothing could hear it. Declare an exec output in ports().` : null;
+    return typeof plugin?.execEvent === "function" ? `exec_flow: "${plugin?.type}" declares an \`execEvent\` predicate but no exec output port — it could fire and nothing could hear it. Declare an exec output in ports().` : null;
   const outputs = declaredPorts(plugin, state ?? plugin?.defaults ?? {}).outputs;
   const firesSomething = outputs.some((p) => p.type === EXEC_TYPE);
   if (firesSomething) {

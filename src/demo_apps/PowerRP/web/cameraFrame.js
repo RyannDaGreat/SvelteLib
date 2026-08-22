@@ -117,7 +117,12 @@ export function evaluationAt(doc, slideIndex, alpha, registry) {
   // condition and does not move (manifest R7-9's ruling) — a trail in the editor is
   // one dot on its anchor, exactly as the sparkler does not animate there.
   const folded = withExecOverlay(tweenedState(doc, slideIndex, alpha, registry), execOverlayFor(doc, slideIndex, registry));
-  const pass = evaluateState(folded, registry, doc.meta.script ?? "", contentSizesFor(folded, doc.meta?.name ?? ""));
+  // THE VARIABLE KINDS ride this seam for the same reason the script does: a
+  // variable's declared kind decides whether its stored string is an equation or a
+  // literal, the kind map lives in doc.meta rather than in the fold, and this is the
+  // one call every pixel consumer reaches evaluation through. Passed RAW (never
+  // `?? {}`), because evaluateState's memo compares it by reference.
+  const pass = evaluateState(folded, registry, doc.meta.script ?? "", contentSizesFor(folded, doc.meta?.name ?? ""), doc.meta?.varKinds ?? null);
   advanceTrailHistory(pass.state, registry);
   return pass;
 }

@@ -32,17 +32,21 @@
  * its frames are FULL renders, not harness-accommodated ones — no flag needed on
  * its rows.
  *
- * ACCOMMODATION FLAGS ARE STATED HONESTLY, per row, following the image.js
+ * ACCOMMODATION FLAGS ARE STATED HONESTLY, AT THE ROW, following the image.js
  * precedent: a treatment whose distinguishing feature depends on real decoded
- * content (a border/shadow-only distinction between two similarly-framed presets)
- * is flagged inline in this file's own comments rather than silently passed.
- * MEASURED: none of the shipped video/video_scrub/pdf_page rows collide under this
- * bound — every pair clears MIN_SEPARATION with the empty-content harness — so no
- * row needed a flag AT the row (unlike image.js's Faded Watermark/Magazine
- * Bleed/Soft Vignette/Torn Edge, whose whole point is "no border" and which
- * therefore needed harness-only stroke weight to become provable at all). The
- * closest pairs are reported below so a future change that narrows the gap is
- * visible in the log, not just the pass/fail.
+ * content is flagged in the PLUGIN, beside the values it inflated, not merely in
+ * this file. THREE ROWS PER VIDEO FAMILY carry one — "Rounded Player Card" (a 2px
+ * hairline raised to 5px), "Clean Borderless" (whose whole point is "no frame":
+ * strokeWidth held at 1, and its shadow blur held to 6 — 9 is the widest this gate
+ * can still see, because with no decoded frame that 1px stroke is the only thing
+ * casting a shadow at all) and "Frosted Preview" (3px raised to 15px with a
+ * stronger blur) — in plugins/video.js and, verbatim, plugins/video_scrub.js. Each
+ * says what the intended look is, what this harness measured, and to revisit once
+ * a browser-based gate can decode a real frame. pdf_page and tangent_lines needed
+ * none: pdf_page's rows separate on their placeholder-paper geometry, and
+ * tangent_lines has no content gap at all (see above). Every pair then clears
+ * MIN_SEPARATION as shipped, and the closest pairs are reported below so a future
+ * change that narrows the gap is visible in the log, not just the pass/fail.
  */
 
 import assert from "node:assert/strict";

@@ -20,8 +20,15 @@
  * (app.svelte.js pasteFiles) — which is exactly the count at which a two-line
  * ternary gets hand-copied and then fixed in only one of them. assetRef.js records
  * where that ends: one question about a dropped file's kind once had FIVE
- * implementations, and the PDF-drop bug lived in the copies. So this ships as ONE
- * named function with doctests, in a DOM-free module bare node can test.
+ * implementations, and the PDF-drop bug lived in the copies. So this ships as THREE
+ * named functions with doctests, in a DOM-free module bare node can test.
+ *
+ * THE EXAMPLES BELOW ARE WRITTEN `expr // result` ON ONE LINE, WHICH IS NOT A STYLE
+ * CHOICE. tests/doctest_test.js executes exactly three checked-in shapes, and the
+ * python `>>> expr` / bare-result form this file shipped with is none of them — all
+ * three blocks landed in its PROSE bucket ("comment-only @example — asserts nothing"),
+ * so 0 of the module's examples ran while the header claimed doctests. One of them
+ * could not have run in any case: it passed a free name `r` that is defined nowhere.
  *
  * THE ASSET EXPLORER'S UPLOAD IS DELIBERATELY NOT A CALL SITE. It adds a file to
  * the library WITHOUT inserting a widget, so there is no insert decision to make;
@@ -55,13 +62,11 @@
  * @param {{transcode?: {animated?: boolean, name?: string, url?: string}}} reply - an uploadAsset reply
  * @returns {boolean}
  *
- * @example
- * >>> isTranscodedGif({name: "spin.gif", transcode: {animated: true, frames: 24, name: "spin.mp4", url: "/asset/D/spin.mp4"}})
- * true
- * >>> isTranscodedGif({name: "logo.gif", transcode: {animated: false, frames: 1}})
- * false
- * >>> isTranscodedGif({name: "photo.png"})
- * false
+ * @example isTranscodedGif({name: "spin.gif", transcode: {animated: true, frames: 24, name: "spin.mp4", url: "/asset/D/spin.mp4"}}) // true
+ * @example isTranscodedGif({name: "logo.gif", transcode: {animated: false, frames: 1}}) // false
+ * @example // the flag ALONE is not evidence — a name and a url must be there too:
+ * @example isTranscodedGif({name: "spin.gif", transcode: {animated: true}}) // false
+ * @example isTranscodedGif({name: "photo.png"}) // false
  */
 export function isTranscodedGif(reply) {
   const t = reply?.transcode;
@@ -87,15 +92,11 @@ export function isTranscodedGif(reply) {
  * @param {string} fallbackKind - the kind the caller classified the FILE as (assetKindForFile)
  * @returns {{name: string, kind: string, url: string}} what to insert
  *
- * @example
- * >>> insertTargetForUpload({name: "spin.gif", url: "/asset/D/spin.gif",
- * ...   transcode: {animated: true, frames: 24, name: "spin.mp4", url: "/asset/D/spin.mp4"}}, "image")
- * {name: "spin.mp4", kind: "video", url: "/asset/D/spin.mp4"}
- * >>> insertTargetForUpload({name: "logo.gif", url: "/asset/D/logo.gif",
- * ...   transcode: {animated: false, frames: 1}}, "image")
- * {name: "logo.gif", kind: "image", url: "/asset/D/logo.gif"}
- * >>> insertTargetForUpload({name: "clip.mp4", url: "/asset/D/clip.mp4"}, "video")
- * {name: "clip.mp4", kind: "video", url: "/asset/D/clip.mp4"}
+ * @example // an animated GIF resolves to its MP4 SIBLING, so an ordinary video widget lands:
+ * @example insertTargetForUpload({name: "spin.gif", url: "/asset/D/spin.gif", transcode: {animated: true, frames: 24, name: "spin.mp4", url: "/asset/D/spin.mp4"}}, "image") // {name: "spin.mp4", kind: "video", url: "/asset/D/spin.mp4"}
+ * @example // a STILL GIF is the uploaded file with the caller's own kind — today's behaviour:
+ * @example insertTargetForUpload({name: "logo.gif", url: "/asset/D/logo.gif", transcode: {animated: false, frames: 1}}, "image") // {name: "logo.gif", kind: "image", url: "/asset/D/logo.gif"}
+ * @example insertTargetForUpload({name: "clip.mp4", url: "/asset/D/clip.mp4"}, "video") // {name: "clip.mp4", kind: "video", url: "/asset/D/clip.mp4"}
  */
 export function insertTargetForUpload(reply, fallbackKind) {
   if (isTranscodedGif(reply)) {
@@ -122,13 +123,10 @@ export function insertTargetForUpload(reply, fallbackKind) {
  *   see the module docblock: importing storageMode.js would cost bare-node loadability)
  * @returns {string|null} the sentence to report, or null
  *
- * @example
- * >>> gifStaticRefusal({name: "spin.gif"}, true, "Playing an animated GIF needs a backend…")
- * '"spin.gif" was added as a still image: Playing an animated GIF needs a backend…'
- * >>> gifStaticRefusal({name: "logo.gif", transcode: {animated: false, frames: 1}}, false, r)
- * null
- * >>> gifStaticRefusal({name: "photo.png"}, true, r)
- * null
+ * @example gifStaticRefusal({name: "spin.gif"}, true, "Playing an animated GIF needs a backend.") // '"spin.gif" was added as a still image: Playing an animated GIF needs a backend.'
+ * @example // SERVER mode says nothing: the server probed the file and answered one frame.
+ * @example gifStaticRefusal({name: "logo.gif", transcode: {animated: false, frames: 1}}, false, "needs a backend") // null
+ * @example gifStaticRefusal({name: "photo.png"}, true, "needs a backend") // null
  */
 export function gifStaticRefusal(reply, staticMode, reason) {
   if (!staticMode) return null;

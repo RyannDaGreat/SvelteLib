@@ -917,3 +917,39 @@ hides it — `tests/paste_upload_probe.js` pastes the image BEFORE it ever copie
   exemption roster (which already held `visual_node`) as a NAMED list with reasons
   rather than a predicate, so a third cardless node is a deliberate edit. It stays in
   the census for every other sweep — ports, bounds, itemRefs.
+
+## 2026-08-22 — the audit of the 77-commit pull, and what the METHOD taught
+
+The manifest records what was found and fixed. What belongs here is how it was found
+and what went wrong along the way.
+
+- **THE ADVERSARIAL PASS EARNED ITS COST.** Every finding faced three skeptics with
+  different lenses (reproduce / design-intent / blast-radius) and survived only on a
+  2-of-3 majority; 6 of 74 were refuted. The refutations were the useful part: each was
+  a reviewer reading a docblock's INTENT as a promise the code had broken, when the code
+  was the documented design working correctly. A single-pass review would have shipped
+  those six as defects and spent a fix on each.
+- **A SECOND PASS OVER THE FIXES FOUND FIXES THAT LIED.** Five of nine verifiers found
+  either an incomplete fix or a NEW false claim introduced BY a fix — a fixer writing
+  "all ten now draw exactly what they ask for" when one still did not, a budget comment
+  claiming a sweep "visits each node once by construction" when it does not. A fix is a
+  change, and a change can carry the same defect class it was sent to remove.
+- **DISJOINT FILE LEASES ARE NOT ENOUGH.** Renaming the empty widget's anchor ids
+  (`+x` → `plusx`, which the equation grammar can actually spell) was correct and
+  in-lease, and it broke `web/CanvasView.svelte`, which still asked for `-x`/`+x` and
+  would have drawn no cross at all. The lease stopped the agent from editing that file;
+  nothing stopped the rename from reaching it. **A rename needs a repo-wide sweep for
+  its old spelling, by whoever holds the far end** — the verifier caught it, and the
+  parent applied it. Same class as CLAUDE.md's missing-named-import hazard: silent.
+- **A THIRD PARTY'S HALF-EDIT LOOKS EXACTLY LIKE A BUG.** `route_insert_probe` reported
+  `projectComponent is not defined` from the browser while bare node was clean — a
+  transient state of `core/expressions.js` while another agent held it open. Re-run
+  before believing a browser-only failure in a file someone else is editing.
+- **A PROBE'S OWN SCREENSHOT SAT UNTRACKED IN `tests/`** (`surge_gui_probe.png`, 191 KB)
+  in a tree three agents were committing from — one `git add -A` from being mistaken for
+  a fixture. Deleted, and `tests/*.png` is now ignored with `tests/fixtures/*.png`
+  exempted, so the real fixtures stay tracked.
+- **THE GATE HAS A HOLE THE AUDIT WALKED THROUGH**: `doctest_test.js` executes `@example`
+  records only, so every `>>>`-style example is outside it. That is why a stale one in
+  `core/var_kinds.js` survived long enough for an audit to find it, and it is a gate
+  defect, not a file defect.

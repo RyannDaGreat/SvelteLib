@@ -4,8 +4,8 @@
  * Read plugins/html2image.js's header first; it owns the WHY. This file owns the
  * HOW, and the one sentence that governs every line of it:
  *
- *   THE FRAME EXISTS ONLY DURING A CAPTURE THE USER ASKED FOR, AND IS DESTROYED
- *   BEFORE THIS MODULE RETURNS. IT IS NEVER PART OF A RENDER TREE.
+ *   THE FRAME EXISTS ONLY DURING ONE RENDER — AUTOMATIC OR HAND-NUDGED — AND IS
+ *   DESTROYED BEFORE THIS MODULE RETURNS. IT IS NEVER PART OF A RENDER TREE.
  *
  * ── WHY AN IFRAME IS LEGAL HERE AT ALL ──────────────────────────────────────
  * CLAUDE.md's determinism law forbids iframes in a render tree — the user's own
@@ -23,8 +23,11 @@
  * pair of decisions this feature needs:
  *   allow-scripts        — author `<script>` must run, or a chart library could
  *                          never draw. This is the capability the whole widget is
- *                          for, and it is safe precisely because it happens under
- *                          an explicit user action and never at playback.
+ *                          for, and what makes it safe is the three refusals below
+ *                          plus the foreign-subresource check — NOT a gesture. Since
+ *                          R7-43a a render fires on its own, including on arrival of
+ *                          someone else's deck; see this module's last paragraph,
+ *                          "A button is not a security mechanism."
  *   NO allow-same-origin — with `allow-scripts` alone the frame gets an OPAQUE
  *                          origin, so the author's script cannot touch this page's
  *                          DOM, cookies, localStorage or IndexedDB. It cannot read
@@ -40,8 +43,10 @@
  *
  * ── THE TWO PHASES, AND WHY THEY ARE BOTH NECESSARY ─────────────────────────
  * 1. EXECUTE — the sandboxed frame runs the source (scripts included), then reports
- *    back the HTML its scripts PRODUCED (`document.documentElement.outerHTML`) plus
- *    its `document.fonts.ready`. This is what makes a script-driven page (a chart
+ *    back the HTML its scripts PRODUCED (`new XMLSerializer().serializeToString(
+ *    document.documentElement)` — NOT `outerHTML`, whose unclosed void elements make
+ *    phase 2's XML parse fail; the measured failure is recorded at `finish()` below)
+ *    once its fonts and layout have settled. This is what makes a script-driven page (a chart
  *    library filling a container) capturable at all: what we rasterize is the
  *    POST-SCRIPT markup, not the author's pre-script source.
  * 2. RASTERIZE — that produced markup goes into an `<svg><foreignObject>` data URL,
@@ -260,11 +265,16 @@ export function rasterSize(width, height, dpr) {
  * case for a full-bleed card) has nothing to resolve against and collapses; without
  * the margin reset every capture would carry the browser's default 8px gutter.
  *
- * THE REPORT WAITS ON `document.fonts.ready` AND ONE ANIMATION FRAME. Fonts,
+ * THE REPORT WAITS ON `document.fonts.ready` AND **TWO** ANIMATION FRAMES. Fonts,
  * because rasterizing before a webfont resolves captures fallback metrics — the
- * classic html2image defect, and an invisible one. One frame, because a script that
- * writes DOM in its own load handler has not been laid out until the next frame,
- * and its element sizes would read as 0.
+ * classic html2image defect, and an invisible one. Two frames, because a script that
+ * writes DOM in its own load handler has not been laid out until the frame AFTER the
+ * write: one tick schedules the layout, the second observes it, and serializing at
+ * the first reads element sizes of 0. (This docblock said "ONE ANIMATION FRAME" while
+ * the code below already did two — and the count is not cosmetic: it is exactly why
+ * the frame must be ON-SCREEN-BUT-INVISIBLE rather than off-viewport, since an
+ * off-viewport frame gets precisely ONE tick and then stalls. runInSandbox's own
+ * comment carries that measurement.)
  *
  * @param {string} html - the author's source
  * @param {number} width - capture width in CSS px
@@ -342,7 +352,8 @@ ${html}
  * blank picture) is why the caller additionally checks that the result is not
  * uniformly transparent.
  *
- * @param {string} html - the produced markup (an entire <html> document's outerHTML)
+ * @param {string} html - the produced markup (a whole <html> document, XMLSerializer-
+ *   serialized so every void element is closed — see captureDocument's finish())
  * @param {number} width - CSS-pixel width
  * @param {number} height - CSS-pixel height
  * @returns {string} SVG source

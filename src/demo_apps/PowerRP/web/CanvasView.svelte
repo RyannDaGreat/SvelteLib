@@ -5416,7 +5416,10 @@
     // make the widget itself come and go rather than a decoration on it).
     //
     // BUILT FROM THE PLUGIN'S OWN AXIS ANCHORS, not from a rect: the tips ARE
-    // `+x`/`-x`/`+y`/`-y` (plugins/empty.js), so the cross is a picture of the
+    // `plusx`/`minusx`/`plusy`/`minusy` (plugins/empty.js — the sigils written out
+    // as words, because the equation grammar's identifiers cannot spell `+x`, which
+    // made `box_+x.x` unreadable and reddened tests/stored_ref_split_test.js), so
+    // the cross is a picture of the
     // four points an equation can name, and it follows rotation and scale through
     // the same worldTransform every anchor does with no second geometry path
     // here. A projection through `nodeAnchors` also means a flipped (negative w/h)
@@ -5435,7 +5438,7 @@
           const p = actions.worldToScreen(f.x, f.y), q = actions.worldToScreen(t.x, t.y);
           return [{ x1: p.x, y1: p.y, x2: q.x, y2: q.y }];
         };
-        return [...seg("-x", "+x"), ...seg("-y", "+y")];
+        return [...seg("minusx", "plusx"), ...seg("minusy", "plusy")];
       });
 
     // INK-BOUNDS GHOST (user, 2026-08-02: "Physical boundaries when we enable

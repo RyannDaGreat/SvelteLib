@@ -14,9 +14,14 @@
  * per frame. The fix is display-time LOD: while a gesture is live, draw whatever
  * raster is already resident instead of requesting the ideal one.
  *
- * `bestCachedScale` is the whole policy, factored out of the two cache lookups so
- * it can be tested here with no CanvasKit, no pdf.js and no browser. The lookups
- * themselves are thin: scan the map for ready entries, hand their scales to this.
+ * `bestCachedScale` is the whole policy, factored out of the WHOLE-PAGE cache lookup
+ * so it can be tested here with no CanvasKit, no pdf.js and no browser. That lookup
+ * is thin: scan the map for ready entries, hand their scales to this.
+ *
+ * (This paragraph said "the two cache lookups" and "identical for whole pages and
+ * regions" until 2026-08-22. The region half was `pdfBestCachedRegionRef`, which had
+ * NO caller and did NOT share this tie-break despite its docblock claiming it did —
+ * it is deleted. One lookup, one policy, and this file tests it.)
  *
  * ── WHY LOG-SPACE DISTANCE, WHICH IS THE ONE SUBTLE PART ─────────────────────
  * "Nearest resident scale" on a LINEAR metric is wrong in a way that shows up as

@@ -89,12 +89,23 @@
  * DOM-free and engine-free: core/ runs in bare node.
  */
 
-import { EXEC_TYPE, declaredPorts, execEdgesOf, resolveNode, topoOrder } from "./nodeflow.js";
+import { EXEC_TYPE, declaredPorts, execEdgesOf, isNodeWidget, resolveNode, topoOrder } from "./nodeflow.js";
 import { hasSimulationValue, recordSimulationValue, simulationValue } from "./simulation_history.js";
 import { reportOnce } from "./report.js";
 
 /**
- * How many nodes ONE frame's chains may run before the walk gives up.
+ * How many PULSES one frame's chains may deliver before the walk gives up.
+ *
+ * ── IT COUNTS FOLLOWS, NOT VISITS, AND THE DIFFERENCE WAS A MEASURED WRONG
+ *    REPORT ────────────────────────────────────────────────────────────────
+ * It used to be charged at the top of `step`, which the two phase sweeps call once
+ * per id in `topoOrder(items).order` — and that is EVERY item in the folded state,
+ * rects included, not just the nodes. So the ceiling was spent by the DECK'S SIZE
+ * rather than by chain work: 600 rects beside a two-node chain reported *"look for a
+ * cycle in its exec wires"* on a document with no cycle, and past 2× the budget the
+ * sweeps consumed it before either frame node was reached, so the chain silently
+ * never stepped at all. It is now charged only where a pulse is actually FOLLOWED
+ * down an exec wire, which is the only place a document's own shape can run away.
  *
  * ── WHY IT IS STATED HERE RATHER THAN IMPORTED FROM core/exec_flow.js ───────
  * It is the same number and the same discipline as `EXEC_STEP_BUDGET` there, and
@@ -133,6 +144,33 @@ export function frameSlotKey(id) {
 }
 
 /**
+ * Pure function. THE SLOT KEY one frame node's PUBLISHED OUTPUTS live under — the
+ * companion of `frameSlotKey`, in the same namespace and with the same
+ * cannot-be-spelled guarantee (a leading double underscore is not a legal slug).
+ *
+ * ── WHY THE OUTPUTS ARE CARRIED AND NOT ONLY THE STATE ─────────────────────
+ * A chain-driven node (Set Var, Increment) is resolved only when the chain REACHES
+ * it, so on a frame its trigger did not fire it is still unresolved while phase 1's
+ * data-ordered sources run — and a reader downstream of it by a DATA wire then read
+ * nothing and fell through to `portZero`. A latch that was not pulsed HOLDS, and
+ * holding is a value its readers must see; this slot is where the held answer waits.
+ * See `stepFrameDomain`'s seeding loop for the measured failure.
+ *
+ * IT IS A SECOND SLOT RATHER THAN A WIDER PAYLOAD IN THE FIRST because `prev` is a
+ * contract with the PLUGIN (`frameStep`'s `ctx.prev` is exactly what it returned as
+ * `state`), and packing a host-owned field beside it would make every plugin's own
+ * record something it has to step around.
+ *
+ * @param {string} id - the item id
+ * @returns {string} the history slot key
+ *
+ * @example frameOutputsSlotKey("a1") // "items.a1.__frameOut"
+ */
+export function frameOutputsSlotKey(id) {
+  return `items.${id}.__frameOut`;
+}
+
+/**
  * Pure function. A frame node's carried state, SERIALIZED — what actually goes into
  * the history table.
  *
@@ -154,6 +192,10 @@ export function frameSlotKey(id) {
  * compare, which is what it does: one JSON string per node per frame. Two evaluations
  * of one frame produce the same string, so the net stays armed for the case it is
  * actually for (two consumers at different slides, whose states genuinely differ).
+ *
+ * IT ALSO CARRIES THE PUBLISHED OUTPUTS (`frameOutputsSlotKey`), for the identical
+ * reason — an output map is a fresh object every step too — which is why this pair is
+ * named for the round trip it performs rather than for one of its two payloads.
  *
  * @param {*} state - whatever the node's frameStep returned as `state`
  * @returns {string} a stable serialization
@@ -420,7 +462,12 @@ export function firedPortKeys(fired, execOuts) {
  *
  *   1. SOURCES (no exec input) step in TOPOLOGICAL order of the data graph, so what
  *      a wire carries into one is settled before it reads it (time → mod → compare →
- *      schmitt resolves in a single pass). Each one's fired pins are followed
+ *      schmitt resolves in a single pass) — EXCEPT where the wire comes from a
+ *      chain-driven node, which by construction has not stepped yet. That one reads
+ *      its LAST PUBLISHED value (`frameOutputsSlotKey`), which is what a latch is
+ *      holding and is the number the canvas draws on the same wire. It used to read
+ *      the port's ZERO, so one Set Var fed a display 5 and a Schmitt trigger 0 in the
+ *      same frame. Each one's fired pins are followed
  *      IMMEDIATELY, depth-first, in declaration order — the SAME order the slide
  *      domain walks (core/exec_flow.js's ORDER section), so a chain does not mean
  *      two things depending on which domain fired it. A node reached this way steps
@@ -465,7 +512,6 @@ export function stepFrameDomain(items, registry, dt) {
   /** Command. Steps ONE node (if it has not stepped this frame) and follows whatever
    *  it fired. `entered` is the exec INPUT key that reached it, or undefined. */
   const step = (id, entered) => {
-    if (steps.n++ >= FRAME_STEP_BUDGET) { steps.blown = true; return; }
     if (stepped.has(id)) return;
     const state = items[id];
     if (!state || state.active === false) return;
@@ -505,6 +551,10 @@ export function stepFrameDomain(items, registry, dt) {
       outputs[id] = result.outputs;
       resolved[id] = { inputs: node.inputs, outputs: { ...node.outputs, ...result.outputs } };
     }
+    // AND WHAT IT PUBLISHED IS CARRIED TO THE NEXT FRAME, so a reader that runs
+    // BEFORE this node steps sees the value it is holding rather than a zero — see
+    // the seeding loop below for the failure that costs.
+    recordSimulationValue(frameOutputsSlotKey(id), frameStateBytes(resolved[id].outputs));
     const execOuts = declaredPorts(plugin, state).outputs.filter((p) => p.type === EXEC_TYPE);
     const keys = firedPortKeys(result.fired, execOuts);
     if (keys.length === 0) return;
@@ -512,16 +562,55 @@ export function stepFrameDomain(items, registry, dt) {
     pulses += keys.length;
     for (const port of keys) {
       const target = edges.get(`${id}.${port}`);
-      if (target) step(target.item, target.port);
+      if (!target) continue;
+      // THE ONE PLACE THE BUDGET IS CHARGED — see FRAME_STEP_BUDGET for why it is
+      // here and not at the top of `step`. Following a pulse is the only work whose
+      // amount the document's WIRING decides; the phase sweeps below step each node
+      // at most once by construction (they call `step` twice on a source, and the
+      // second call returns at the `stepped` gate), so charging them made the ceiling
+      // a function of how many rects were on the slide.
+      if (steps.n++ >= FRAME_STEP_BUDGET) { steps.blown = true; return; }
+      step(target.item, target.port);
     }
   };
 
+  // ONLY NODE WIDGETS ARE IN THE PROGRAM. `topoOrder` sorts EVERY item in the folded
+  // state — its own docblock: *"Nodes not participating in any connection come first"*
+  // — so an unfiltered sweep hands `step` two calls per rect, each of which resolves
+  // to nothing twice over (a portless item never reaches `stepped`, so phase 2 redoes
+  // phase 1's work on it). The filter is what keeps both phases proportional to the
+  // PATCH rather than to the slide.
+  const order = topoOrder(items).order.filter((id) => isNodeWidget(pluginOf(registry, items[id]?.type), items[id]));
+  // ── WHAT A NOT-YET-STEPPED NODE CARRIES INTO A READER: ITS HELD VALUE ──────
+  // Phase 1 walks the DATA topological order but SKIPS anything with an exec input,
+  // so a latch is still unresolved when a SOURCE downstream of it by a data wire
+  // reads it — and `resolved` is a fresh per-frame map, so that read fell through to
+  // `portZero`. MEASURED: one Set Var holding 5 fed a display (which showed 5) and a
+  // Schmitt trigger (which read 0) IN THE SAME FRAME, so the trigger released and
+  // fired on a wire whose value had not moved. The same wire carried two numbers.
+  // Seeding each frame node with what it last PUBLISHED makes the held value the
+  // answer, and a node the chain does reach overwrites the seed when it steps — so a
+  // pulsed value still propagates within the frame it happened.
+  // A DELETED NODE HOLDS NOTHING — the seed obeys `resolveNode`'s own rule about
+  // which items are live ("absent, inactive, unregistered, or declaring no ports").
+  // The history table outlives `active: false`, so without this clause a node the
+  // author DELETED went on feeding its last value to a frame-domain reader while the
+  // node graph — which skips an inactive item outright, so its wire reads the port's
+  // zero — fed the canvas 0. MEASURED: a Set Var holding 5, deleted on frame 3, kept a
+  // watching Schmitt HIGH forever. That is the same wire carrying two numbers this
+  // seeding exists to end, so it must not be re-introduced from the other side.
+  for (const id of order) {
+    const state = items[id];
+    if (!state || state.active === false) continue;
+    if (!frameNodeIsSimulated(pluginOf(registry, state.type))) continue;
+    const held = frameOutputsSlotKey(id);
+    if (hasSimulationValue(held)) resolved[id] = { inputs: {}, outputs: frameStateFrom(simulationValue(held)) ?? {} };
+  }
   // PHASE 1 — THE SOURCES, in topological order of the data graph. A node with an
   // exec INPUT is deliberately skipped here: it is something the chain fires, and
   // stepping it now would consume its one step per frame before the pulse arrives
   // (see the docblock's second measured wrong shape). Each source's fired pins are
   // followed depth-first inside `step`.
-  const order = topoOrder(items).order;
   for (const id of order) if (!hasExecInput(items, registry, id)) step(id, undefined);
   // PHASE 2 — WHOEVER THE CHAIN NEVER REACHED, so a latch that was not pulsed this
   // frame still observes the frame and holds, rather than freezing at whatever it
@@ -529,7 +618,11 @@ export function stepFrameDomain(items, registry, dt) {
   for (const id of order) step(id, undefined);
 
   if (steps.blown)
-    reportOnce("exec_frame:budget", `exec_frame: a per-frame chain ran past ${FRAME_STEP_BUDGET} steps and was stopped. connectionRefusal refuses an exec loop at connect time, so this document was hand-edited or generated — look for a cycle in its exec wires.`);
+    // A CHAIN CANNOT LOOP — `stepped` admits each node once per frame, so a cycle
+    // costs one pass round it and stops — which is why this sentence no longer sends
+    // the reader hunting for one. What it takes to get here is a patch delivering
+    // more than the budget's worth of pulses in a SINGLE frame.
+    reportOnce("exec_frame:budget", `exec_frame: one frame's exec chains delivered more than ${FRAME_STEP_BUDGET} pulses and the walk was stopped, so some nodes did not step. This is a size limit, not a cycle (a node steps at most once per frame): the patch has more exec wires firing at once than one frame may follow.`);
 
   return { outputs, fired, pulses };
 }

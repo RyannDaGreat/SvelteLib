@@ -105,7 +105,7 @@ function itemToShapeXml(node, spId, nextMediaRelId, deckMedia, report) {
  */
 function buildSlide(doc, slideIndex, registry, deckMedia, report) {
   const folded = slideState(doc, slideIndex); // alpha-1 fold — see file header
-  const evaluated = evaluateState(folded, registry, doc.meta.script ?? "").state;
+  const evaluated = evaluateState(folded, registry, doc.meta.script ?? "", null, doc.meta?.varKinds ?? null).state;
   const cam = cameraRect(evaluated, doc.meta);
   const tree = deriveRenderTree(evaluated, registry).map((n) => nodeRelativeToCamera(n, cam));
 
@@ -177,7 +177,7 @@ export function exportDeck(doc, { assetBytes = {} } = {}) {
   const slideCount = doc.slides.length;
   if (slideCount === 0) throw new Error("exportDeck: document has no slides");
 
-  const cam0 = cameraRect(evaluateState(slideState(doc, 0), registry, doc.meta.script ?? "").state, doc.meta);
+  const cam0 = cameraRect(evaluateState(slideState(doc, 0), registry, doc.meta.script ?? "", null, doc.meta?.varKinds ?? null).state, doc.meta);
   const slideSizeEmu = { w: pxToEmu(cam0.w), h: pxToEmu(cam0.h) };
 
   const entries = {};

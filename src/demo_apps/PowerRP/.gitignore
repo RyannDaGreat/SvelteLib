@@ -13,3 +13,12 @@ server/.tls/
 
 # Vite build output (this app builds into web/dist)
 web/dist/
+
+# PROBE SCREENSHOTS WRITTEN BESIDE THEIR PROBE. A probe's own output is an
+# ARTIFACT, not source: tests/surge_gui_probe.js writes tests/surge_gui_probe.png
+# on every run, and it turned up untracked in a working tree three agents were
+# committing from — one `git add -A` away from being mistaken for a fixture.
+# Fixtures live in tests/fixtures/ (checker.png, latex_equation.png) and are
+# tracked; anything a probe writes into tests/ itself is not.
+tests/*.png
+!tests/fixtures/*.png

@@ -56,18 +56,31 @@
  *                      {key: "run", type: "exec", label: "Run"}];
  *     ports.outputs = [{key: "out", type: "number", label: "out"}];
  *
- *     // PURE: called per read, no state. The node stays seekable.
+ *     // PURE: called per read, no state.
  *     exports.compute = (inputs, self) => ({out: inputs.a * 2});
  *
- *     // OPTIONAL, and declaring it is declaring "I am SIMULATED":
+ *     // OPTIONAL: state carried between frames.
  *     exports.step = (ctx) => ({state: …, fired: ["then"], outputs: {…}});
  *
  * `compute` AND `step` ARE SEPARATE, WHICH IS AXOLOTI'S `code.krate` / `code.srate`
- * RATE SPLIT ONE LEVEL UP. The object states its own rate structure DECLARATIVELY and
- * the host supplies the loop — which is what lets `core/document.documentIsSimulated`
- * answer "may this render be strided-sharded" by ASKING rather than by executing
- * anything. A custom node that declares only `compute` is visibly pure and pays none
- * of the simulated costs.
+ * RATE SPLIT ONE LEVEL UP: the object states its own rate structure DECLARATIVELY and
+ * the host supplies the loop.
+ *
+ * ── THE SIMULATED COST IS PAID BY THE WIDGET, NOT BY THE SPEC ──────────────
+ * STATED HERE BECAUSE THE OPPOSITE WAS WRITTEN HERE, and it was a confident lie in
+ * the file an author is pointed at: this section used to end *"a custom node that
+ * declares only `compute` is visibly pure and pays none of the simulated costs"*.
+ * It pays all of them. `core/document.documentIsSimulated` asks the PLUGIN, through
+ * `core/exec_frame.frameNodeIsSimulated`, and `plugins/node_custom.js` declares
+ * `frameStep` UNCONDITIONALLY — because the alternative is compiling every spec in
+ * the document before a render job may shard, and a wrongly-PERMITTED strided shard
+ * is a plausible wrong video on a green exit code while a wrongly-refused one costs
+ * only parallelism. So inserting the widget at all makes the deck contiguous-shard-
+ * only and clock-reading (`core/expressions.js` calls `readClock()` for any plugin
+ * declaring `frameStep`), whatever the spec says. That is the conservative direction
+ * on purpose; node_custom.js's own header argues it. What `compute`-only buys is a
+ * node with no per-frame state of its OWN — real, and worth writing — not a cheaper
+ * document.
  *
  * ── WHAT IT DOES *NOT* GET: THE DOCUMENT ───────────────────────────────────
  * No `items`, no `vars`, no `self` in the spec's own top-level scope — the body runs
@@ -312,23 +325,17 @@ const PORTLESS_HOST = Object.freeze({
   pointer: () => null,
 });
 
-/**
- * Query (reads the compile cache; NEVER compiles). Does `src` declare `exports.step`
- * — i.e. is a custom node running this spec SIMULATED?
- *
- * ── THIS IS THE ONE THAT DECIDES WHETHER A RENDER MAY BE SHARDED ───────────
- * `core/document.documentIsSimulated` asks the PLUGIN, and the custom node's plugin
- * asks this. It is a cache read rather than a compile on purpose, and that has a
- * consequence worth stating: a spec nothing has evaluated yet answers FALSE. That is
- * safe in the only place it matters — `cli/render_job.js` repairs and evaluates the
- * document before it shards — but a future caller that asks BEFORE any evaluation
- * must compile first, and this docblock is where it should find that out.
- *
- * @example // customNodeIsSimulated("") // false
- * @example // after a spec declaring exports.step was evaluated: customNodeIsSimulated(src) // true
- */
-export function customNodeIsSimulated(src) {
-  const source = typeof src === "string" ? src : "";
-  if (source.trim() === "") return false;
-  return !!specCache.get(source)?.result.step;
-}
+// ── THERE IS NO `customNodeIsSimulated`, AND ITS ABSENCE IS THE POINT ───────
+// One stood here, claiming to be *"the one that decides whether a render may be
+// sharded"*. Nothing called it — `documentIsSimulated` asks the PLUGIN, and
+// `plugins/node_custom.js` answers unconditionally (see the header). So the function
+// was dead, and its docblock was the load-bearing sentence three others in this
+// feature were reasoned from, which is how *"a compute-only spec pays none of the
+// simulated costs"* got written down as fact.
+//
+// IT CANNOT BE REVIVED AS A CACHE READ, WHICH IS WHY IT IS GONE RATHER THAN UNUSED:
+// it answered from `specCache` without compiling, so a spec nothing had evaluated yet
+// answered FALSE — and a false "not simulated" is exactly the wrongly-PERMITTED
+// strided shard the plugin refuses to risk. Making the decision real means COMPILING
+// every custom spec in the document before a render job may shard, which is a
+// deliberate piece of work with a cost, not a predicate someone forgot to wire up.

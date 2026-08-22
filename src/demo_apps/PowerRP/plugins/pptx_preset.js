@@ -1,6 +1,116 @@
+/**
+ * PPTX PRESET SHAPE — a PARAMETRIC widget for PowerPoint's 187 AutoShapes
+ * (`prstGeom prst="..."`), imported and KEPT PARAMETRIC rather than baked to
+ * a frozen path. User ruling (verbatim): "all 187 preset shapes should also
+ * have the correct handles that powerpoint has too. a lot of these are
+ * parametric and they should be treated as such."
+ *
+ * RESTORED, AND WHY THAT IS WORTH A LINE: 48e2b413 ("pptx_preset gets 10
+ * shape-family looks") DELETED this header wholesale and said nothing about
+ * it, taking the user ruling above, the parser contract below and the handles
+ * doctrine with it — none of which was written down anywhere else in the app
+ * (`grep -rn "HANDLES MATCH POWERPOINT"` returned nothing for the days it was
+ * gone). It is restored from 48e2b413^ and RE-CHECKED CLAUSE BY CLAUSE against
+ * what this file does TODAY, because a header restored unread would install a
+ * confident lie rather than repair one: the paint paragraph now states the
+ * PER-SUBPATH model workstream PPTXPAINT landed, the handles paragraph no
+ * longer claims a conditionally-absent `modifierPoints` key that a single
+ * plugin serving all 187 presets structurally cannot have, and the Inspector
+ * paragraph no longer calls state-dependent rows unsupported — `dynamicInspector`
+ * exists now, so that paragraph gives the reason this widget still has none.
+ *
+ * STATE is `{preset, adj, w, h, ...}` — `preset` a name into
+ * `preset_shape_defs.json`'s `shapes` table, `adj` a `{gdName: value}` map of
+ * instance-level adjustment overrides in POWERPOINT'S OWN NAMES (`adj`,
+ * `adj1`, `hf`, ...  — whatever that preset's `avLst` declares), absent keys
+ * falling back to the preset's own `avLst` defaults. TYPE IS `"pptxPreset"`
+ * (camelCase) and the `adj` SHAPE IS NAMED, NOT POSITIONAL, deliberately
+ * matching `core/pptx_translate/shape_geometry.js`'s `classifyGeometry`
+ * (owned elsewhere, and now shipping): it emits
+ * `{widgetType: "pptxPreset", extraState: {preset: name, adj: adjustments}}`
+ * straight from the parsed `<a:avLst>` overrides, so this widget's state
+ * shape is the parser's OUTPUT contract, not an independent invention —
+ * changing either side would break the other.
+ *
+ * `emit()` calls `presetShapePath` (core/pptx/preset_geometry.js — the pure
+ * DrawingML geometry evaluator) fresh on every render, so a keyframed `adj`
+ * value or a resized box re-derives the exact PowerPoint silhouette every
+ * frame; NOTHING is baked. This is the same "parametric, not frozen" shape
+ * this app already ships for its own shape families (plugins/shapeshifter.js's
+ * `ss_*` widgets) — this widget is the PPTX-import counterpart of that
+ * pattern, reusing the SAME display-list path op, effects bundle and morph
+ * protocol, only swapping the geometry source (`presetShapePath` instead of
+ * `core/outline.js`'s hand-authored generators). It draws ONE `path` OP PER
+ * DRAWN SUBPATH, honouring each subpath's own declared fill/stroke flags —
+ * NOT one joined path, which is what this file did until workstream PPTXPAINT
+ * and what drew 69 of the 187 shapes wrong; see `presetPaintOps` below for the
+ * paint order and the measured counts.
+ *
+ * ── HANDLES MATCH POWERPOINT'S OWN, NOT INVENTED ONES ────────────────────────
+ * `modifierPoints` is DERIVED FROM THE SHAPE'S OWN `ahLst` (core/pptx/
+ * preset_handles.js — parses PowerPoint's adjust-handle declarations, computes
+ * each handle's on-canvas position from the current `adj`, and inverts a drag
+ * back into the `adj` value(s) it controls, clamped to PowerPoint's own
+ * declared min/max). So a roundRect shows the ONE corner-radius handle
+ * PowerPoint shows, a pie shows the same two angle handles at the same two
+ * points, a block arrow shows shaft-thickness and head-length handles in the
+ * same places — never a hand-guessed approximation of where PowerPoint's
+ * handle would be. A preset with none (67 of 187 — `rect`, the
+ * `actionButton*` family, plain connectors, …) returns an EMPTY handle array,
+ * so the canvas draws no yellow diamonds on it, exactly as PowerPoint offers
+ * none there. (Empty and not an ABSENT `modifierPoints` key: one plugin
+ * serves all 187 presets, so the key cannot vary per preset. The only
+ * protocol that reads the key's presence is core/registry.js's
+ * `pointListEditable`, which ALSO requires a `kind: "list"` Inspector row —
+ * this widget has none, so the two forms are indistinguishable here.)
+ *
+ * NO NUMBERED "ADJUSTMENT N" INSPECTOR ROWS, AND THAT IS DELIBERATE, NOT AN
+ * OMISSION. This app's Inspector rows have a STATIC `key`/`writeKey`
+ * (web/Inspector.svelte's `writeKey(row) = row.writeKey ?? row.key`, never a
+ * function of state), but which GUIDE NAME a given "slot" means varies per
+ * preset (`roundRect`'s only adjustment is named `adj`; `pie`'s two are
+ * `adj1`/`adj2`; `star5`'s three are `adj`/`hf`/`vf`) — so there is no static
+ * row key that could target the right nested `adj.<name>` path across every
+ * preset without either (a) betraying the parser's named-`adj` contract with
+ * a second positional-slot storage scheme translated at read/write time (an
+ * earlier version of this file did exactly that, and it worked, but it
+ * existed ONLY to feed a static row key — see concerns.md/this repo's history
+ * for the false start), or (b) growing per-preset dynamic Inspector arrays.
+ * (b) IS EXPRESSIBLE TODAY AND WAS NOT WHEN THIS PARAGRAPH WAS WRITTEN: the
+ * clause restored here used to say the Inspector "does not support" it, and
+ * `dynamicInspector?(state)` has since landed in core/registry.js's protocol.
+ * It is still not taken, now for a REASON rather than a limit — dynamic rows
+ * are read by the single-selection and creation panels only, NOT by the
+ * multi-selection intersection (that same docblock says so), so per-preset
+ * adjustment rows would silently vanish the moment a second item was selected.
+ * PowerPoint itself has no such panel either — its ONLY UI for an
+ * adjustment is the on-canvas handle, or none at all for an adjustment no
+ * handle reaches. This widget matches that: `modifierPoints` IS the editing
+ * surface; an adjustment with no handle is reachable only via `=`-binding an
+ * equation onto `adj.<name>` directly (every property in this app is
+ * equation-bindable at Tier 0), the same route any nested leaf with no
+ * dedicated row already uses.
+ *
+ * ── WHAT THIS FILE DOES NOT OWN ──────────────────────────────────────────────
+ * `core/pptx/preset_geometry.js`, `core/pptx/preset_handles.js` and
+ * `core/pptx/preset_shape_defs.json` are pure, DOM-free, and owned elsewhere
+ * (the PPTX geometry evaluator and its handle-inversion counterpart) — this
+ * plugin is thin glue: it reads that pure geometry, renders it through the
+ * SAME path/fill/stroke display-list op every other vector shape widget uses
+ * (render_gpu/ir.js `path()`, exactly as plugins/shapeshifter.js and
+ * plugins/shape.js do), and turns handle drags into `adj` writes. No plugin
+ * may import another plugin (core/registry.js's rule) — this widget composes
+ * only through core/* and render_gpu/*, like every other widget.
+ * `core/pptx_translate/shape_geometry.js` (the parser half that PRODUCES
+ * `{type: "pptxPreset", preset, adj, w, h, ...}` items from real slide XML)
+ * is likewise out of scope here — this widget is the RENDER + EDIT half:
+ * given that state shape, draw PowerPoint's exact silhouette and offer
+ * PowerPoint's exact handles.
+ */
+
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, BUNDLES, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { presetShapePath, shadeSubpathFill } from "../core/pptx/preset_geometry.js";
 import { parseAhLst, handlePositions, adjFromHandleDrag } from "../core/pptx/preset_handles.js";
 import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
@@ -234,6 +344,16 @@ function subpathMorphPaint(sp, s) {
 // row pairs a shape with a full fill/stroke/effects treatment), the same
 // completeness rule preset_contract_test.js gate (7) enforces from
 // BUNDLES.effects rather than from a transcribed count.
+//
+// THE HEAD SET IS DERIVED, NOT TRANSCRIBED, exactly as rect.js/trail.js/
+// labeled_circle.js/iconify.js each derive it: the comment above invoked that
+// rule while the code below hand-listed six keys, so the day BUNDLES.effects
+// grows a seventh head this file would have gone on leaking the previously
+// hovered row's value with nothing to notice. The import-time throw names the
+// missing head instead.
+const EFFECT_HEADS = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
+if (EFFECT_HEADS.length !== 6)
+  throw new Error(`pptx_preset presets: BUNDLES.effects grew a new head (${EFFECT_HEADS.join(", ")}) — add its OFF identity below and extend every preset row`);
 const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
 const BLOOM_OFF = { radius: 10, strength: 0 };
 const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
@@ -245,10 +365,18 @@ const EFFECTS_OFF = { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal",
  * TREATMENT — not a sampler of the 187 names, a small set of coherent looks
  * an author reaches for without re-deriving an avLst by hand.
  *
- * EVERY `adj` VALUE BELOW WAS VERIFIED AGAINST ITS SHAPE'S OWN `ahLst`
- * min/max (read directly out of core/pptx/preset_shape_defs.json — see this
- * file's test for the bare-node re-check), so a tuned row sits inside
- * PowerPoint's own declared handle range, never merely "a plausible number."
+ * EVERY `adj` VALUE BELOW SITS INSIDE ITS SHAPE'S OWN `ahLst` min/max, AND
+ * THAT IS NOW CHECKED RATHER THAN ASSERTED. This paragraph made the claim from
+ * the day the rows landed while tests/pptx_presets_test.js checked each key
+ * against a list of eleven generic guide NAMES and no range at all — and one
+ * row was wrong under it (`leftBrace` adj1 = 45000 against its own maxAdj1 of
+ * 25000, silently pinned by `foldGuides` and drawn at 25000). That test now
+ * resolves each handle's real bounds through `parseAhLst` + `foldGuides` at
+ * three box aspect ratios, because a bound may itself be a GUIDE and move with
+ * the box. ONE row (the callout) is bounded only by the `+-2147483647` sentinel
+ * PowerPoint uses for an unbounded handle, where "inside the declared range" is
+ * true but says nothing — so that row states its values as offsets instead of
+ * claiming a nearby extreme.
  * `adj` KEY SETS ARE PER-SHAPE (roundRect -> {adj}; pie -> {adj1,adj2};
  * star5 -> {adj,hf,vf}) and every row below writes exactly the keys its own
  * shape declares in `avLst` — nothing borrowed from a different preset's
@@ -263,7 +391,13 @@ const EFFECTS_OFF = { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal",
 const PRESETS = [
   {
     name: "Steep Tail Callout",
-    description: "A speech-bubble callout with its pointer dragged in close and sharp — adj1 near its negative extreme pulls the tail almost under the box, adj2 near its own max keeps the tail LONG, so it reads as urgent rather than casual.",
+    // NO SUPERLATIVE HERE, BECAUSE THIS SHAPE HAS NO EXTREME TO BE NEAR. This
+    // row used to read "adj1 near its negative extreme … adj2 near its own max";
+    // wedgeRoundRectCallout's ahLst bounds BOTH axes by the +-2147483647
+    // sentinel PowerPoint uses for an unbounded handle, so neither value is near
+    // anything. The guides say what they really are: dxPos = w*adj1/100000 and
+    // dyPos = h*adj2/100000, the tail tip's offset from the box centre.
+    description: "A speech-bubble callout with its pointer thrown far out and down — the tail tip sits 55% of the box width left of centre and 90% of its height below, against defaults of 21% and 63%, so it reads as urgent rather than casual.",
     props: {
       preset: "wedgeRoundRectCallout", adj: { adj1: -55000, adj2: 90000, adj3: 16667 },
       fill: "#f7d842", stroke: "#8a6d00", strokeWidth: 2,
@@ -299,9 +433,17 @@ const PRESETS = [
   },
   {
     name: "Wide Braced Header",
-    description: "A curly brace opened to its widest declared bulge (adj1 near its 50000 max) and centered (adj2 at the midpoint), sized for wrapping a section header rather than a single line.",
+    // adj1 = 23000 IS A CEILING, NOT A TASTE CHOICE. leftBrace's ahLst bounds
+    // adj1 by its own `maxAdj1` guide = q3*h/ss with q3 = min(adj2, 100000-adj2)/2,
+    // which at adj2 = 50000 is 25000*h/ss — i.e. exactly 25000 on any box at
+    // least as wide as it is tall (ss = min(w,h) = h), and larger only on a tall
+    // one. So 23000 is inside the declared range at EVERY aspect ratio, where the
+    // 45000 this row shipped with was outside it at the widget's own default box
+    // and at the test's: `pin 0 adj1 maxAdj1` silently clamped it to 25000, so the
+    // stored number was never the number the shape drew.
+    description: "A curly brace opened to a wide bulge (adj1 = 23000, just under the 25000 ceiling its own maxAdj1 guide imposes at adj2 = 50000 on any box at least as wide as it is tall) and centered (adj2 at the midpoint), sized for wrapping a section header rather than a single line.",
     props: {
-      preset: "leftBrace", adj: { adj1: 45000, adj2: 50000 },
+      preset: "leftBrace", adj: { adj1: 23000, adj2: 50000 },
       fill: "#00000000", stroke: "#2b2b2b", strokeWidth: 4,
       ...EFFECTS_OFF,
     },
@@ -335,9 +477,16 @@ const PRESETS = [
   },
   {
     name: "Teardrop Bubble",
-    description: "PowerPoint's teardrop at its one legal adj (100000, the shape's only declared avLst value — the corner-pull ratio is fixed) with a glassy fill and a tight glow, styled as a liquid drop or map pin.",
+    // adj IS ADJUSTABLE HERE, and this row used to say it was not: teardrop's
+    // ahLst declares `<ahXY gdRefX="adj" minX="0" maxX="200000">`, so 100000 is
+    // its avLst DEFAULT, not "its one legal value" — the row shipped the default
+    // back and described the ratio as fixed. At 100000 the pulled corner lands
+    // exactly ON the box's top-right corner (dx1 = wd2 by the shape's own
+    // guides); 130000 draws it 30% of a half-width further out, which is the
+    // tail this look is named for.
+    description: "PowerPoint's teardrop with its corner pulled out into a real tail — adj = 130000 of the declared 0..200000 range, against the 100000 default that plants that corner exactly on the box's top-right corner — with a glassy fill and a tight glow.",
     props: {
-      preset: "teardrop", adj: { adj: 100000 },
+      preset: "teardrop", adj: { adj: 130000 },
       fill: "#7ec8e3", stroke: "#1c5f7a", strokeWidth: 2,
       ...EFFECTS_OFF, bloom: { radius: 14, strength: 0.35 }, blendMode: "normal",
     },
@@ -456,10 +605,14 @@ export const pptxPresetPlugin = {
    * `ahLst` (core/pptx/preset_handles.js) — not hand-authored per shape, so
    * all 120 of the 187 presets that declare at least one adjust handle (see
    * that module's header for the coverage count) get correctly-positioned,
-   * correctly-inverting handles for free, and the 67 with none simply return
-   * an empty array (spread conditionally below, so they carry no
-   * `modifierPoints` key at all — the same "absent, not empty-returning"
-   * shape shapeshifter.js's own conditional spread uses).
+   * correctly-inverting handles for free, and the 67 with none return an EMPTY
+   * array. Empty, NOT an absent `modifierPoints` key: shapeshifter.js can spread
+   * the key conditionally (plugins/shapeshifter.js:1181) because each of its
+   * families is its own plugin object, while this is ONE plugin serving all 187
+   * presets, so the key cannot vary per preset. Nothing here turns on the
+   * difference — the only protocol reading the key's presence is
+   * core/registry.js's `pointListEditable`, which also requires a `kind: "list"`
+   * Inspector row this widget does not have.
    */
   modifierPoints(s) {
     if ((s.w ?? 0) <= 0 || (s.h ?? 0) <= 0) return [];

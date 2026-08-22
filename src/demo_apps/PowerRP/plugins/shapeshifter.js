@@ -48,7 +48,7 @@
 
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
+import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS, STROKE_SPACE_KEYS } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import {
   ringSectorOutline, polygonStarOutline, cornerRectOutline, quadWedgeOutline,
@@ -414,6 +414,19 @@ export const FAMILIES = [
       N("armLengthRatio", "Vertical length", { min: 0, max: 1, help: "Shortens the vertical arm: 1 is a symmetric Greek cross, lower makes a squat plus. Drag the top handle." }),
       N("cornerRadius", "Corner radius", { min: 0, max: 0.5, help: "Rounds the twelve corners by this fraction of half the shorter side." }),
     ],
+    // TWO ROWS BELOW ASK FOR THE RADIUS THEY ALWAYS RENDERED, not the one they
+    // used to store. core/outline.js roundedVerts capped every corner by the
+    // WHOLE polygon's shortest edge, so on a thin cross the arm's width flattened
+    // the four ARMPITS too: "Delicate Cross" stored 0.5 and drew 0.14, "Add Icon"
+    // stored 0.5 and drew 0.28. Now that each corner is capped by its own edges
+    // the armpits would take 0.43 and 0.36 — a four-point sparkle, not the
+    // "jewelry-style pendant cross" and small-size "plus" these rows describe. So
+    // they state the radius that produces the picture they were tuned to. Measured
+    // against the pre-fix generator at a 200x200 box: "Add Icon" is bit-for-bit
+    // identical (0 of its 108 samples move), and "Delicate Cross" moves 44 of its
+    // 108 by at most 2.9e-14 px — the two clamps reach the same 14px by different
+    // arithmetic. Not "byte-identical", said exactly, because the claim is cheap
+    // to make and expensive to be wrong about.
     presets: [
       { name: "Greek Cross", description: "The classic even-armed plus, symmetric both ways, slightly bolder arms than the plugin default.", props: { armThickness: 0.4, armLengthRatio: 1, cornerRadius: 0 } },
       { name: "Medical Cross", description: "A thick, bold plus sign — the red-cross proportions.", props: { armThickness: 0.5, armLengthRatio: 1, cornerRadius: 0 } },
@@ -423,10 +436,10 @@ export const FAMILIES = [
       { name: "Thin Cross", description: "A slim, understated crucifix-style cross — thin arms, full height.", props: { armThickness: 0.16, armLengthRatio: 1, cornerRadius: 0 } },
       { name: "Chunky Cross", description: "Very thick arms nearly filling the box — a bold blocky cross.", props: { armThickness: 0.85, armLengthRatio: 1, cornerRadius: 0 } },
       { name: "Rounded Medical", description: "Thick and rounded — a friendly, soft medical-cross icon.", props: { armThickness: 0.48, armLengthRatio: 1, cornerRadius: 0.25 } },
-      { name: "Add Icon", description: "A compact plus tuned to read cleanly at small icon sizes.", props: { armThickness: 0.28, armLengthRatio: 1, cornerRadius: 0.5 } },
+      { name: "Add Icon", description: "A compact plus tuned to read cleanly at small icon sizes.", props: { armThickness: 0.28, armLengthRatio: 1, cornerRadius: 0.28 } },
       { name: "Low Plus", description: "A very squat cross with a barely-there vertical arm.", props: { armThickness: 0.3, armLengthRatio: 0.2, cornerRadius: 0 } },
       { name: "Fat Rounded Tick", description: "Near-maximum thickness with full rounding — almost a rounded diamond.", props: { armThickness: 0.9, armLengthRatio: 1, cornerRadius: 0.5 } },
-      { name: "Delicate Cross", description: "Thin arms with soft rounded ends — a jewelry-style pendant cross.", props: { armThickness: 0.14, armLengthRatio: 1, cornerRadius: 0.5 } },
+      { name: "Delicate Cross", description: "Thin arms with soft rounded ends — a jewelry-style pendant cross.", props: { armThickness: 0.14, armLengthRatio: 1, cornerRadius: 0.14 } },
     ],
     outline: (s) => crossPlusOutline(s.w, s.h, { armThickness: s.armThickness ?? 1 / 3, armLengthRatio: s.armLengthRatio ?? 1, cornerRadius: s.cornerRadius ?? 0 }),
     // armThickness's handle is the arms' INNER CORNER, so thickening moves it right AND
@@ -1100,10 +1113,18 @@ export function makeFamilyPlugin(fam) {
       ...bundle("transform"),
       ...fam.rows,
       ...props("fill", "stroke", "strokeWidth"),
-      // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always
-      // HAD render support at the ports seam; it just never declared the rows,
-      // which is why a gear with a texture-brush stroke showed no phase knobs).
-      ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
+      // THE UNIVERSAL STROKE ROWS (Tier C adoption — this widget always HAD
+      // render support at the ports seam; it just never declared the rows, which
+      // is why a gear with a texture-brush stroke showed no phase knobs).
+      // STROKE_SPACE_KEYS is here for the SAME reason and arrived late: the
+      // screen-space flag is stamped onto every stroked op at the ports seam
+      // (applyStrokeSpace), so all 19 families rendered it correctly and none of
+      // them offered the checkbox — the feature existed and was unreachable.
+      // It travels with the other two; a widget carrying one list and not the
+      // others is the drift tests/shapeshifter-paint_fix_test.js now pins. Row
+      // order follows the two bundles and the four widgets fixed before this
+      // one: the flag modifies strokeWidth, declared on the line above.
+      ...props(...STROKE_SPACE_KEYS, ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
       ...props("opacity"),
       ...bundle("effects"),
     ],

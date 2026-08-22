@@ -400,10 +400,18 @@ const NATIVE_REGEXP = RegExp;
  * to carry its own copy of the body whose docblock said it mirrored the evaluator's
  * seeded `random`; it did not. It seeded `(Number(seed)|0) + 0x6d2b79f5` and then
  * added that same constant again on the first call, so for any given seed its
- * stream ran TWO steps ahead of the one an equation gets. `random(7)` therefore
- * meant two different things depending on which side of the jail you asked from —
- * the exact failure a "mirrors X" comment is supposed to rule out, and one nothing
- * could catch while each copy was only ever compared against itself.
+ * stream ran ONE step ahead of the one an equation gets: the old first value landed
+ * at `seed + 2C` where mulberry32's first lands at `seed + C`, which is mulberry32's
+ * SECOND. MEASURED for seeds 7, 0, 12345 and -3: `old[0] === new[1]` in every case.
+ * (This paragraph and 7d549424's own commit title both said TWO, and the sibling
+ * docblock at core/expressions.js:3117 STILL DOES — that file is owned by another
+ * workstream this round, so the correction there is OUTSTANDING, not made. The extra
+ * `+ C` in the seeding line is the whole difference and it is worth ONE step, not
+ * two — counting the constant twice is the arithmetic slip, and a number stated three
+ * times in three files is exactly the kind that stops being re-derived.) `random(7)`
+ * still meant two different things depending on which side of the jail you asked
+ * from — the exact failure a "mirrors X" comment is supposed to rule out, and one
+ * nothing could catch while each copy was only ever compared against itself.
  *
  * SAFE TO CHANGE, MEASURED. Swapping the stream changes rendered output for any
  * asset that consumes it, so this was checked before landing rather than assumed:

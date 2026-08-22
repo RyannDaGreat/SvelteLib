@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["rp==0.1.1421", "fire==0.7.1"]
+# ///
 """
 THE CROSS-LANGUAGE GATE for the ambient pointer's export warning (manifest R7-24).
 
@@ -11,7 +15,14 @@ warning about it.
 It also runs server.py's own doctests for the warning functions, which are the
 specification of what the warning says and when.
 
-Run with no args.
+Run with no args, the same command tests/run_all.mjs uses:
+    uv run tests/pointer_input_warning_test.py
+
+The PEP 723 block above is not decoration: `uv run` is the ONLY thing that reads it,
+and load_server() executes server/server.py, which imports `fire` at module scope.
+With no block this file is a ModuleNotFoundError before the first assertion -- the
+suite red for an environment reason, reported identically to a real defect
+(run_all.mjs:277 records that exact incident for the other python suites).
 """
 import doctest
 import importlib.util

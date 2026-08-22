@@ -395,7 +395,7 @@ export function isProjectZip(file) {
  *  @example isPptxFile({name: "logo.png", type: "image/png"}) // false
  */
 export function isPptxFile(file) {
-  return /\.pptm?$/i.test(file?.name ?? "") || file?.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  return /\.ppt[xm]?$/i.test(file?.name ?? "") || file?.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 }
 
 /** Pure function. The project name a dropped/picked .pptx file wants: its
@@ -403,12 +403,22 @@ export function isPptxFile(file) {
  *  deck has no archive root folder to fall back on if this is blank — the
  *  caller is responsible for a final "Imported Presentation" fallback.
  *
+ *  ── THE PATTERN MISSED THE COMMONEST EXTENSION (2026-08-22) ────────────────
+ *  It was `/\.pptm?$/i`, which matches `.ppt` and `.pptm` and NOT `.pptx` — so
+ *  the ONE extension every modern deck has fell through, and a dropped
+ *  "Q3 Roadmap.pptx" named its project "Q3 Roadmap.pptx". The doctest below said
+ *  otherwise and had been red in the gate. `isPptxFile` above carried the same
+ *  pattern, where it mattered more: a .pptx was recognised only by its MIME type,
+ *  so a drop from a source that supplies no type was not recognised as a deck at
+ *  all. `[xm]?` is the fix in both, and `m?` was never a superset of it.
+ *
  *  @example pptxDisplayName("Q3 Roadmap.pptx")   // "Q3 Roadmap"
  *  @example pptxDisplayName("decks/Talk.PPTM")   // "Talk"
+ *  @example pptxDisplayName("Deck.ppt")          // "Deck"
  */
 export function pptxDisplayName(filename) {
   const base = String(filename ?? "").split(/[\\/]/).pop();
-  return base.replace(/\.pptm?$/i, "").trim();
+  return base.replace(/\.ppt[xm]?$/i, "").trim();
 }
 
 /** Command. Import an exported project .zip as a NEW project on the server —

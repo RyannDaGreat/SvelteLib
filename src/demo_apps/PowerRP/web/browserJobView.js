@@ -39,7 +39,7 @@ import { SEGMENT_SECONDS } from "./mp4Encoder.js";
  * user measured the in-page encoder FAR faster on their own setup while the label
  * promised the opposite.
  *
- * MEASURED, both encoders over the same frames (tests/browser_encode_measure_probe.js,
+ * MEASURED, both encoders over the same frames (tests/browser_encode_measure.mjs,
  * A/B section — the loops there carry no instrumentation inside a frame):
  *
  *        output      upload            wasm              winner

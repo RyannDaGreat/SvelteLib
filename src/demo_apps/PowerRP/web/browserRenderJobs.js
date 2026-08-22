@@ -53,7 +53,7 @@
  *             closes.
  *
  * MEASURED back to back on the same deck, same frames, on a real plain-HTTP LAN
- * origin (tests/browser_encode_measure_probe.js — the A/B section, whose loops carry
+ * origin (tests/browser_encode_measure.mjs — the A/B section, whose loops carry
  * no instrumentation inside a frame). Two independent runs of that probe, months
  * apart, both on this container:
  *

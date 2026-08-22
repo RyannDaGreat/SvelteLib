@@ -111,7 +111,13 @@ export function resolveFillPaint(fillIR, colorMap, colorScheme) {
  * @param {Record<string,string>} colorScheme
  * @returns {{stroke: string, strokeWidth: number, refusal: string|null}}
  *
- * @example resolveLine({widthEmu: 12700, fill: {kind:"solid", color:{kind:"srgb", hex:"000000"}}, dash: null, cap: null, compound: null}, {}, {}).strokeWidth // 1
+ * @example // 12700 EMU is ONE POINT (914400 EMU per inch / 72 pt per inch), and a
+ * @example // point is 1.333 px at the 96 dpi PowerRP's units are — so PowerPoint's
+ * @example // thinnest visible hairline is not a 1-px stroke here. This example said
+ * @example // 1 until 2026-08-22: it was reading the POINT value off the input rather
+ * @example // than the pixel value emuToPx returns, so the gate was red on a correct
+ * @example // conversion.
+ * @example resolveLine({widthEmu: 12700, fill: {kind:"solid", color:{kind:"srgb", hex:"000000"}}, dash: null, cap: null, compound: null}, {}, {}).strokeWidth // 1.3333333333333333
  */
 export function resolveLine(lineIR, colorMap, colorScheme) {
   if (!lineIR) return { stroke: "#000000", strokeWidth: 0, refusal: null };

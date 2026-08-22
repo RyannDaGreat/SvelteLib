@@ -224,7 +224,10 @@ const PRESETS = [
     props: {
       particleRate: 40, particleLifetime: 1.2,
       particleAngle: 270, particleSpread: 360, particleSpeedMin: 20, particleSpeedMax: 70,
-      particleGravityX: 0, particleGravityY: -6,
+      // ZERO, not the -6 this row used to carry: "no gravity of its own" is the
+      // conceit the description sells, and -6 buys a ~4px drift over the 1.2s
+      // lifetime — too small to see, and not worth contradicting the row for.
+      particleGravityX: 0, particleGravityY: 0,
       particleSizeMin: 1, particleSizeMax: 3,
       particleColor: "#c02bff", particleFade: 1, particleShrink: 0.8, particleSeed: 44,
     },

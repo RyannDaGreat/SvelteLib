@@ -64,13 +64,15 @@ const CUSTOM = customProps([
 // R7-39 TOP-UP (batch A): the original 5 canonical looks plus 6 more, extending
 // the SAME sparse idiom rather than flattening it. Every row sets the 11-key
 // common core (mode, pitch, worldLocked, dotShape, dotGain, gamma, posterize,
-// edgeInk, grain, paperColor, registration); angleC/angleM/angleY/angleK are
-// included exactly for the ink channels `mode` actually screens (cmyk/rgb use
-// all four, duotone uses angleC+angleK as its two spot-ink angles, mono uses
-// angleK alone); edgeLo/edgeHi appear only when edgeInk > 0 (an edge threshold
-// with no ink to gate is inert); inkA/inkB appear only in duotone mode (the
-// only mode that reads them). Surfaced by web/ToolsPane.svelte (props = a flat
-// knob map).
+// edgeInk, grain, paperColor, registration); the angle keys are included exactly
+// for the ink channels `mode` actually screens, READ OFF THE SHADER'S OWN
+// BRANCHES (comic_shader.js): cmyk screens all four; RGB screens only THREE and
+// reuses angleC/angleK/angleM as Red/Green/Blue, so angleY is inert there and no
+// rgb row writes it; duotone uses angleC+angleK as its two spot-ink angles; mono
+// uses angleK alone. edgeLo/edgeHi appear only when edgeInk > 0 (an edge
+// threshold with no ink to gate is inert); inkA/inkB appear only in duotone mode
+// (the only mode that reads them). Surfaced by web/ToolsPane.svelte (props = a
+// flat knob map).
 const PRESETS = [
   {
     name: "Classic 4-Color Comic",
@@ -95,7 +97,7 @@ const PRESETS = [
   {
     name: "Desync RGB",
     description: "Additive R/G/B dot screens fanned onto three axes over near-black — a heavy chromatic-aberration / anaglyph split.",
-    props: { mode: "rgb", pitch: 9, worldLocked: true, dotShape: "round", angleC: 15, angleM: 75, angleY: 0, angleK: 45, registration: 0.45, dotGain: 0, gamma: 1.0, posterize: 0, edgeInk: 0, grain: 0, paperColor: "#0a0a0f" },
+    props: { mode: "rgb", pitch: 9, worldLocked: true, dotShape: "round", angleC: 15, angleM: 75, angleK: 45, registration: 0.45, dotGain: 0, gamma: 1.0, posterize: 0, edgeInk: 0, grain: 0, paperColor: "#0a0a0f" },
   },
   {
     name: "Sunday Funnies",
@@ -120,7 +122,7 @@ const PRESETS = [
   {
     name: "Chrome Anaglyph",
     description: "Ellipse dots with heavy registration drift and a full-strength ink outline — the RGB split pushed to a hard-edged 3D-glasses look.",
-    props: { mode: "rgb", pitch: 12, worldLocked: true, dotShape: "ellipse", angleC: 15, angleM: 75, angleY: 0, angleK: 45, registration: 0.65, dotGain: 0, gamma: 1.0, posterize: 0, edgeInk: 0.6, edgeLo: 0.12, edgeHi: 0.30, grain: 0, paperColor: "#000000" },
+    props: { mode: "rgb", pitch: 12, worldLocked: true, dotShape: "ellipse", angleC: 15, angleM: 75, angleK: 45, registration: 0.65, dotGain: 0, gamma: 1.0, posterize: 0, edgeInk: 0.6, edgeLo: 0.12, edgeHi: 0.30, grain: 0, paperColor: "#000000" },
   },
   {
     name: "Line Art Only",

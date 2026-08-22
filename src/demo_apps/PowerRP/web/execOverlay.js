@@ -45,5 +45,5 @@ import { contentSizesFor } from "./contentSizes.js";
  * @example // execOverlayFor(newDocument(), 0, registry) // null — no triggers, no cost
  */
 export function execOverlayFor(doc, slideIndex, registry) {
-  return execOverlayAt(doc, slideIndex, registry, (folded) => evaluateState(folded, registry, doc?.meta?.script ?? "", contentSizesFor(folded, doc?.meta?.name ?? "")).state);
+  return execOverlayAt(doc, slideIndex, registry, (folded) => evaluateState(folded, registry, doc?.meta?.script ?? "", contentSizesFor(folded, doc?.meta?.name ?? ""), doc?.meta?.varKinds ?? null).state);
 }

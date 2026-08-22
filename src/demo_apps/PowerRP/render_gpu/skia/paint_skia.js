@@ -4013,14 +4013,17 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
   // it. The docblock here previously called that "cheap to accept"; it is not
   // acceptable, because it makes a universal effect silently partial.
   //
-  // THE FIX IS TO BLUR THE SILHOUETTE, NOT TO ADD A FILTER: drawInnerShadow now
-  // takes a `silhouette` image — the shape its two coverage blends read — separately
-  // from nothing else, and we hand it the BLURRED content. Both the field punch and
-  // the interior clip then use the same soft edge the widget itself is painted with,
-  // so the recess softens WITH the body instead of against it. blurredImageOf is the
-  // same ImageFilter.MakeBlur the widget's own composite uses, so the two silhouettes
-  // agree. At sigma 0 we pass `contentImg` ITSELF (no copy, no surface) ⇒ the
-  // unblurred path is byte-identical and costs nothing.
+  // THE FIX IS TO BLUR THE SILHOUETTE, NOT TO ADD A FILTER: the image whose alpha
+  // drawInnerShadow's two coverage blends read — its `contentImg` parameter — is the
+  // BLURRED content. Both the field punch and the interior clip then use the same
+  // soft edge the widget itself is painted with, so the recess softens WITH the body
+  // instead of against it. The blur is `blurredSilhouette`, which is DECAL-tiled: the
+  // same ImageFilter.MakeBlur the widget's own composite runs through (blurredFilter,
+  // also Decal), so the two silhouettes agree edge for edge. It is deliberately NOT
+  // `blurredImageOf` — that one is hardcoded to TileMode.Clamp and would invent alpha
+  // past the shape; read its docblock and blurredSilhouette's before swapping them.
+  // At sigma 0 we pass `contentImg` ITSELF (no copy, no surface) ⇒ the unblurred path
+  // is byte-identical and costs nothing.
   //
   // The extra pass is one surface the size of the source REGION, paid ONLY when a
   // widget has BOTH blur and an inner shadow on.

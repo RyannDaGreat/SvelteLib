@@ -25,7 +25,17 @@
  *   post        postRenderJobFrame to a REAL backend accepting a REAL job.
  *
  * Run from the SvelteLib root:
- *   node src/demo_apps/PowerRP/tests/browser_encode_measure_probe.js
+ *   node src/demo_apps/PowerRP/tests/browser_encode_measure.mjs
+ *
+ * THE `.mjs` SUFFIX IS LOAD-BEARING, and this Run line pointed at the old `.js` name
+ * for every one of the 40 commits since 6b48cdf4 renamed it — an ERR_MODULE_NOT_FOUND
+ * for anyone who copied it. This is a MEASUREMENT, not a gate: tests/run_all.mjs collects
+ * /_probe\.m?js$/, so a file named `*_probe.js` is swept into the gate and would
+ * redden a run for taking minutes and asserting nothing. Renaming it out of `_probe`
+ * is what keeps it runnable by hand and outside the sweep. FOUR other files still cite
+ * the old name as the provenance of a number they quote (web/mp4Encoder.js:38,
+ * web/browserRenderJobs.js:56, web/browserJobView.js:42, web/serverMp4Encoder.js:44)
+ * and one more in tests/wasm_encoder_probe.js:5 — they are owned elsewhere.
  */
 
 import { bootProbe } from "./browser_render_harness.js";
