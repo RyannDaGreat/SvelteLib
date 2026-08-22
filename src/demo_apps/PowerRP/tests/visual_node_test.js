@@ -203,8 +203,20 @@ check("a BLANK port label draws no label op (the jack alone); a named one does",
   assert.strictEqual(portBeads(plugin, named).filter((o) => o.op === "text").length, 2);
 });
 
-check("a malformed port colour is refused at the declaration, not at the painter", () => {
-  assert.throws(() => declaredPorts(plugin, vn({ inPorts: [{ label: "a", color: "red" }] })), /hex literal/);
+check("A PORT COLOUR IS THE PAINTER'S GRAMMAR, not a second stricter one in core", () => {
+  // This check used to assert the OPPOSITE — that `declaredPorts` refuses anything
+  // but a hex literal "because the painter cannot resolve a name". render_gpu/ir.js
+  // parseColor takes hex, rgb()/rgba() AND 148 CSS names, so the refusal was wrong
+  // about the grammar AND threw from a function the hit test, the wire derivation
+  // and the Inspector all call: retyping a corkboard thumbtack (colour
+  // `rgb(210,45,45)`) into a node took the canvas down. One grammar, one owner.
+  for (const color of ["#ff8800", "#ff8800cc", "rgb(210,45,45)", "rgba(1,2,3,0.5)", "red"]) {
+    const ports = declaredPorts(plugin, vn({ inPorts: [{ label: "a", color }] }));
+    assert.strictEqual(ports.inputs[0].color, color, `${color} reaches the painter unchanged`);
+    assert.doesNotThrow(() => portBeads(plugin, vn({ inPorts: [{ label: "a", color }], outPorts: [] })), `${color} paints`);
+  }
+  // …and garbage is refused where the grammar lives, with the value named.
+  assert.throws(() => portBeads(plugin, vn({ inPorts: [{ label: "a", color: "notacolour" }], outPorts: [] })), /notacolour/);
 });
 
 check("the wiring rows are DYNAMIC: one per current input port, flagged when multiple", () => {

@@ -901,3 +901,19 @@ hides it — `tests/paste_upload_probe.js` pastes the image BEFORE it ever copie
   session is now in the manifest's USER MESSAGES, VERBATIM section, unedited. Lesson: a
   quoted fragment is my INTERPRETATION of what mattered — the record has to carry the
   whole thing so a later reader can judge for themselves.
+- **MISTAKE — I wrote a second, WRONGER copy of the colour grammar.** `declaredPorts`
+  refused any port `color` that was not a hex literal, "because the painter cannot
+  resolve a name". `render_gpu/ir.js parseColor` accepts hex (3/4/6/8), rgb()/rgba()
+  AND the 148 CSS named colours, so the claim was false — and the check THREW from a
+  function the hit test, the wire derivation and the Inspector all call, so one bad
+  leaf would have taken the whole canvas down instead of one op. Caught by
+  `retype_sweep_test`: retyping a corkboard thumbtack (colour `rgb(210,45,45)`) into a
+  routing point threw. The validation is gone; the painter owns the grammar, as it does
+  for every other colour leaf in the app. Lesson: before validating a value, find the
+  consumer that already decides what is valid — a stricter second opinion in core is
+  not "defence in depth", it is a bug with a docblock.
+- **The routing point tripped `node_chrome_unify_test`'s card census**, correctly: it
+  paints one disc, not a body + strip + title + mark + rim. Added to that file's
+  exemption roster (which already held `visual_node`) as a NAMED list with reasons
+  rather than a predicate, so a third cardless node is a deliberate edit. It stays in
+  the census for every other sweep — ports, bounds, itemRefs.

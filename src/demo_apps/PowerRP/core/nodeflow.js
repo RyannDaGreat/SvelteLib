@@ -402,10 +402,6 @@ export function portColorOf(port) {
   return typeof port?.color === "string" ? port.color : portColor(port?.type);
 }
 
-/** The spelling a per-port `color` must take: a hex literal, with or without alpha.
- *  The painter parses it at op construction and a CSS name would throw there, far
- *  from the declaration that wrote it — so it is refused at the declaration. */
-const PORT_COLOR_RE = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
 
 /**
  * Pure function. The value an UNCONNECTED input of this type reads.
@@ -601,8 +597,18 @@ export function declaredPorts(plugin, state) {
   const norm = (list, side) => (list ?? []).map((p) => {
     if (!p?.key) throw new Error(`nodeflow: a ${side} port declared by "${plugin?.type}" has no key`);
     if (!PORT_TYPES[p.type]) throw new Error(`nodeflow: ${side} port "${p.key}" on "${plugin?.type}" declares unknown type ${JSON.stringify(p.type)} (have: ${PORT_TYPE_NAMES.join(", ")})`);
-    if (p.color !== undefined && !(typeof p.color === "string" && PORT_COLOR_RE.test(p.color)))
-      throw new Error(`nodeflow: ${side} port "${p.key}" on "${plugin?.type}" declares color ${JSON.stringify(p.color)} — a port colour is a hex literal like "#ff8800" (the painter cannot resolve a name)`);
+    // A PORT COLOUR IS NOT VALIDATED HERE, AND THE ATTEMPT WAS A DEFECT (2026-08-22).
+    // This refused anything but a hex literal, "because the painter cannot resolve a
+    // name" — which is FALSE: render_gpu/ir.js parseColor takes hex (3/4/6/8),
+    // rgb()/rgba() AND the 148 CSS named colours. So the check was a SECOND, WRONGER
+    // copy of a grammar one module already owns, and it threw from a function the hit
+    // test, the wire derivation and the Inspector all call — one bad leaf would have
+    // taken the whole canvas down rather than one op. MEASURED: retyping a corkboard
+    // thumbtack (whose colour is `rgb(210,45,45)`) into a routing point threw here and
+    // reddened tests/retype_sweep_test.js. A port colour that a widget reads from
+    // DOCUMENT STATE can hold anything the author or a retype put there, and the
+    // painter is the one consumer entitled to say what it can paint — loudly, with the
+    // value in the message, exactly as it does for every other colour leaf in the app.
     // `multiple` IS AN INPUT FACT. An output already fans out to any number of
     // inputs, so the flag on an output would be a claim about something that is
     // true of every output; refusing it keeps the declaration from asserting a

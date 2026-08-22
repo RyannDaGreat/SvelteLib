@@ -80,15 +80,26 @@ registerPlugins(registry);
  *  mode this file exists to catch. */
 const nodeWidgets = allPlugins.filter((p) => isNodeWidget(p));
 
-/** THE ONE EXEMPTION, BY NAME AND WITH ITS REASON. The visual node (Round 8, user,
- *  2026-08-21) has "a customizable name, colour and shape (card, rounded / chamfered
- *  rectangle, circle or oval, diamond, triangle)" — a diamond cannot emit a rect body,
- *  and an author-picked header colour is not a family. The ruling this census encodes
- *  was about WORKING nodes wearing a band-less card by accident, not by ask; so the
- *  card roster is every node widget but that one, and the check below pins that its
- *  card SHAPE still typesets its title through the shared seam. */
-const VISUAL_NODE_TYPE = "visual_node";
-const cardWidgets = nodeWidgets.filter((p) => p.type !== VISUAL_NODE_TYPE);
+/** THE EXEMPTIONS, BY NAME AND EACH WITH ITS REASON — a stated roster, because the
+ *  ruling this census encodes is about a WORKING node wearing a band-less card BY
+ *  ACCIDENT, and an exemption granted by a predicate would let the next accident in
+ *  under the same cover. A third entry here is a deliberate edit in front of a reader.
+ *
+ *  visual_node (ROUND 8, user 2026-08-21) — "a customizable name, colour and shape
+ *    (card, rounded / chamfered rectangle, circle or oval, diamond, triangle)". A
+ *    diamond cannot emit a rect body, and an author-picked header colour is not a
+ *    family. The check below still pins that its card SHAPE typesets its title
+ *    through the shared seam.
+ *  route_node (ROUND 9, user 2026-08-22) — "a routing node is just a lone connector
+ *    pretty much". It is 16 units across and paints ONE disc: a body, a header strip,
+ *    a title, a mark and a rim would be five pieces of chrome on a widget the size of
+ *    one port bead, and it has no name to typeset. It is exempt from the CARD, not
+ *    from the census — every other sweep in this file (ports, bounds, itemRefs) still
+ *    covers it, which is the point of listing it here rather than filtering it out
+ *    of `nodeWidgets`.
+ */
+const CARDLESS_NODE_TYPES = ["route_node", "visual_node"];
+const cardWidgets = nodeWidgets.filter((p) => !CARDLESS_NODE_TYPES.includes(p.type));
 
 /** THE TINT → FAMILY LOOKUP, built once. `ir.js` parses every colour to RGBA floats
  *  at op construction, so an emitted header's `fill` is compared to a family's
@@ -263,7 +274,7 @@ check("THE VISUAL NODE's card shape typesets its title through the shared seam",
   // shape — the visual node draws a title strip, and that strip's title must sit
   // exactly where familyCard puts one: the y the user photographed wrong is the one
   // value this whole file exists to keep unreachable.
-  const visual = nodeWidgets.find((p) => p.type === VISUAL_NODE_TYPE);
+  const visual = nodeWidgets.find((p) => p.type === "visual_node");
   assert.ok(visual, "visual_node must be registered — it is the exemption's subject");
   assert.equal(visual.defaults.shape, "card", "the exemption's positive check reads the card shape, which must be the default");
   const ops = cardOps(emittedOps(visual));
