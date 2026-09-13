@@ -1,5 +1,6 @@
 <script>
   const components = [
+    { name: "AxisReorder", description: "Headless fixed-axis reorder with immediate preview", href: "/src/demos/AxisReorder/demo.html" },
     { name: "HorizontalViewport", description: "Native one-dimensional pan, zoom, and interval navigator", href: "/src/demos/HorizontalViewport/demo.html" },
     { name: "PanZoom", description: "Headless pan/zoom viewport controller", href: "/src/demos/PanZoom/demo.html" },
     { name: "SyncPlayer", description: "Headless synchronized multi-video controller", href: "/src/demos/SyncPlayer/demo.html" },
