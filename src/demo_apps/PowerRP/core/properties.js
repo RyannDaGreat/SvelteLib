@@ -1931,7 +1931,7 @@ export const PROPS = {
   // use: the filmstrip's former "filename" storage existed solely so a SERVER
   // endpoint could resolve the basename, and its frames are decoded in the browser
   // now, so it stores the served URL like every other media widget.
-  src: { label: "Source", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The image or video this widget shows — pick from the project's assets, upload a file, or drag one in from the Asset Explorer or Finder." },
+  src: { label: "Source", kind: "asset", assetKinds: ["image", "svg"], assetForm: "url", category: "formatting", help: "The image or video this widget shows — pick from the project's assets, upload a file, or drag one in from the Asset Explorer or Finder." },
   // `frames` (the filmstrip's FRAME LIST) is declared with the rest of the
   // filmstrip's rows at the bottom of this registry — it is a LIST, not a count.
   // ── THE VIDEO POSTER (user: "for powerpoint, they have thumbnail files for

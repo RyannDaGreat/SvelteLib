@@ -63,6 +63,8 @@ srv.save_project(PROJ, {"slides": [], "meta": {"name": PROJ}})
 # 1. font kind
 check(srv.asset_kind("Handwriting.ttf") == "font", "asset_kind('.ttf') == 'font'")
 check(srv.asset_kind("Body.woff2") == "font", "asset_kind('.woff2') == 'font'")
+check(srv.asset_kind("Bird.SVG") == "svg", "SVGs have their own vector asset kind")
+check(srv.asset_kind("photo.png") == "image", "raster image classification is unchanged")
 
 # 2 + 3. a fresh PDF asset lists with mtime and no thumbnail
 srv.save_asset(PROJ, "paper.pdf", b"%PDF-1.4 fake pdf bytes")

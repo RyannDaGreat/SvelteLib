@@ -2,10 +2,12 @@ import "../../../styles/theme.css";
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
+import { PowerRPApp } from "./app.svelte.js";
 import { loadFonts } from "./fontLoader.js";
 import { committedFaces } from "../render_gpu/fonts.js";
 import { ensureCanvasKit } from "../render_gpu/skia/browser_canvaskit.js";
 import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
+import { downloadBytes } from "./fileDownload.js";
 
 // CLOSES THE "bundle" ROW THE INLINE SPLASH OPENED. This is the first statement
 // in the bundle that can run, so it is the only honest place to say "the app code
@@ -306,9 +308,11 @@ if (!new URLSearchParams(location.search).has("cli")) {
   bootStage("storage", "Checking storage", {});
   storageReady.then(() => bootStage("storage", "Checking storage", { done: true }));
   Promise.all([fontsLoaded, storageReady])
-    .then(() => {
-      bootStage("mount", "Building the editor", {});
-      mount(App, { target: document.getElementById("app") });
+    .then(async () => {
+      bootStage("mount", "Restoring the working copy", {});
+      const app = new PowerRPApp();
+      await app.loadAutosave();
+      mount(App, { target: document.getElementById("app"), props: { app } });
       // The mount itself is synchronous; what follows is the GPU surface coming
       // up and the first derive+paint, which is a DIFFERENT and much longer
       // stage. MEASURED: ~800 ms locally between the mount returning and the
@@ -325,6 +329,18 @@ if (!new URLSearchParams(location.search).has("cli")) {
     // that is also swallowed is still a silent failure.
     .catch((e) => {
       bootFailed(e?.stack || e?.message || String(e));
+      const remedy = document.getElementById("boot-remedy");
+      const retry = document.createElement("button");
+      retry.textContent = "Retry opening the editor";
+      retry.onclick = () => location.reload();
+      remedy.append(retry);
+      const recovery = localStorage.getItem("powerrp.autosave");
+      if (recovery) {
+        const backup = document.createElement("button");
+        backup.textContent = "Download untouched recovery backup";
+        backup.onclick = () => downloadBytes(recovery, "PowerRP-recovery.json", "application/json");
+        remedy.append(backup);
+      }
       throw e;
     });
 } else {

@@ -155,6 +155,7 @@
   import Modal from "../../../lib/Modal.svelte";
   import AssetThumb from "./AssetThumb.svelte";
   import { ASSET_DRAG_MIME } from "./projectApi.js";
+  import { assetKindForName } from "./assetRef.js";
   import { relativeAssetRef } from "../core/asset_ref.js";
 
   let {
@@ -197,7 +198,9 @@
   let fileInput = $state(null);
 
   /** Query. The library assets matching this field's accepted kinds. */
-  let filteredAssets = $derived((assets ?? []).filter((a) => assetKinds.includes(a.kind)));
+  // Image consumers can also display SVGs; an SVG-only picker cannot accept PNGs.
+  let acceptedKinds = $derived(new Set(assetKinds.includes("image") ? [...assetKinds, "svg"] : assetKinds));
+  let filteredAssets = $derived((assets ?? []).filter((a) => acceptedKinds.has(a.kind)));
 
   // 14.3 AUTO-OPEN: when the caller raises `autoOpen`, open the picker once.
   // `autoOpenedFor` guards against re-opening every effect run (the signal stays
@@ -260,8 +263,8 @@
     error = null;
     try {
       const res = await app.uploadAsset(file); // {ok, name, url}
-      const kind = res.url ? guessKindFromName(res.name) : null;
-      if (kind && !assetKinds.includes(kind)) {
+      const kind = res.url ? assetKindForName(res.name) : null;
+      if (kind && !acceptedKinds.has(kind)) {
         error = `"${file.name}" is a ${kind} — this field only accepts ${assetKinds.join("/")}. Uploaded to the asset library, but not applied here.`;
         console.error(`AssetField: uploaded "${file.name}" but its kind (${kind}) doesn't match this field's accepted kinds (${assetKinds.join(", ")}).`);
         return;
@@ -274,33 +277,6 @@
       error = String(e?.message ?? e);
       console.error("AssetField: upload failed:", e);
     }
-  }
-
-  /** Pure function. Same extension→kind classification as the server's
-   * asset_kind() (server/server.py) — used only to pre-check a Finder drop's
-   * kind client-side before committing (the server is still the source of
-   * truth for the actual asset listing). Unknown extensions fall through as
-   * "other" (rejected everywhere, same as the server).
-   *
-   * Examples:
-   *     >>> guessKindFromName("clip.MOV")
-   *     'video'
-   *     >>> guessKindFromName("shot.png")
-   *     'image'
-   *     >>> guessKindFromName("sales.CSV")
-   *     'data'
-   *     >>> guessKindFromName("readme.txt")
-   *     'other'
-   */
-  function guessKindFromName(name) {
-    const ext = "." + (name.split(".").pop()?.toLowerCase() ?? "");
-    if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"].includes(ext)) return "image";
-    if ([".mp4", ".webm", ".mov"].includes(ext)) return "video";
-    if ([".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"].includes(ext)) return "sound";
-    if (ext === ".pdf") return "pdf";
-    // TABULAR DATA (server.py DATA_EXTS) — what a chart widget's picker offers.
-    if ([".csv", ".tsv", ".json"].includes(ext)) return "data";
-    return "other";
   }
 
   function onFileChosen(e) {
@@ -338,7 +314,7 @@
     if (kind === "asset") {
       try {
         const raw = e.dataTransfer.getData(ASSET_DRAG_MIME);
-        if (raw) dragRejected = !assetKinds.includes(JSON.parse(raw).kind);
+        if (raw) dragRejected = !acceptedKinds.has(JSON.parse(raw).kind);
       } catch {
         dragRejected = false; // payload unreadable mid-drag — no hint, drop still validates
       }
@@ -363,7 +339,7 @@
     if (assetPayload) {
       // Dropped from the Asset Explorer: an existing library asset, no upload.
       const a = JSON.parse(assetPayload);
-      if (!assetKinds.includes(a.kind)) {
+      if (!acceptedKinds.has(a.kind)) {
         error = `"${a.name}" is a ${a.kind} — this field only accepts ${assetKinds.join("/")}.`;
         return;
       }

@@ -75,8 +75,8 @@
  * ── SOURCE MODES: INLINE vs URL (svgSource selects; an Iconify icon is just a
  *    url-mode svg) ─────────────────────────────────────────────────────────────
  * `svgSource: "inline"` renders `svgSrc` exactly as before. `svgSource: "url"`
- * renders the text behind `svgUrl` (a project `/asset/<Project>/<file>.svg` —
- * .svg is already an `image`-kind asset server-side — or any URL), loaded
+ * renders the text behind `svgUrl` (a project `/asset/<Project>/<file>.svg`
+ * or any URL), loaded
  * through render_gpu/gpu/svg_source_registry.js: the image_registry contract
  * mirrored for text (idempotent ensure + sync get + load-event repaints +
  * pendingSvgSources for the headless render-job gate). An explicit mode select
@@ -397,6 +397,14 @@ export const svgPlugin = {
   type: "svg",
   ephemeral: EPHEMERAL.NONE,
   title: "SVG",
+  assetDrop: "svg",
+  /**
+   * Pure function. Author a dropped vector file in URL mode.
+   * @param {string} url Portable asset reference.
+   * @returns {object} Source properties merged into the widget defaults.
+   * @example svgPlugin.assetDropState("bird.svg") // {svgSource: "url", svgUrl: "bird.svg"}
+   */
+  assetDropState(url) { return { svgSource: "url", svgUrl: url }; },
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   /**
    * Pure function. Is this widget a GHOST (empty source)? Mode-aware but in
@@ -441,9 +449,8 @@ export const svgPlugin = {
     // shadow an authored svgSrc, and vice versa).
     { key: "svgSource", label: "Source", kind: "select", options: ["inline", "url"], optionLabels: { inline: "Inline markup", url: "URL / asset" }, category: "formatting", help: "Where the SVG comes from. Inline renders the markup below; URL loads an .svg asset (or any URL) — pick one from the project assets, e.g. an Iconify icon dropped into the asset library." },
     ...CUSTOM.rows, // the SVG source (inline mode)
-    // The url-mode source — the image widget's asset row shape (`.svg` is an
-    // image-kind asset server-side, so the picker offers it already).
-    { key: "svgUrl", label: "SVG URL", kind: "asset", assetKinds: ["image"], assetForm: "url", category: "formatting", help: "The URL of the SVG to render when Source is set to URL — usually a project asset (/asset/<Project>/<file>.svg). A failed load shows a red error box naming the URL." },
+    // The URL-mode source accepts vector files, not raster images.
+    { key: "svgUrl", label: "SVG URL", kind: "asset", assetKinds: ["svg"], assetForm: "url", category: "formatting", help: "The URL of the SVG to render when Source is set to URL — usually a project asset (/asset/<Project>/<file>.svg). A failed load shows a red error box naming the URL." },
     // INK — the currentColor resolution (a standard color row, keyframable). Its help
     // is SHARED with the iconify widget (SVG_INK_HELP) because ink and the Fill row
     // below are ONE system: ink says what `currentColor` means, Fill overrides

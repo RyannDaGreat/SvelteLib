@@ -40,7 +40,8 @@ export {
 // Explorer's icons, the font auto-registration (#26) and the insert affordances
 // all branch on `kind`.
 const KIND_EXTS = {
-  image: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif"],
+  image: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "avif"],
+  svg: ["svg"],
   video: ["mp4", "webm", "mov", "m4v", "mkv", "avi"],
   sound: ["wav", "mp3", "ogg", "m4a", "aac", "flac"],
   pdf: ["pdf"],
@@ -68,7 +69,7 @@ const PLUGIN_ASSET_SUFFIX = ".plugin.js";
  * in server mode.
  *
  * @param {string} filename - asset basename
- * @returns {"image"|"video"|"sound"|"pdf"|"font"|"data"|"plugin"|"other"}
+ * @returns {"image"|"svg"|"video"|"sound"|"pdf"|"font"|"data"|"plugin"|"other"}
  *
  * @example assetKindForName("logo.PNG")        // "image"
  * @example assetKindForName("clip.mp4")        // "video"
@@ -109,7 +110,7 @@ export function assetKindForName(filename) {
  * five answers.
  *
  * @param {{type?: string, name?: string}} file - a File/Blob from a drop or paste
- * @returns {"image"|"video"|"sound"|"pdf"|"font"|"data"|"plugin"|"other"}
+ * @returns {"image"|"svg"|"video"|"sound"|"pdf"|"font"|"data"|"plugin"|"other"}
  *
  * @example assetKindForFile({type: "image/png", name: "a.png"})        // "image"
  * @example assetKindForFile({type: "video/quicktime", name: "c.mov"})  // "video"
@@ -119,7 +120,8 @@ export function assetKindForName(filename) {
  * @example assetKindForFile({type: "", name: "gear.plugin.js"})        // "plugin"
  */
 export function assetKindForFile(file) {
-  const type = String(file?.type ?? "");
+  const type = String(file?.type ?? "").toLowerCase();
+  if (type === "image/svg+xml" || assetKindForName(file?.name) === "svg") return "svg";
   if (type.startsWith("image/")) return "image";
   if (type.startsWith("video/")) return "video";
   if (type.startsWith("audio/")) return "sound";

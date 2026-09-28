@@ -226,13 +226,23 @@ export function ensureImage(src) {
 
   const entry = { status: "loading", bitmap: null, error: null, promise: null };
   entry.promise = (async () => {
-    // fetch handles data: URIs and http(s)/relative URLs uniformly; the Blob
-    // → createImageBitmap path is the standard decode (premultiply happens at
-    // GPU upload, not here).
+    // Fetch handles data: URIs and http(s)/relative URLs uniformly.
     const res = await fetch(src);
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     const blob = await res.blob();
-    const bitmap = await createImageBitmap(blob);
+    // Chromium rejects SVG Blobs in createImageBitmap. The browser's image
+    // decoder supports both vectors and rasters, including older Image widgets
+    // that reference SVGs. Decode the fetched bytes once, then upload a bitmap.
+    const url = URL.createObjectURL(blob);
+    let bitmap;
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      bitmap = await createImageBitmap(image);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
     entry.status = "ready";
     entry.bitmap = bitmap;
     notify(src);

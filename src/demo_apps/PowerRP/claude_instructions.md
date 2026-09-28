@@ -8,6 +8,46 @@
 > the authority for the requirements below. If/when the container manifest is
 > reachable again, merge this into it (semantic merge, keep both histories).
 
+## SVG uploads and reload safety (2026-09-28)
+
+The GitHub-hosted editor must create an **SVG widget** when a user drops an SVG,
+and retain uploaded artwork across Save, Save As, rename, and browser reload.
+Investigate the whole import/storage path, not just the canvas gesture. Prefer
+shared existing mechanisms and deletion of duplicate code over another special
+case. Record additional obvious product bugs in `concerns.md` in language a user
+of the editor understands; distinguish reproduced failures from source findings.
+
+- **SVG asset** means a vector file, distinct from a raster image. Filename and
+  MIME classification, server listings, thumbnails, property pickers, file paste,
+  tile insertion and OS drop must agree. The existing registry chooses the
+  default widget; SVG uses URL source mode and `svgUrl`, not an image's `src`.
+- **Portable reference** means the filename or `/asset/project/file` stored in a
+  document. A `blob:` URL is temporary, used only while loading/rendering. Keep
+  IndexedDB as the browser asset store; do not replace it with embedded base64.
+- Existing image widgets referencing SVGs must remain viewable. Chromium cannot
+  decode an SVG Blob directly with `createImageBitmap`; use its image decoder
+  before converting to a bitmap rather than silently dropping the artwork.
+- The browser recovery copy must follow successful project-name/storage changes
+  immediately, without waiting for another edit. Recovery must remember whether
+  the document belongs to the library. Failed saves must preserve the working
+  document and its draft identity. Saving under a new name must carry assets.
+- Pending saves may finish writing their original document, but must not rename
+  or mark a different working copy saved after the user switches projects. An
+  unrecoverable boot must leave the recovery bytes intact and offer retry/backup,
+  not run destructive repair without the required widget definitions.
+- Verification includes actual SVG drop/paste/tile/button gestures, nonempty rendered
+  pixels, stored bytes and portable references, immediate reload after save/name
+  changes, a failed-save case, sibling PNG/PDF/video behavior, and a production
+  build hosted without a backend under `/SvelteLib/`. Run the canonical full gate;
+  record any failing or untested cases honestly. Pull before committing. Notify
+  only after work and background jobs finish.
+- `tests/svg_recovery_probe.js` exercises these browser regressions, including
+  rendered pixels and failure paths. Final canonical gate: **636 pass / 0 fail /
+  2 skip** (missing video fixtures), 2026-09-28. Production `/SvelteLib/` static
+  hosting also passed. `concerns.md` records the initial failed assumptions,
+  exact verification logs and remaining product risks; local testing does not
+  mean the GitHub Pages deployment has been updated.
+
 ## STATUS: ALL 75 ITEMS DELIVERED (2026-07-28, all five rounds)
 
 Rounds 3–5 (items 36–75) landed in commits 9b421cd…09cef81 on

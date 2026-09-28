@@ -27,6 +27,7 @@ export const KIND_ICON = {
   video: "mdi:play-circle-outline",
   sound: "mdi:music-note",
   image: "mdi:image-outline",
+  svg: "mdi:svg",
   pdf: "mdi:file-pdf-box",
   font: "mdi:format-font",
   // A PLUGIN ASSET (*.plugin.js) declares a whole WIDGET TYPE, so it gets its own
@@ -99,7 +100,7 @@ export function assetTilePresentation(asset) {
   const badge = typeof asset?.badge === "string" && asset.badge ? asset.badge : null;
   const base = { mode: "icon", src: null, icon: KIND_ICON[kind] ?? KIND_ICON.other, badge, badgeIcon: null, needsClientThumbnail: false };
 
-  if (kind === "image") return { ...base, mode: "image", src: asset.url };
+  if (kind === "image" || kind === "svg") return { ...base, mode: "image", src: asset.url };
   if (kind === "video") return { ...base, mode: "video", src: asset.url };
   if (asset?.thumbnail) {
     // Any kind with a cached preview bitmap (a server-rasterized PDF page 1).

@@ -104,6 +104,7 @@ async function pdfNaturalSize(url) {
  *  not the mirror the registry replaced. */
 const MEASURERS = {
   image: imageNaturalSize,
+  svg: imageNaturalSize,
   video: videoNaturalSize,
   pdf: pdfNaturalSize,
 };
@@ -115,7 +116,7 @@ const MEASURERS = {
  * that claimed the kind and this module — because that is the exact seam a
  * contributor adding a droppable widget will have missed.
  *
- * @param {string} kind - asset kind ("image" | "video" | "pdf")
+ * @param {string} kind - asset kind ("image" | "svg" | "video" | "pdf")
  * @param {string} url - a LOADABLE url (already through the storage adapter)
  * @param {string} [claimedBy] - the widget type that claims this kind, for the error
  * @returns {Promise<{w: number, h: number}>}

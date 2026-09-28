@@ -11,7 +11,7 @@
   - Dragging a file from the OS onto THIS PANE uploads it (the pane's own drop
     handler — the CANVAS drag-drop is a DIFFERENT surface owned elsewhere).
   - Double-click an asset → a Modal preview (img / video / audio playback).
-  - Image assets carry an "insert into slide" affordance → app.insertImageAsset.
+  - Image/SVG assets carry an "insert into slide" affordance → app.insertAssetWidget.
   - DRAG a tile onto the canvas → insert at the drop point (Round 12C). The
     tile sets the ASSET_DRAG_MIME payload; CanvasView owns the drop side.
   - TRASH CAN on tile hover (bottom-right) deletes the asset (Round 12C). If
@@ -697,7 +697,7 @@
    *  surface loudly. */
   async function insert(a) {
     try {
-      await app.insertImageAsset(a.url);
+      await app.insertAssetWidget(a);
     } catch (e) {
       error = String(e?.message ?? e);
       console.error("AssetExplorer: insert failed:", e);
@@ -1356,7 +1356,7 @@
                   aria-label={`${a.name} — ${doubleClickClause(a.kind)}`}
                   ondblclick={() => onTileDoubleClick(a)}
                 ></button>
-                {#if a.kind === "image"}
+                {#if a.kind === "image" || a.kind === "svg"}
                   <Tooltip text="Insert into current slide">
                     <button
                       class="btn-icon ae-insert"
@@ -1437,7 +1437,7 @@
      "view a CSV just like we can view other assets" is literally the same
      dialog, opened by the same double-click, titled with the same filename. -->
 <Modal bind:open={previewOpen} title={preview?.name ?? ""}>
-  {#if preview?.kind === "image"}
+  {#if preview?.kind === "image" || preview?.kind === "svg"}
     <img class="ae-preview-media" src={urlOf(preview)} alt={preview.name} />
   {:else if preview?.kind === "video"}
     <!-- svelte-ignore a11y_media_has_caption -->

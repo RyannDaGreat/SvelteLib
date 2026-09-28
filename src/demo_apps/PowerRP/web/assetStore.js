@@ -426,11 +426,11 @@ export const localProjectStore = {
         await promisify(s.delete(assetKey(from, a.file)), `rename drop ${a.file}`);
       }
     });
-    // Old refs point at the old project name, so their memoized URLs are dead.
-    for (const a of assets) revokeUrl(assetRef(from, a.file));
     await this.save(to, { ...rec.doc, meta: { ...rec.doc.meta, name: to } });
     await withStore(DOC_STORE, "readwrite", (s) => promisify(s.delete(from), `localProjectStore.rename(drop ${from})`));
     await localAssetStore.primeUrls(to);
+    // Keep the current canvas loadable until the destination is ready to adopt.
+    for (const a of assets) revokeUrl(assetRef(from, a.file));
     return { ok: true, name: to };
   },
 

@@ -8,6 +8,7 @@
   — the single source of truth for "what inputs exist right now".
 -->
 <script>
+  import { untrack } from "svelte";
   import "iconify-icon"; // registers the <iconify-icon> web component (used in the Open Project grid's placeholder tiles)
   import SplitPane from "../../../lib/SplitPane.svelte";
   import HintBar from "../../../lib/HintBar.svelte";
@@ -56,7 +57,7 @@
   import { ZIP_PARAM } from "./projectUrlImport.js";
   import { bootFailed, bootStage } from "./bootProgress.js";
   import { humanReadableFileSize } from "./fileSize.js";
-  import { PowerRPApp, THEME_FAMILIES, groupedThemeFamilies } from "./app.svelte.js";
+  import { THEME_FAMILIES, groupedThemeFamilies } from "./app.svelte.js";
   import { LABEL_DIVIDER_PROPERTY } from "./labelFrac.js";
   import { keyframeEverythingHelp } from "../core/section_keyframes.js"; // the bake tool's help — see it for why a bake is a tool and not a behaviour
   import { keyframed, foldState } from "../core/document.js";
@@ -114,7 +115,8 @@
   import { BIND_HEIGHT_TO_CONTENT } from "../core/content_size.js"; // the stored equation the content bind writes
   import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES, LIGHT_PIN_HELP, LIGHT_PIN_REQUIRES, MAKE_STATIC_HELP, MAKE_STATIC_REQUIRES, SLIDE_KEYFRAMES_HELP, SLIDE_KEYFRAMES_REQUIRES, lightPinnable, shapeInsertable } from "../core/registry.js";
 
-  const app = new PowerRPApp();
+  let props = $props();
+  const app = untrack(() => props.app); // one restored application for this mount's lifetime
 
   // Open Project from Server… modal — a PREVIEW GRID of every saved project (was a
   // bare name list). The list loads fresh on every open (the server's projects
@@ -253,16 +255,9 @@
     saveBusy = true;
     saveError = null;
     try {
-      // THREE CASES, and the draft one is why this is not a two-way branch:
-      //  - a DRAFT is not in the library, so saving it is its FIRST save. An
-      //    IMPORTED draft has staged assets to carry, so it runs commitDraft; a
-      //    FRESH document has none, so a plain write is the whole job (running
-      //    commitDraft on it would throw — it requires draftMode).
-      //  - the current name is an ordinary update of this project.
-      //  - a DIFFERENT name FORKS (copies the assets, original untouched).
+      // Staged drafts cross stores; every other name change carries the library.
       if (app.draftMode) await app.commitDraft(name);
-      else if (app.isDraft()) await app.saveToServer(name === app.projectName() ? name : renamedTo(name));
-      else if (saveIsCurrent) await app.saveToServer(name);
+      else if (name === app.projectName()) await app.saveToServer(name);
       else await app.saveProjectAsFork(name);
       saveModalVisible = false;
       return true;
@@ -273,14 +268,6 @@
     } finally {
       saveBusy = false;
     }
-  }
-
-  /** Command. Stamp `name` onto the working copy's meta.name and return it — the
-   *  fresh-draft first save. A field write, not a commit: like rename and Save-As,
-   *  naming is a storage operation and must not enter the document undo stack. */
-  function renamedTo(name) {
-    app.doc = { ...app.doc, meta: { ...app.doc.meta, name } };
-    return name;
   }
 
   // ── THE UNSAVED-WORK GUARD's dialog ─────────────────────────────────────────
@@ -590,7 +577,6 @@
   // poll is a local read, no request at all.
   pollRenderBadge();
   setInterval(pollRenderBadge, RENDER_BADGE_POLL_MS);
-  app.loadAutosave();
   app.loadTheme();
   // Mirror the connectivity seam into reactive `app.online`, so every
   // internet-gated command's `when` re-evaluates when the network comes or goes
@@ -609,23 +595,10 @@
   window.__powerrp_commandReason = (id) =>
     commandUnavailableReason(coreCommands.find((c) => c.id === id), app);
 
-  // ── DRAFTS AT BOOT: restore an unsaved working copy, or open a ?zip= link ────
-  //
-  // ORDER MATTERS, and the two cases are mutually exclusive by design:
-  //   RESTORE runs first and only when there is no ?zip=. loadAutosave() has
-  //   already put the draft's DOCUMENT back (autosave knows nothing about
-  //   drafts); restoreDraft re-establishes that it IS one and primes its staged
-  //   assets. This is the user's "the browser can persist it until later".
-  //
-  //   ?zip= WINS when present, because the link is an explicit instruction that
-  //   arrived after whatever was open. It OVERWRITES the previous draft staging
-  //   — one working copy at a time, like every editor.
-  //
-  // Neither writes to the project library. Both are fire-and-forget async: the
-  // editor is already usable, and failures report themselves loudly.
+  // Recovery is complete before mount. Explicit links use the ordinary guarded
+  // open path, so a link cannot silently replace recovered unsaved work.
   const zipParam = new URLSearchParams(location.search).get(ZIP_PARAM);
   if (zipParam) openBootZip(zipParam);
-  else app.restoreDraft().catch((e) => console.error(`PowerRP boot: restoring the unsaved draft failed — ${e?.message ?? e}`));
 
   // ── THE HTML TO IMAGE AUTO-RENDERER (R7-43a) ────────────────────────────────
   // User: "i don't want to have to press capture. it should be automatic in every
@@ -3157,7 +3130,9 @@
         {#if panel.id === "slides"}
           <SlideNav {app} />
         {:else if panel.id === "assets"}
-          <AssetExplorer {app} />
+          {#key app.projectName()}
+            <AssetExplorer {app} />
+          {/key}
         {:else if panel.id === "properties"}
           <Inspector {app} />
         {:else if panel.id === "tools"}

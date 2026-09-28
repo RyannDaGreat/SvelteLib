@@ -309,7 +309,7 @@ export const imagePlugin = {
   inspector: [
     ...bundle("transform"),
     // The image source (data URI / URL) — the registry `src` row. Default
-    // assetKinds (["image"]) and assetForm ("url") match this widget exactly,
+    // assetKinds (["image", "svg"]) and assetForm ("url") match this widget exactly,
     // so no override is needed here (unlike video/filmstrip).
     ...props("src"),
     // SAMPLING (Round 3 #37). "Nearest" IS the long-standing behavior — the

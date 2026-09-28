@@ -11,8 +11,8 @@
  * WHAT IT ASSERTS:
  *   1. THE SPLASH SHOWS A DOWNLOAD STAGE with honest bytes, and the deck opens as
  *      a draft whose sourceUrl is the link — which is what enables Copy Share Link.
- *   2. THE LIBRARY IS UNTOUCHED, and a REVISIT makes a fresh draft rather than a
- *      second project. This is the assertion that replaced the predecessor's
+ *   2. THE LIBRARY IS UNTOUCHED, and a REVISIT asks before replacing the restored
+ *      draft, then makes a fresh draft rather than a second project. This replaced
  *      localStorage idempotency memo: the memo existed to stop a five-times-opened
  *      link leaving five projects, and drafts make it leave zero.
  *   3. THE SHARE LINK ROUND-TRIPS: shareLink() rebuilds a URL whose ?zip= is the
@@ -116,14 +116,20 @@ const draftState = (page) => page.evaluate(async () => ({
 }));
 
 /**
- * Query. Boot a page at `url`, RECORDING every boot-splash stage as it happens.
+ * Command. Boot a page at `url`, RECORDING every boot-splash stage as it happens.
  *
  * The recorder is installed BEFORE navigation and wraps `window.__powerrp_boot`
  * on the new document, because the splash's stages are transient: by the time the
  * deck is open the splash is gone, so asking afterwards would find nothing and
  * prove nothing. This is the only way to assert "the download had its own stage".
+ *
+ * @param {object} page Browser page.
+ * @param {string} url URL to open.
+ * @param {boolean} discard Answer the required recovered-work confirmation.
+ * @returns {Promise<object[]>} Recorded splash stages.
+ * @example await bootRecording(page, shareUrl, true) // includes download stages after Discard
  */
-async function bootRecording(page, url) {
+async function bootRecording(page, url, discard = false) {
   await page.evaluateOnNewDocument(() => {
     window.__stages = [];
     const install = () => {
@@ -142,6 +148,12 @@ async function bootRecording(page, url) {
     }
   });
   await page.goto(url, { waitUntil: "networkidle0" });
+  if (discard) {
+    await page.waitForSelector(".name-modal-actions .danger", { visible: true });
+    assert(await page.$eval(".name-modal-note", el => /never been saved/.test(el.textContent)),
+      "the revisit asks before replacing recovered unsaved work");
+    await page.click(".name-modal-actions .danger");
+  }
   await sleep(5000); // wasm + fonts + the download + first paint
   return page.evaluate(() => window.__stages ?? []);
 }
@@ -178,7 +190,7 @@ try {
     "the share link DROPS the current query — a recipient must not inherit ?static=1");
 
   // ── 2. A REVISIT is a fresh draft, never a second project ─────────────────
-  const stages2 = await bootRecording(page, `${baseUrl}/?static=1&zip=${encodeURIComponent(openZipUrl)}`);
+  const stages2 = await bootRecording(page, `${baseUrl}/?static=1&zip=${encodeURIComponent(openZipUrl)}`, true);
   assert(stages2.filter((s) => s.id === "zip").length > 0, "the revisit downloaded again (no memo, by design — a draft costs nothing to remake)");
   const s2 = await draftState(page);
   assert(s2.draftMode !== null, "the revisit opened another DRAFT");
@@ -194,7 +206,7 @@ try {
   // Asserted through the SAME command the modal calls, so what is checked is the
   // message the user actually meets. In static mode there is no proxy to retry
   // through, which is precisely when the explanation has to carry its weight.
-  const help = await page.evaluate(async (url) => {
+  const helpPending = page.evaluate(async (url) => {
     try {
       await window.__powerrp_app.openProjectFromUrl(url, () => {});
       return { threw: false };
@@ -202,6 +214,9 @@ try {
       return { threw: true, name: e?.name ?? null, help: e?.help ? { ...e.help } : null, message: String(e?.message ?? e) };
     }
   }, blockedZipUrl);
+  await page.waitForSelector(".name-modal-actions .danger", { visible: true });
+  await page.click(".name-modal-actions .danger");
+  const help = await helpPending;
 
   assert(help.threw, "a CORS-blocked download FAILS LOUDLY rather than opening an empty deck");
   assert(help.name === "ZipFetchBlockedError", `the refusal is the typed blocked error (got "${help.name}")`);

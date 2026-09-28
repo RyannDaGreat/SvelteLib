@@ -654,7 +654,7 @@ export function cursorSource(name) {
 export function builtinCursorAssets() {
   const map = loadBuiltinCursors();
   return Object.entries(map).map(([name, src]) => ({
-    name: `${name}.svg`, kind: "image", builtin: true,
+    name: `${name}.svg`, kind: "svg", builtin: true,
     src, url: svgDataUri(src), size: new TextEncoder().encode(src).length,
   }));
 }

@@ -49,6 +49,13 @@ for (const [kind, types] of byKind)
   eq(types.length, 1, `exactly one widget claims dropped "${kind}" (${types.join(", ")})`);
 
 eq(widgetForAssetKind(registry, "pdf")?.type, "pdf_page", "A DROPPED PDF BECOMES A PDF PAGE — the user-reported bug");
+eq(widgetForAssetKind(registry, "svg")?.type, "svg", "a dropped SVG becomes an SVG widget, not an image");
+for (const name of ["bird.svg", "bird.SVG"]) {
+  eq(assetKindForName(name), "svg", `${name} is vector artwork`);
+  for (const type of ["", "image/svg+xml", "application/octet-stream"])
+    eq(assetKindForFile({ name, type }), "svg", `SVG filename survives MIME ${JSON.stringify(type)}`);
+}
+eq(assetKindForFile({ name: "clipboard", type: "image/svg+xml" }), "svg", "SVG MIME classifies extensionless clipboard files");
 eq(widgetForAssetKind(registry, "image")?.type, "image", "a dropped image still becomes an image widget");
 eq(widgetForAssetKind(registry, "video")?.type, "video", "a dropped video still becomes the PLAYER, not the scrubber");
 eq(widgetForAssetKind(registry, "sound"), null, "no widget claims a bare sound file — it uploads to the library and the drop is reported");

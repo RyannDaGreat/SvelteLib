@@ -490,7 +490,7 @@ export const PREVIEW_WHOLE_FILE = Number.POSITIVE_INFINITY;
  * {kind: 'text', text: 'a,b,c\n1,2,3\n4,5,6\n', truncated: false}
  */
 export async function previewOfBlob(blob, kind, maxTextBytes = PREVIEW_TEXT_BYTES) {
-  if (kind === "image" || kind === "video") return { kind, url: URL.createObjectURL(blob) };
+  if (["image", "svg", "video"].includes(kind)) return { kind: kind === "svg" ? "image" : kind, url: URL.createObjectURL(blob) };
   const truncated = blob.size > maxTextBytes;
   const text = await (truncated ? blob.slice(0, maxTextBytes) : blob).text();
   return { kind: "text", text, truncated };

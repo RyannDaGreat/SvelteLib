@@ -703,6 +703,9 @@ export class PowerRPApp {
    * makes quick-Save meaningless, which is why one boolean cannot answer both.
    */
   everSaved = $state(false);
+  // Reload resets undo history, but does not make recovered work disposable.
+  hasRecoveredWork = false;
+  workingCopyVersion = 0; // changes on document/storage identity switches, not edits
   // [ROUND 15.2] Backed by a private $state through an accessor (mirrors the
   // `selection` accessor immediately below) so that ANY slide switch (~13
   // write sites: SlideNav, KeyframePanel "Go To", jumpKeyframePath, addSlide/
@@ -1431,8 +1434,8 @@ export class PowerRPApp {
    * ASYNCHRONOUSLY. So a ref can go from "missing sentinel" to a real blob: URL with
    * the document, the registry and the project name all unchanged — a change no
    * argument-identity key can see. Uncached, every call re-asked and a later repaint
-   * simply picked up the answer (loadAutosave's "fire-and-forget: a repaint
-   * follows"). Cached, that repaint would serve the pre-prime derivation FOREVER and
+   * simply picked up the answer. Cached, that repaint would serve the pre-prime
+   * derivation FOREVER and
    * a reloaded static deck would show every image as missing until the author
    * happened to edit something. `assetsVersion` is this app's existing "the asset
    * library changed" counter and every site that lands, removes or primes assets
@@ -2597,6 +2600,7 @@ export class PowerRPApp {
     // html edit must be re-examined exactly like making one. (It normally renders
     // NOTHING — undo restores the source, the asset ref and the fingerprint as one
     // commit, so the widget lands FRESH and reuses its old picture.)
+    this.persistRecovery();
     this.#documentChanged();
   }
 
@@ -2604,12 +2608,24 @@ export class PowerRPApp {
     if (doc === this.doc) return;
     this.undoLog.commit(this.snapshot(doc));
     this.doc = doc;
-    try {
-      localStorage.setItem(AUTOSAVE_KEY, serialize(doc));
-    } catch (e) {
-      console.warn("Autosave failed:", e); // quota etc. — report, keep working
-    }
+    this.persistRecovery();
     this.#documentChanged();
+  }
+
+  /**
+   * Command. Atomically persist the working document and its storage identity.
+   * Quota/security failures are reported without discarding the in-memory work.
+   * @example app.persistRecovery() // writes the browser recovery copy
+   */
+  persistRecovery() {
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
+        doc: this.doc, draftMode: this.draftMode, everSaved: this.everSaved,
+        saved: this.doc === this.savedDoc,
+      }));
+    } catch (e) {
+      console.error("PowerRP: browser recovery could not be saved. Save or export your work before reloading:", e);
+    }
   }
 
   /**
@@ -6976,8 +6992,8 @@ export class PowerRPApp {
         // Keep the persisted draft marker's display name in step with the doc, so
         // a reload restores the deck under the name the user just typed.
         this.draftMode = { ...this.draftMode, name: trimmed };
-        localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(this.draftMode));
       }
+      this.persistRecovery();
       return trimmed;
     }
 
@@ -6998,11 +7014,12 @@ export class PowerRPApp {
 
     // STEP 3 — the name follows the folder. A field write, NOT a commit: renaming
     // is a storage operation and must not enter the document undo stack.
+    this.workingCopyVersion++;
+    const wasSaved = this.doc === this.savedDoc;
     this.doc = { ...this.doc, meta: { ...this.doc.meta, name: trimmed } };
-    // The document at the new name IS what storage holds (step 1 persisted any
-    // rewrite; step 2 moved those exact bytes), so the save indicator must not
-    // report a freshly-renamed project as unsaved work.
-    this.savedDoc = this.doc;
+    // Moving storage must not claim unrelated in-progress edits were saved.
+    if (wasSaved) this.savedDoc = this.doc;
+    this.persistRecovery();
     // The project's plugin assets are keyed by project name — rebuild the registry
     // against the new one so a *.plugin.js widget keeps resolving after the move.
     await this.reloadPluginAssets(trimmed);
@@ -7031,11 +7048,21 @@ export class PowerRPApp {
    *  made while the request is in flight still reads as dirty afterwards
    *  (marking `this.doc` on return would silently claim that edit was saved). */
   async saveToServer(name = this.projectName()) {
-    const sent = this.doc;
+    if (!validProjectName(name)) throw new Error(`Cannot save project as "${name}"`);
+    const version = this.workingCopyVersion;
+    const before = this.doc;
+    const sent = before.meta.name === name ? before : { ...before, meta: { ...before.meta, name } };
     this.saving = true;
     try {
       await projectStore().save(name, sent);
-      this.savedDoc = sent;
+      if (version !== this.workingCopyVersion) return name; // a different working copy is now open
+      if (name !== this.projectName()) this.workingCopyVersion++;
+      // Adopt the new identity only after the write succeeds. Preserve any edits
+      // made during the request; they must remain marked unsaved.
+      const unchanged = this.doc === before;
+      this.doc = unchanged ? sent : { ...this.doc, meta: { ...this.doc.meta, name } };
+      this.draftMode = null;
+      this.savedDoc = unchanged ? this.doc : sent;
       this.lastSavedAt = Date.now();
       // THE WORKING COPY IS NOW IN THE LIBRARY. Set on SUCCESS only (inside the
       // try, after the await) so a save that throws leaves a draft a draft — the
@@ -7043,6 +7070,8 @@ export class PowerRPApp {
       // reason: a failed first save must not hand the user a quick-Save that
       // writes to an entry which does not exist.
       this.everSaved = true;
+      this.persistRecovery();
+      localStorage.removeItem(DRAFT_STATE_KEY);
     } finally {
       this.saving = false;
     }
@@ -7083,13 +7112,14 @@ export class PowerRPApp {
   async saveProjectAsFork(name) {
     const trimmed = (name ?? "").trim();
     const from = this.projectName();
+    const version = this.workingCopyVersion;
     if (!trimmed) throw new Error("saveProjectAsFork: a fork needs a name");
     if (trimmed === from) throw new Error(`saveProjectAsFork(${trimmed}): that is the project already open — use Save, not Save As`);
     const copy = await projectStore().copyAssets(from, trimmed);
-    this.doc = { ...this.doc, meta: { ...this.doc.meta, name: trimmed } };
+    if (version !== this.workingCopyVersion) throw new Error("Save As cancelled: the open project changed while copying assets.");
     await this.saveToServer(trimmed);
     // Plugin assets are keyed by project name; the fork has its own copies now.
-    await this.reloadPluginAssets(trimmed);
+    if (this.projectName() === trimmed) await this.reloadPluginAssets(trimmed);
     if (copy.skipped?.length)
       console.warn(`Save As "${trimmed}": ${copy.skipped.length} asset(s) already existed in the destination and were NOT overwritten: ${copy.skipped.join(", ")}`);
     return { name: trimmed, copied: copy.copied ?? [], skipped: copy.skipped ?? [] };
@@ -7180,6 +7210,9 @@ export class PowerRPApp {
     // (keeps title / open / save consistent — the one-name-model invariant).
     const repaired = this.repaired(doc); // repaired() includes bindings migration
     resetSimulation(); // see clearDoc: an opened project must not resume the previous one's simulation
+    this.workingCopyVersion++;
+    this.draftMode = null;
+    localStorage.removeItem(DRAFT_STATE_KEY);
     this.commit({ ...repaired, meta: { ...repaired.meta, name } });
     // A JUST-OPENED project IS the server's copy, so the save indicator must
     // read SAVED rather than showing a freshly-opened deck as unsaved work.
@@ -7194,6 +7227,7 @@ export class PowerRPApp {
     // this folder even though this session has not written to it yet. This is the
     // half of everSaved that a "has been written" flag alone would get wrong.
     this.everSaved = true;
+    this.persistRecovery();
     this.slideIndex = 0;
     this.selection = null;
     this.syncFontAssets(name); // fire-and-forget: register + load this project's font assets
@@ -7235,9 +7269,10 @@ export class PowerRPApp {
    * indistinguishable to the user from one that was deleted.
    */
   async reloadPluginAssets(name = this.projectName()) {
-    this.registry = createRegistry();
-    registerPlugins(this.registry); // types only — commands are process-lifetime (see above)
-    const result = await loadProjectPluginAssets(this.registry, assetStoreFor(name), name);
+    const registry = createRegistry();
+    registerPlugins(registry); // types only — commands are process-lifetime (see above)
+    const result = await loadProjectPluginAssets(registry, assetStoreFor(name), name);
+    this.registry = registry; // publish only when existing custom widgets can still render
     printPluginAssetReports(result, name);
     this.pluginAssetTypes = result.loaded; // what the Insert menu offers (App.svelte)
     // The FILE→TYPE map, for acting on one asset by its filename (the canvas
@@ -7581,7 +7616,7 @@ export class PowerRPApp {
     // trained on the user in the first ten seconds. `undoLog` is the honest test:
     // it has a step only if the document was actually edited (commit() is what
     // pushes one), so this exempts exactly "blank and untouched" and nothing more.
-    if (this.isDraft() && !this.everSaved && !this.undoLog?.canUndo) {
+    if (this.isDraft() && !this.draftMode && !this.hasRecoveredWork && !this.everSaved && !this.undoLog?.canUndo) {
       await open();
       return true;
     }
@@ -7654,6 +7689,7 @@ export class PowerRPApp {
    * @returns {Promise<{name: string, assetCount: number}>}
    */
   async openDraftFromZipBytes(bytes, requested, sourceUrl = "", { repoSlug = "" } = {}) {
+    this.workingCopyVersion++;
     const { doc, name, assetCount } = await draftFromZipBytes(bytes, requested);
     // `repoSlug` is the draft's ADDRESS when the transport was a repo — the one
     // fact `sourceUrl` cannot carry, because a repo's bytes never came from a
@@ -7667,9 +7703,6 @@ export class PowerRPApp {
     // it is what keeps the flag honest if a future path opens a draft over a
     // previously-saved project.
     this.everSaved = false;
-    // Persist the two facts autosave cannot carry: that this IS a draft, and
-    // where it came from (which is what gates the share link across a reload).
-    localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(this.draftMode));
     clearDynamicFonts(); // drop the previous project's uploaded font families
     // Plugin assets BEFORE repair, for the reason loadProject spells out: repair
     // drops items whose type no plugin claims, so a deck whose widgets ride
@@ -7720,9 +7753,9 @@ export class PowerRPApp {
    * @returns {Promise<{name: string, assetCount: number}>}
    */
   async openDraftFromTranslatedDeck(doc, assets, name) {
+    this.workingCopyVersion++;
     this.draftMode = { name, sourceUrl: "" };
     this.everSaved = false;
-    localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(this.draftMode));
     clearDynamicFonts(); // drop the previous project's uploaded font families
     const healed = adoptedArchiveRefs(doc, assets.map((a) => a.name));
     const assetCount = await stageDraftAssets(assets);
@@ -7762,22 +7795,16 @@ export class PowerRPApp {
    * @returns {Promise<{name: string, copied: string[]}>}
    */
   async commitDraft(name) {
+    const version = this.workingCopyVersion;
     const trimmed = (name ?? "").trim();
     if (!this.draftMode) throw new Error("commitDraft: no draft is open — use saveToServer or saveProjectAsFork");
     if (!trimmed) throw new Error("commitDraft: a project needs a name");
     if (!validProjectName(trimmed)) throw new Error(`commitDraft: "${trimmed}" is not a valid project name (no "/", "\\" or NUL).`);
     const copied = await this.copyDraftAssetsTo(trimmed);
-    // The document's own meta.name must agree with the project it landed in —
-    // the one-name model (loadProject stamps the same thing on open).
-    this.doc = { ...this.doc, meta: { ...this.doc.meta, name: trimmed } };
-    // LEAVE DRAFT MODE BEFORE THE SAVE: saveToServer reads projectName() through
-    // its default argument in other call paths, and every asset read after this
-    // point must resolve against the REAL project, whose copies now exist.
-    this.draftMode = null;
-    localStorage.removeItem(DRAFT_STATE_KEY);
+    if (version !== this.workingCopyVersion) throw new Error("Save cancelled: the open draft changed while copying assets.");
     await this.saveToServer(trimmed);
     await assetStore().primeUrls(trimmed);
-    await this.reloadPluginAssets(trimmed);
+    if (this.projectName() === trimmed) await this.reloadPluginAssets(trimmed);
     this.assetsVersion++;
     console.log(`PowerRP: draft committed as project "${trimmed}" (${copied.length} asset(s) copied out of the draft staging).`);
     return { name: trimmed, copied };
@@ -7804,40 +7831,6 @@ export class PowerRPApp {
       copied.push(a.name);
     }
     return copied.sort();
-  }
-
-  /**
-   * Command. Restore an in-progress DRAFT after a reload — the "the browser can
-   * persist it until later" half of the ruling.
-   *
-   * Called from the boot path right after `loadAutosave`, which has already put
-   * the draft's DOCUMENT back AND set `draftMode` from the same DRAFT_STATE_KEY
-   * read done here (autosave persists on every commit and knows nothing about
-   * drafts itself, so `loadAutosave` reads the marker directly — that duplicate
-   * read is what makes ITS OWN `primeUrls(projectName())` call prime the draft
-   * keyspace instead of the empty `doc.meta.name` one; see loadAutosave's
-   * comment for the regression this closed). Re-deriving `state` and
-   * re-assigning `draftMode` here is therefore a harmless no-op on the reload
-   * path; what this function actually still contributes is the ASYNC half
-   * `loadAutosave` cannot do inline — priming plugin assets — plus being the
-   * only path that runs when a draft is opened WITHOUT a preceding autosave
-   * load (there is none today, but nothing here assumes one).
-   *
-   * Returns whether a draft was restored, so the boot path can skip its ordinary
-   * prime rather than doing both.
-   *
-   * @returns {Promise<boolean>}
-   */
-  async restoreDraft() {
-    const state = draftStateFromJson(localStorage.getItem(DRAFT_STATE_KEY));
-    if (!state) return false;
-    this.draftMode = state;
-    // The draft keyspace, not doc.meta.name: the staged assets are under the
-    // draft key, which is exactly what projectName() now answers.
-    await localAssetStore.primeUrls(DRAFT_KEY);
-    await this.reloadPluginAssets(DRAFT_KEY);
-    console.log(`PowerRP: restored the UNSAVED DRAFT "${state.name}"${state.sourceUrl ? ` (from ${state.sourceUrl})` : ""} — still not in the project library. Save to keep it.`);
-    return true;
   }
 
   /** Query. The share link for the open draft, or null when there is nothing
@@ -8163,14 +8156,6 @@ export class PowerRPApp {
     return { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 };
   }
 
-  /** Command. addItem a media widget at native size `w`×`h`, CENTERED at world
-   *  point `at` (or the camera-view center when null). addItem keyframes
-   *  active:true on this slide and selects the new item. */
-  #insertMediaAt(defaults, src, w, h, at) {
-    const p = at ?? this.#viewCenter();
-    this.addItem({ ...defaults, src, w, h, x: p.x - w / 2, y: p.y - h / 2 });
-  }
-
   /** Query. A src string for the document, resolved through THE STORAGE ADAPTER
    *  (web/assetStore.js). This is THE ONE resolution seam — a document always
    *  stores the portable `"/asset/<project>/<file>"` ref and never a resolved
@@ -8246,7 +8231,10 @@ export class PowerRPApp {
     // the deck in static mode — dead the moment the page reloaded.
     const loadable = this.#resolvedSrc(asset.url);
     const { w, h } = await assetNaturalSize(asset.kind, loadable, plugin.type);
-    this.#insertMediaAt(plugin.defaults, this.#storedSrc(asset.url), w, h, at);
+    const src = this.#storedSrc(asset.url);
+    const source = plugin.assetDropState ? plugin.assetDropState(src) : { src };
+    const p = at ?? this.#viewCenter();
+    this.addItem({ ...plugin.defaults, ...source, w, h, x: p.x - w / 2, y: p.y - h / 2 });
   }
 
   /** Command. Inserts an image asset by URL — the named shorthand kept for the
@@ -8618,7 +8606,6 @@ export class PowerRPApp {
     // history is module state keyed by slot path, so without this an empty deck
     // starts holding `@` values integrated from a document that is no longer open.
     resetSimulation();
-    this.commit(newDocument());
     // A BRAND-NEW DOCUMENT IS AN UNSAVED DRAFT — the unification (user ruling:
     // "Untitled is a special project — I shouldn't be allowed to just save it").
     // Both flags reset: `everSaved` because nothing of THIS document is in the
@@ -8629,59 +8616,39 @@ export class PowerRPApp {
     this.everSaved = false;
     this.draftMode = null;
     localStorage.removeItem(DRAFT_STATE_KEY);
+    this.savedDoc = null;
+    this.hasRecoveredWork = false;
+    this.workingCopyVersion++;
+    this.commit(newDocument());
     this.slideIndex = 0;
     this.selection = null;
   }
 
-  loadAutosave() {
+  /**
+   * Command. Restore recovery before mounting the editor. Load assets and custom
+   * plugins before repair, which otherwise deletes unknown widget types.
+   * Accept the old document-only autosave and separate draft marker on upgrade.
+   * @returns {Promise<void>}
+   * @example await app.loadAutosave() // restores the working copy, not the last library save
+   */
+  async loadAutosave() {
     const json = localStorage.getItem(AUTOSAVE_KEY);
-    if (json) {
-      // repaired() runs the full load-boundary pipeline: drops orphaned items
-      // LOUDLY, ensures THE camera, and migrates legacy {item, anchor} arrow
-      // bindings to equation pairs (THE UNIFICATION) — all inside
-      // repairedDocument now, so no separate withBindingsMigrated wrap.
-      resetSimulation(); // a restored autosave is a document ARRIVING; the history table is not part of it
-      this.doc = this.repaired(deserialize(json));
-      this.undoLog = createUndo(this.snapshot(this.doc));
-      // THE REGRESSED SEAM: projectName() reads `this.draftMode` to choose
-      // between DRAFT_KEY and doc.meta.name, but `draftMode` used to still be
-      // null here — restoreDraft(), the one thing that sets it, is called by
-      // App.svelte AFTER loadAutosave(), because it also needs the document
-      // loadAutosave just restored. So a reloaded DRAFT primed its human-name
-      // keyspace (empty) instead of DRAFT_KEY (where the assets actually are),
-      // and every ref failed resolveUrl. draftStateFromJson is a pure sync
-      // localStorage read — nothing stops doing it here too, before the prime,
-      // so projectName() already answers correctly on the very first call.
-      // restoreDraft() still runs afterwards for the async half (plugin assets,
-      // the boot log); re-assigning the same value there is a harmless no-op.
-      this.draftMode = draftStateFromJson(localStorage.getItem(DRAFT_STATE_KEY));
-      // Prime the object-URL memo for THIS project at the boot path itself. A
-      // reload restores from autosave without ever calling loadProject, so the
-      // sync resolveUrl memo used to stay empty until the Explorer's refresh
-      // primed it — one transient 404 per canvas asset on every static reload
-      // (2abe36d put the reachable fix in the Explorer; this is the
-      // architectural home it named). Fire-and-forget: a repaint follows.
-      //
-      // assetStoreFor, NOT the bare assetStore(): `draftMode` is now set (just
-      // above) BEFORE this runs, so `this.projectName()` may already answer the
-      // draft key on a reloaded draft. In HTTP mode, `assetStore()` would be
-      // `httpAssetStore`, whose `primeUrls` is a no-op — silently leaving the
-      // reloaded draft's assets unprimed (every ref then reads as the MISSING
-      // sentinel instead of the loud 500 the CRUD seam used to give — a quieter
-      // but equally wrong failure of the same underlying routing gap).
-      // AND THE BUMP IS WHAT MAKES "a repaint follows" TRUE. Priming changes what
-      // an asset ref RESOLVES TO without touching the document, so a repaint alone
-      // re-derives nothing: nodes() memoizes on the evaluated state, which a prime
-      // leaves byte-identical. Before the memo, every consumer re-asked the
-      // resolver and the next frame quietly picked up the blob: URLs; with it, the
-      // pre-prime derivation — every ref reading as the MISSING sentinel — would be
-      // the answer for the rest of the session. `assetsVersion` is that memo's
-      // resolution key (see nodes()), and this is the one prime that lands after
-      // the document rather than before it.
-      assetStoreFor(this.projectName()).primeUrls(this.projectName())
-        .then(() => { this.assetsVersion++; })
-        .catch((e) => console.error(`PowerRP boot: primeUrls failed — ${e}`));
-    }
+    if (!json) return;
+    const stored = JSON.parse(json);
+    const doc = deserialize(JSON.stringify(stored.doc ?? stored));
+    this.draftMode = stored.doc ? stored.draftMode : draftStateFromJson(localStorage.getItem(DRAFT_STATE_KEY));
+    const name = this.draftMode ? DRAFT_KEY : doc.meta.name;
+    await assetStoreFor(name).primeUrls(name);
+    await this.reloadPluginAssets(name);
+    resetSimulation();
+    this.doc = this.repaired(doc);
+    this.undoLog = createUndo(this.snapshot(this.doc));
+    this.everSaved = stored.doc ? stored.everSaved : !this.draftMode && await this.projectExists(name);
+    this.savedDoc = stored.saved ? this.doc : null;
+    this.hasRecoveredWork = true;
+    this.workingCopyVersion++;
+    this.assetsVersion++;
+    this.syncFontAssets(name);
   }
 
   runCommand(id) {

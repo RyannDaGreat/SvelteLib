@@ -1160,3 +1160,145 @@ gate, and now this: three separate instances in one round of a loud channel firi
 routine or self-healing condition. That is the round's real theme, and it is worth
 stating as a rule: **a warning that fires when nothing is wrong is not harmless noise;
 it is a withdrawal from the credibility the next real warning needs.**
+
+## 2026-09-28 — SVG uploads and browser recovery
+
+User reports SVG drops becoming images and birds disappearing after reload on
+GitHub Pages. Three independent read-only investigations covered import routing,
+storage/recovery, and deployment/tests. Reproduced with a disposable Puppeteer
+profile in local-storage mode: the SVG is stored with intact bytes and a relative
+reference but becomes an Image widget; Chromium's `createImageBitmap(SVG Blob)`
+rejects, so it draws nothing. This is a rendering failure, not proof of deleted
+bytes. The first two probe runs used nonexistent canvas selectors and timed out;
+the actual gesture target is `svg.overlay`.
+
+Source-confirmed recovery defects: document edits write autosave, but rename,
+Save As, draft promotion and undo do not; reload forgets saved-library identity;
+repair runs before custom plugins load; opening a saved project does not clear
+the outgoing draft marker; draft Save changes identity before persistence succeeds.
+The manifest records the repair scope. Tests must distinguish pixels, asset bytes,
+document references, and restored identity instead of treating any one as success.
+
+Additional obvious product issues found (source evidence; not yet UI-reproduced
+unless noted; follow-up rather than claims about this user's lost birds):
+
+- Dropping a file into a new document can silently save over an existing project
+  named Untitled (`uploadAsset` calls `saveToServer` before the upload).
+- Copying an image between projects does not carry its file; it may disappear or
+  become a different image if both projects have the same filename. Cross-browser
+  asset clipboard transport remains design-only in the existing manifest.
+- Copy Property on GitHub Pages writes to the server clipboard, while Paste reads
+  the browser clipboard mirror, so it can paste an older value.
+- Exporting an imported, unsaved draft as ZIP uses the internal draft name as the
+  archive folder, producing a ZIP the app cannot reopen (`downloadZip`).
+- Deleting assets checks only `src` and filmstrip frames, missing SVG URLs and
+  transition sounds; it can delete needed files without warning (`assetUsers`).
+- Saving over another project with the same asset filenames can retain old files
+  or rename incoming files without updating the document's references.
+- Recovered unsaved work can be replaced without asking because the guard mistakes
+  an empty undo history after reload for a new empty document.
+- Browser storage is origin-local. Opening another host/browser does not carry its
+  library; no evidence of eviction, quota failure, or the user's precise saved
+  document is available from this isolated reproduction.
+
+### Implementation and verification — 2026-09-28 02:37 EDT
+
+SVG is now a distinct asset kind in server/browser classification, built-in art,
+property pickers, previews and native-size measurement. The existing widget
+registry handles SVG insertion; duplicate picker classification was removed.
+Legacy Image widgets use the browser image decoder before bitmap conversion,
+so old SVG references render rather than becoming blank. The File Browser and
+library insert button were additional callers found during independent review;
+both now handle SVGs consistently. Image source fields still accept SVGs.
+
+Recovery now saves document, draft identity and saved-state together. Save,
+rename, undo and project switching update recovery; failed saves do not adopt
+a new identity. A pending save cannot rename a subsequently opened working copy.
+Boot loads asset URLs and plugins before repairing/restoring the document, then
+mounts the editor. Broken recovery stops visibly with Retry and a download of
+the untouched recovery JSON (document/metadata, not an asset archive). The
+previously listed recovered-work confirmation defect is fixed and browser-tested.
+
+The new `tests/svg_recovery_probe.js` uses disposable browser storage and verifies:
+actual OS-file drop, clipboard file paste, tile drop, library insert button,
+visible red pixels, retained exact SVG bytes, portable references, Save As and
+rename followed immediately by reload, old SVG-as-image documents, undo/reload,
+custom-widget draft reload, simulated failed save, restored unsaved-work guard,
+late-save identity isolation, and corrupt-recovery backup. It passed on the dev
+frontend and the final production build on a plain static HTTP server under
+`/SvelteLib/`, with automatic backend absence detection and service worker active.
+Logs: `.scratchpad/logs/svg-recovery-dev.log`,
+`.scratchpad/logs/svg-production-build-final.log`,
+`.scratchpad/logs/svg-production-final.log`. Production canvas checks found
+15,613–32,400 red pixels, versus a minimum assertion of 500. Expected no-backend
+404s, unavailable headless WebGPU and the deliberately corrupt JSON error are
+reported, not hidden. No user's existing browser profile/storage was accessed.
+
+Test-development mistakes: the first custom-plugin ZIP fixture omitted `return`
+in its plugin script, and was corrected to the actual plugin format. A real
+backup download caused the probe's browser shutdown to hang; the test now
+captures the generated Blob while suppressing only the anchor click in that
+assertion, and confirms its bytes and the retained recovery string. Browser and
+server shutdown now complete. An initial read-only delegate declined to run the
+gate; a command-capable worker subsequently ran it. None of that declined task
+was counted as verification.
+
+The first full-gate node pass found three obsolete test assumptions: SVG clipart
+was asserted to be an Image; a save-source check examined only the first 1,400
+characters; an unrelated palette test forbade *any* `untrack` use in App.svelte.
+Updated the first two to the current contract/function boundary and removed the
+unrelated import ban, retaining the palette behavior checks. A fresh canonical
+`run_all.mjs --only=node` completed **394 pass / 0 fail / 0 skip** in 284 seconds.
+The full browser sweep is tracked separately; do not describe the initial gate
+as green by combining results from different invocations.
+
+### Remaining product risks — not fixed by this patch
+
+These are source-confirmed follow-ups, not claims about the user's actual birds:
+
+- Dropping a file into a fresh Untitled deck can overwrite an older Untitled deck
+  before the upload finishes (`web/app.svelte.js`, `uploadAsset`). This needs an
+  explicit new-document/draft storage policy rather than a hidden automatic save.
+- Copy/paste between projects does not transport uploaded files; identical
+  filenames can show the wrong picture (`core/clipboard.js`, asset transport
+  remains a separately documented project). Static Copy Property also writes
+  through the wrong clipboard adapter (`copyPropertyToClipboard`).
+- Asset deletion can miss SVG and sound uses, offering no warning before breaking
+  visible content (`assetUsers`). Saving over a project with matching filenames
+  can similarly retain mismatched files (`copyDraftAssetsTo`, store copy APIs).
+- Downloading an unsaved imported draft as ZIP uses the internal draft key as its
+  folder, which the app rejects on reopen (`downloadZip`, `web/projectZip.js`).
+
+The fixes here deliberately do not claim to solve transactional storage failures,
+all cross-project clipboard transport, or browser eviction. The application
+still stores the GitHub-hosted library on that browser/origin, not in GitHub.
+
+### Full sweep follow-up — 2026-09-28 02:42 EDT
+
+The first canonical sweep finished **632 pass / 4 fail / 2 skip** (1,688 seconds).
+In addition to the three corrected Node assertions above, `zip_url_boot_probe.js`
+failed at its unanswered URL-open promise (`Execution context was destroyed,
+most likely because of a navigation.`). The probe assumed a reopened draft could
+be replaced without confirmation. Updated it to click the actual Discard button,
+assert that the recovered-work warning appears, then continue the download/CORS
+checks. Its standalone rerun passed all checks; log
+`.scratchpad/logs/svg-zip-boot-final.log`. This preserves, rather than weakens,
+the new protection for recovered work.
+
+The skips are `video_perf_probe.js` and `video_v2_live_probe.js`, whose generated
+fixture videos are absent. The initial gate's backend and Vite processes exited;
+a pre-existing BlueJay Chrome session was left untouched. A second complete gate
+on the settled code is running to obtain a single canonical verdict rather than
+claiming the initial failed run passed.
+
+### Final canonical verdict — 2026-09-28 03:08 EDT
+
+The second complete `node src/demo_apps/PowerRP/tests/run_all.mjs` finished
+**636 pass / 0 fail / 2 skip** in **1,619 seconds**. Breakdown: 394 Node, 14 Python,
+1 shell, 227 browser passes; only the two missing video-fixture suites above
+skipped. Log: `.scratchpad/logs/svg-full-gate-final.log`. This is one complete
+canonical invocation on the settled source, not an aggregate of partial reruns.
+The production build and static `/SvelteLib/` browser regression also passed as
+recorded above. No assertion that the user's existing birds were recovered is
+made; their original browser data was not accessed. GitHub Pages deployment
+requires pushing the commit; local verification is not a deployment.

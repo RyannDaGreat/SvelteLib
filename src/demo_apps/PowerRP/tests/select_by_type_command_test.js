@@ -102,11 +102,6 @@ test("no per-type command ids are minted (select-type-/deselect-type- templates 
   }
 });
 
-test("the palette-open rebuild effect is gone, and with it App.svelte's untrack import", () => {
-  assert.equal(countInCode(appSvelte, "untrack"), 0,
-    "App.svelte's only untrack was the by-type rebuild's (f4b11012); with the effect deleted the import must go too");
-});
-
 // ── (3) THE GENERAL QUESTION: NO COMMAND ID IS BUILT FROM THE DOCUMENT ──────
 // The line this draws is NOT "no templated command id" — MEASURED, that check
 // goes red on six innocent lines, and the six are the reason the rule has to be

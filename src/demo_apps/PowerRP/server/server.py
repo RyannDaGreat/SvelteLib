@@ -134,7 +134,7 @@ ASSET_CONTENT_TYPES = {
     # the URL would DISPLAY the source rather than run it on this origin.
     ".js": "text/plain; charset=utf-8",
 }
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"}
 VIDEO_EXTS = {".mp4", ".webm", ".mov"}
 SOUND_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"}
 PDF_EXTS = {".pdf"}
@@ -1782,6 +1782,8 @@ def asset_kind(filename):
     if filename.lower().endswith(PLUGIN_ASSET_SUFFIX):
         return "plugin"
     ext = os.path.splitext(filename)[1].lower()
+    if ext == ".svg":
+        return "svg"
     if ext in IMAGE_EXTS:
         return "image"
     if ext in VIDEO_EXTS:

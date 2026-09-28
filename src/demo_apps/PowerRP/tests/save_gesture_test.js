@@ -295,7 +295,7 @@ test("everSaved is set ONLY on a successful write or a library open", () => {
   // A failed first save must leave a draft a draft: if it set the flag anyway,
   // the user would be handed a quick-Save pointing at an entry that was never
   // created, and the next Cmd+S would fail with no way back to the naming flow.
-  const save = app.slice(app.indexOf("async saveToServer("), app.indexOf("async saveToServer(") + 1400);
+  const save = app.slice(app.indexOf("async saveToServer("), app.indexOf("async saveProjectAsFork("));
   const setPos = save.indexOf("this.everSaved = true");
   assert.ok(setPos > save.indexOf("await projectStore().save("), "everSaved must be set AFTER the awaited write, so a throw skips it");
   assert.ok(setPos < save.indexOf("} finally {"), "and INSIDE the try, so only success sets it");

@@ -30,7 +30,7 @@ test("loads in BARE NODE off the committed files (not only the browser glob)", (
 
 test("every entry has the ASSET-LIST shape the Explorer and the drop handler read", () => {
   for (const a of builtinClipartAssets()) {
-    assert.equal(a.kind, "image", `${a.name}: kind`);
+    assert.equal(a.kind, "svg", `${a.name}: kind`);
     assert.equal(a.builtin, true, `${a.name}: marked built-in (no delete affordance)`);
     assert.ok(a.url.startsWith("data:image/svg+xml;base64,"), `${a.name}: self-contained data URI, no server route`);
     assert.ok(typeof a.src === "string" && a.src.includes("<svg"), `${a.name}: carries the raw SVG source`);

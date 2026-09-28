@@ -149,7 +149,7 @@ export function builtinClipartAssets() {
   const map = loadBuiltinClipart();
   return Object.entries(map).map(([name, src]) => ({
     name: `${name}${CLIPART_EXT}`,
-    kind: "image",
+    kind: "svg",
     builtin: true,
     src,
     url: svgDataUri(src),
