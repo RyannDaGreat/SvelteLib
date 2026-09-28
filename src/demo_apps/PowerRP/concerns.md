@@ -1548,3 +1548,31 @@ resumed after its first no-final-response failure; its cache/precision findings
 were fixed and tested. Every delegate is finished. Proceeding to orthogonal
 commits, Pages deployment and a smoke check of the actual hosted build; do not
 conflate the local green gate with a completed remote deployment.
+
+### 2026-09-28 18:28 UTC — published and verified on the real hosted app
+
+- Committed/pushed `77c02f72` (shared ColorPicker Enter/blur single-commit fix)
+  and `a0b8df2f` (native Multipoint feature, presets, tests and documentation).
+  Used the configured global Git author. Left the unrelated staged `.gitignore`
+  change untouched. No force push and no Git identity/remote configuration changes.
+- Pages run `36464731759` succeeded: build/storage-seam/static-bundle validation,
+  then deployment. GitHub reported upcoming runner/Node-action deprecations;
+  these were warnings, not failures, and workflow maintenance was not mixed into
+  the feature change.
+- Against `https://ryanndagreat.github.io/SvelteLib/?verify=a0b8df2f`, with no forced
+  local-storage query: **12 Multipoint end-to-end groups passed** and **16 SVG
+  recovery groups passed**. The tests use fresh browser profiles/synthetic data,
+  not the user's presentations. Actual worker chunks, canvas, presets, editing,
+  equations, undo, save/reload, ZIP, animation and recovery were exercised.
+  Logs: `.scratchpad/logs/multipoint-pages-live.log` and
+  `.scratchpad/logs/multipoint-pages-svg-live.log`.
+- Ran the real public site again with Metal, captured and opened
+  `.scratchpad/multipoint/visual/neon-spiral-canvas.png`,
+  `.scratchpad/multipoint/visual/preset-gallery.png`,
+  `.scratchpad/multipoint/visual/bokeh-editor.png`, and the public narrow-inspector
+  screenshot. Actual presets and controls are present; the overlapping numeric
+  fields are fixed. Log: `.scratchpad/logs/multipoint-pages-visual.log`.
+- Deliberate limits remain documented: fixed grid resolution, cache-pressure
+  interactive quality, and explicit native-vector/PPTX rejection. SVG/PDF preserve
+  appearance with localized raster regions; native projects keep editable controls.
+  No claim of infinitely sharp vector diffusion or universal editable export.

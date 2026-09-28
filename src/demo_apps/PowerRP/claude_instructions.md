@@ -24,6 +24,11 @@ screenshots and SVG/PDF render triptychs were opened and inspected. A real nativ
 copy → new document → paste check preserved the editable paint and generated its
 PNG; the OS clipboard write alone was captured to protect the user's clipboard.
 Preserve this end-to-end and visual acceptance requirement for future changes.
+Feature commit `a0b8df2f` and shared color-picker fix `77c02f72` are published.
+Pages run `36464731759` deployed successfully; the actual hosted app at
+`https://ryanndagreat.github.io/SvelteLib/` passed the same 12 Multipoint and
+16 SVG recovery groups. Public-site Metal screenshots of the spiral, bokeh,
+preset gallery and controls were also opened and inspected after deployment.
 Pull before commits; retain unrelated user changes. Notify via
 `rp call ntfy_send --- "…"` only after all jobs/delegates finish.
 
