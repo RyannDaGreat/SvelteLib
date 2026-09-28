@@ -47,7 +47,7 @@ import { isSlideField, resolveTransition, retypedTransition, slideFieldKeys } fr
 import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld, nodeModifierPoints } from "../core/derive.js";
 // The LIST-ELEMENT operations the HANDLE actions route through — one mechanism for
 // per-element hide and purge, shared with the Inspector's list control.
-import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
+import { LIST_ROW_KIND, withElementActive, withElementPurged, handleElementList } from "../core/lists.js";
 import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, materialParamDefaultAt } from "../core/expressions.js";
 // TRIGGERS (manifest R7-8). `execOverlayFor` is the app's ONE binding of the exec
 // replay to a real evaluator (web/execOverlay.js says why it is its own module);
@@ -1749,27 +1749,6 @@ export class PowerRPApp {
     this.handleSelection = [];
   }
 
-  /**
-   * Pure function. The LIST DECLARATION (core/lists.js) behind a handle, or null
-   * when the handle is not a list element: `{decl, listKey, index}`.
-   *
-   * The handle carries the declaration BY REFERENCE (`element.list` is the very
-   * object core/properties.js owns — PROPS.points for a polygon vertex), so the
-   * canvas actions, the Inspector's list control and the plugin's own geometry read
-   * ONE declaration and cannot disagree about the storage form or the visibility
-   * companion's name. Deliberately NOT a lookup by key: a lookup needs a table to
-   * look in, and every candidate table (the plugin's inspector rows, PROPS) is a
-   * place the answer could be missing or a second copy could appear — a reference
-   * cannot drift from itself. A malformed declaration is a plugin bug, so it throws.
-   */
-  #handleElement(handle) {
-    if (!handle.element) return null;
-    const { list: decl, index } = handle.element;
-    if (decl?.kind !== LIST_ROW_KIND || !decl.key || !decl.activeKey)
-      throw new Error(`app: handle "${handle.id}" of "${this.selectedNode()?.type}" declares an \`element\` whose \`list\` is not a list declaration (need kind "${LIST_ROW_KIND}" plus key/activeKey — pass the core/properties.js PROPS entry itself, e.g. \`element: {list: props("points")[0], index: i}\`). Got: ${JSON.stringify(decl)?.slice(0, 120)}`);
-    return { decl, listKey: decl.key, index };
-  }
-
   /** Query. The selected handles that ARE list elements, grouped by list key and
    *  sorted by DESCENDING index — the order a multi-element splice must run in, so
    *  each purge cannot invalidate the indices still to come. Handles with no
@@ -1778,10 +1757,11 @@ export class PowerRPApp {
   #selectedListElements() {
     const byKey = new Map();
     for (const h of this.selectedHandles()) {
-      const el = this.#handleElement(h);
+      const el = handleElementList(h);
       if (!el) continue;
-      if (!byKey.has(el.listKey)) byKey.set(el.listKey, { decl: el.decl, indices: [] });
-      byKey.get(el.listKey).indices.push(el.index);
+      const key = JSON.stringify(el.listPath);
+      if (!byKey.has(key)) byKey.set(key, { ...el, indices: [] });
+      if (!byKey.get(key).indices.includes(el.index)) byKey.get(key).indices.push(el.index);
     }
     for (const entry of byKey.values()) entry.indices.sort((a, b) => b - a);
     return byKey;
@@ -1807,12 +1787,13 @@ export class PowerRPApp {
     const groups = this.#selectedListElements();
     if (groups.size === 0) return;
     const id = this.selection;
-    const state = this.state().items?.[id];
+    const state = this.rawState().items?.[id];
     let doc = this.doc;
-    for (const [listKey, { decl, indices }] of groups) {
-      let value = { list: state[listKey], active: state[decl.activeKey] };
+    for (const { decl, listPath, activePath, indices } of groups.values()) {
+      let value = { list: getPath(state, listPath), active: getPath(state, activePath) };
+      if (!Array.isArray(value.list)) return reportAction("Cannot edit points inside a whole-list or whole-paint equation; edit that equation in the Inspector.");
       for (const index of indices) value = withElementActive(decl, value, index, active);
-      doc = keyframed(doc, this.slideIndex, ["items", id, decl.activeKey], value.active);
+      doc = keyframed(doc, this.slideIndex, ["items", id, ...activePath], value.active);
     }
     this.commit(doc);
   }
@@ -1839,15 +1820,15 @@ export class PowerRPApp {
     const groups = this.#selectedListElements();
     if (groups.size === 0) return;
     const id = this.selection;
-    const state = this.state().items?.[id];
+    const state = this.rawState().items?.[id];
     let doc = this.doc;
-    for (const [listKey, { decl, indices }] of groups) {
-      let value = { list: state[listKey], active: state[decl.activeKey] };
+    for (const { decl, listPath, activePath, indices } of groups.values()) {
+      let value = { list: getPath(state, listPath), active: getPath(state, activePath) };
+      if (!Array.isArray(value.list)) return reportAction("Cannot purge points inside a whole-list or whole-paint equation; edit that equation in the Inspector.");
       for (const index of indices) value = withElementPurged(decl, value, index);
-      doc = keyframed(doc, this.slideIndex, ["items", id, listKey], value.list);
-      // Only write the companion when there IS one: purging from a list that never
-      // hid anything must not mint an all-true companion into the document.
-      if (value.active) doc = keyframed(doc, this.slideIndex, ["items", id, decl.activeKey], value.active);
+      doc = keyframed(doc, this.slideIndex, ["items", id, ...listPath], value.list);
+      // An absent companion remains absent; raw untouched equations survive.
+      if (value.active) doc = keyframed(doc, this.slideIndex, ["items", id, ...activePath], value.active);
     }
     this.commit(doc);
     this.handleSelection = [];
@@ -1870,12 +1851,13 @@ export class PowerRPApp {
     const groups = this.#selectedListElements();
     if (groups.size === 0) return;
     const id = this.selection;
-    const state = this.state().items?.[id];
+    const state = this.rawState().items?.[id];
     let doc = this.doc;
-    for (const [listKey, { indices }] of groups) {
-      const chosen = new Set(indices);
-      const list = state[listKey].map((el, i) => (chosen.has(i) ? transform(el, i) : el));
-      doc = keyframed(doc, this.slideIndex, ["items", id, listKey], list);
+    for (const { listPath, indices } of groups.values()) {
+      const chosen = new Set(indices), raw = getPath(state, listPath);
+      if (!Array.isArray(raw)) return reportAction("Cannot transform points inside a whole-list or whole-paint equation; edit that equation in the Inspector.");
+      const list = raw.map((el, i) => chosen.has(i) ? transform(el, i) : el);
+      doc = keyframed(doc, this.slideIndex, ["items", id, ...listPath], list);
     }
     this.commit(doc);
   }

@@ -10,6 +10,8 @@
 -->
 <script>
   import { onDestroy } from "svelte";
+  import { getPath } from "../core/deltas.js";
+  import { handleElementList } from "../core/lists.js";
   import PanZoom from "../../../lib/PanZoom.svelte";
   import MiniMap from "../../../lib/MiniMap.svelte";
   import ResizeHandles from "./ResizeHandles.svelte";
@@ -106,7 +108,7 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, translationRecord, resizeAnchors, resizedBox, resizeStoredState, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, refusedCoordinates, deltaWithoutRefused, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS, memberPivot, wholisticMemberPairs, modalToggleApplies } from "./canvas/dragKinds.js";
+  import { translationPairs, translationRecord, resizeAnchors, resizedBox, resizeStoredState, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, geometryLeafCoordinates, refusedCoordinates, deltaWithoutRefused, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS, memberPivot, wholisticMemberPairs, modalToggleApplies } from "./canvas/dragKinds.js";
   // R6-28 EQUATION LOCK. `equationPinning` is the per-ITEM projection that holds
   // every equation-bound coordinate still; it enters at the SAME `constrain`
   // parameter the modal axis lock uses, so there is one answer to "where may this
@@ -2078,9 +2080,11 @@
     const written = modifierWrite(mp, node.state, { x: local.x + AFFORDANCE_PROBE_UNITS, y: local.y + AFFORDANCE_PROBE_UNITS });
     const keys = Object.keys(written);
     const start = Object.fromEntries(keys.map((key) => [key, node.state[key]]));
-    const refused = refusedCoordinates(lock, start, written);
+    const leaves = geometryLeafCoordinates(start, written);
+    const refused = refusedCoordinates(lock, leaves.start, leaves.desired);
     if (!refused.length) return {};
-    return { locked: refused.length === keys.length, lockNote: equationLockNote(refused, "drag this point") };
+    const changed = geometryPairs(node.itemId, leaves.start, leaves.desired).length;
+    return { locked: refused.length === changed, lockNote: equationLockNote(refused, "drag this point") };
   }
 
   /**
@@ -4128,9 +4132,11 @@
     if (!node || !pointMenu) return [];
     const mp = nodeModifierPoints(node).find((m) => m.id === pointMenu.id);
     if (!mp?.element) return [];
-    const raw = node.state?.[mp.element.list.key]?.[mp.element.index];
+    const info = handleElementList(mp);
+    const raw = getPath(node.state, [...info.listPath, info.index]);
     if (!raw) return [];
-    const entries = (node.plugin.handleToggles ?? []).map((t) => ({
+    const toggles = mp.element.toggles ?? (mp.element.path ? [] : node.plugin.handleToggles ?? []);
+    const entries = toggles.map((t) => ({
       label: t.label,
       icon: t.icon,
       checked: t.isOn(raw),
@@ -4174,8 +4180,11 @@
     if (!grabbedStart) return; // the grabbed handle is gone (its element was purged mid-drag)
     const local = T.apply(T.invert(drag.world), w.x, w.y);
     const dx = local.x - grabbedStart.x, dy = local.y - grabbedStart.y;
-    const points = nodeModifierPoints(node);
-    let state = node.state, written = {};
+    // Rebuild from the grab snapshot, as the bbox gestures do. Live state already
+    // contains the previous preview and its re-evaluated dependent equations;
+    // diffing that against grab time would accidentally commit those equations.
+    let state = drag.startState, written = {};
+    const points = nodeModifierPoints({ ...node, state });
     for (const start of drag.startLocals) {
       const mp = points.find((m) => m.id === start.id);
       if (!mp?.apply) continue; // this handle's element vanished — the rest still move
@@ -4201,7 +4210,8 @@
     //     revert the preview, not freeze at the last non-zero one.
     const keys = Object.keys(written);
     const start = Object.fromEntries(keys.map((key) => [key, drag.startState[key]]));
-    app.setPreview(geometryPairs(drag.itemId, start, written, dragConstraint(drag.itemId, drag.plugin)));
+    const leaves = geometryLeafCoordinates(start, written);
+    app.setPreview(geometryPairs(drag.itemId, leaves.start, leaves.desired, dragConstraint(drag.itemId, drag.plugin)));
   }
 
   // ── Anchor snap release (manifest ARCHITECTURE PLAN #4) ────────────────────
@@ -5350,7 +5360,9 @@
         // spellings cannot grow two pictures. `label` is the hover tooltip's words.
         look: handleGlyph(m.glyph ?? m.shape ?? null),
         label: m.label,
+        color: m.color,
         stem: m.stem ? actions.worldToScreen(m.stem.x, m.stem.y) : null,
+        guide: m.guide?.map((p) => { const s = actions.worldToScreen(p.x, p.y); return `${s.x},${s.y}`; }).join(" "),
         hasElement: !!m.element,
         // {locked, lockNote} — the R6-28 affordance, per handle, and the second of
         // the three surfaces that speak the one refusal sentence (todo #240). A
@@ -6288,6 +6300,9 @@
              independent like every other handle glyph) rather than app.css, which the
              fleet's Inspector agent owns. -->
         {#each overlay.modifiers as m}
+          {#if m.guide}
+            <polyline points={m.guide} fill="none" style="pointer-events: none; stroke: var(--a-selection); stroke-width: var(--a-handle-stroke); stroke-dasharray: var(--a-selection-dash); opacity: var(--a-anchor-opacity);" />
+          {/if}
           {#if m.stem}
             <line
               class="handle-stem"
@@ -6321,6 +6336,8 @@
           <g
             class="modifier-glyph"
             data-accent={m.look.accent}
+            data-color={m.color || undefined}
+            style:--a-handle-swatch={m.color}
             onpointerenter={() => { hoverHandleId = m.id; }}
             onpointerleave={() => { if (hoverHandleId === m.id) hoverHandleId = null; }}
             onpointerdown={(e) => startModifier(m.id, e)}

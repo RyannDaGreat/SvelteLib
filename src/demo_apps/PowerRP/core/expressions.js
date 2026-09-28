@@ -96,7 +96,7 @@ import { worldTransform, composedMemberInfluence, memberOwnerGroups } from "./de
 import { boxCenter, unsignedState } from "./geometry.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
-import { isHexColor } from "./interpolators.js";
+import { isHexColor, setInterpolationListResolver } from "./interpolators.js";
 // The NODE-REFERENCE type. core/nodeflow.js imports nothing from this file, so the
 // dependency is one-way and cycle-free; it owns the `{item, port}` shape and the
 // dangling sentence, and this file owns only the grammar that produces one.
@@ -106,9 +106,9 @@ import { outputPropertyAt, outputPropertyDescriptors, outputPropertyInjection, o
 // gradient direction dial's own math. `direction2` (below) is built on it rather
 // than on a second atan2, so the function library and the dial can never disagree
 // about which way 90° points.
-import { PROPS, NUMERIC_ROW_KINDS, GRADIENT_STOPS_LIST, linearEndpointsToAngle } from "./properties.js";
+import { PROPS, NUMERIC_ROW_KINDS, GRADIENT_STOPS_LIST, MULTIPOINT_FEATURES_LIST, linearEndpointsToAngle } from "./properties.js";
 import {
-  LIST_ROW_KIND, ACTIVE_FIELD, elementFieldKind, elementFieldValue, elementStorageKey,
+  LIST_ROW_KIND, ACTIVE_FIELD, elementFieldKind, elementFieldValue, elementStorageKey, nestedListAt,
   listPathKind, listStoragePath,
 } from "./lists.js";
 import { textDissolve, textType, textScramble } from "./text_transitions.js";
@@ -2334,7 +2334,7 @@ for (const [key, def] of Object.entries(PROPS))
 // only because that file was owned by another agent when it was written — MOVE IT
 // there (exported from properties.js, imported here) as a self-contained cleanup;
 // the stop LIST declaration already lives there for exactly that reason.
-const PAINT_MODE_KEYS = ["linear", "radial"]; // the two gradient sub-state wrappers
+const PAINT_MODE_KEYS = ["linear", "radial", "multipoint"]; // gradient sub-state wrappers
 const PAINT_LEAF_KINDS = {
   // Which mode is painted. A string id ("none" | "solid" | "linearGradient" |
   // "radialGradient" | "material"); core has no options list for it, so it
@@ -2519,17 +2519,22 @@ const LIST_COMPANIONS = Object.fromEntries(Object.entries(LIST_PROPS).map(([key,
 export function listDeclAt(path) {
   for (let n = path.length; n >= 1; n--) {
     const key = path.slice(0, n).join(".");
-    if (LIST_PROPS[key]) return { decl: LIST_PROPS[key], rel: path.slice(n), companion: false };
+    if (LIST_PROPS[key]) return nestedListAt(LIST_PROPS[key], path.slice(n));
     if (LIST_COMPANIONS[key]) return { decl: LIST_PROPS[LIST_COMPANIONS[key]], rel: path.slice(n), companion: true };
   }
   if (!PROPS[path[0]]?.paint) return null;
   const rest = path.slice(1);
   const leaf = PAINT_MODE_KEYS.includes(rest[0]) ? rest.slice(1) : rest;
   const head = path.length - leaf.length;
-  if (leaf[0] === "stops") return { decl: GRADIENT_STOPS_LIST, rel: path.slice(head + 1), companion: false };
-  if (leaf[0] === GRADIENT_STOPS_LIST.activeKey) return { decl: GRADIENT_STOPS_LIST, rel: path.slice(head + 1), companion: true };
+  const [key, decl] = rest[0] === "multipoint"
+    ? ["features", MULTIPOINT_FEATURES_LIST] : ["stops", GRADIENT_STOPS_LIST];
+  if (leaf[0] === key) return nestedListAt(decl, path.slice(head + 1));
+  if (leaf[0] === decl.activeKey) return { decl, rel: path.slice(head + 1), companion: true };
   return null;
 }
+
+// The declaration owner supplies typing without an interpolation→schema cycle.
+setInterpolationListResolver(listDeclAt);
 
 /**
  * Pure function. The result kind of a slot at/inside a DECLARED list, or null
@@ -2739,6 +2744,10 @@ export function listResultProblem(decl, value) {
       const fv = elementFieldValue(decl.element, el, field.name);
       if (!resultMatchesKind(fv, KIND_RESULT[field.kind]))
         return `element ${i}'s "${field.name}" is ${JSON.stringify(fv)}, not a valid ${field.kind}`;
+      if (field.kind === LIST_ROW_KIND) {
+        const problem = listResultProblem(field, fv);
+        if (problem) return `element ${i}'s "${field.name}" ${problem}`;
+      }
     }
   }
   return null;
@@ -2942,6 +2951,9 @@ export function* declaredListLeaves(node, prefix = []) {
           const storageKey = elementStorageKey(found.decl.element, field.name);
           if (storageKey in el) yield [[...path, i, storageKey], el[storageKey]];
         }
+        // Declared child lists and their aligned visibility companions are real
+        // equation slots too; undeclared arrays remain opaque at every depth.
+        yield* declaredListLeaves(el, [...path, i]);
       }
     } else if (isTree(val)) {
       yield* declaredListLeaves(val, path);

@@ -1302,3 +1302,249 @@ The production build and static `/SvelteLib/` browser regression also passed as
 recorded above. No assertion that the user's existing birds were recovered is
 made; their original browser data was not accessed. GitHub Pages deployment
 requires pushing the commit; local verification is not a deployment.
+
+### Multipoint fill investigation — 2026-09-28 07:26 UTC
+
+Design only; no gradient implementation or renderer benchmark has been run.
+The user supplied two Logoist 6 screenshots showing mixed points, paths,
+Bézier handles, a weight control and optional secondary side colour. The request
+is a native additional fill mode, not a new widget and not layered radial fills.
+
+Traced the shared paint parser/shader, PaintField mode state, typed gradient
+lists/expressions, canvas paint handles, and exporter boundaries. Existing Skia
+paint handling is the appropriate integration point; the `render_gpu` directory
+name is not a reason to add a new WebGPU/WebGL renderer. The user-facing design
+and verification requirements are recorded in the manifest as a proposal, not
+as delivered functionality.
+
+Research limitations and lessons: Synium's fetched mobile manual mentions
+multipoint gradients but does not explain their numerical algorithm or weights.
+Search-generated instructions incorrectly confused the visible Weight control
+with stroke width; that claim was not adopted. Fetching the ACM article returned
+HTTP 403; alternate article URLs returned 404 or timed out. The user supplied the
+full article text, which was read rather than continuing to retry blocked URLs.
+Its independent geometry/colour controls refine the initial suggestion of
+attaching all colours to geometry nodes: shaping a curve must not force more
+colour stops. Its two-sided constraints support a diffusion-curve design, but do
+not establish what Logoist implements internally. Isolated points, influence
+weights, alpha, crossing paths and endpoint behavior still need explicit tests.
+
+The MIT FreeFormGradients reference demonstrates a compact WebGL diffusion
+approach, but uses transparent pixels as its unconstrained mask and RGBA8
+intermediate storage. Treating it as a ready-made dependency would silently
+change transparent-colour behavior and precision. No new dependency selected.
+The existing SVG serializer handles only solid/linear/radial paints, so adding
+a mode only to the editor/shader would leave exported artwork incorrect. Export
+behavior belongs in the feature's completion criteria, alongside save/reload,
+animation and mode-state preservation. No production code changed in this phase.
+
+Independent architecture review completed (read-only, no tests). It confirmed the
+shared paint integration and found that canvas element actions currently assume
+top-level lists, while gradient features need nested paint-list paths. Text ink
+bounds versus widget bounds also require matching the rendered field to its
+handles. The review's single-pass distance-blend suggestion is not adopted as a
+proven diffusion implementation, and its node-attached colour suggestion is
+superseded by the supplied article's independently editable colour stops. Both
+are design choices, not results from a tested renderer. Two attempted manifest
+text replacements missed the exact line wrapping and changed nothing; rereading
+the section allowed the targeted additions to be applied correctly.
+
+## 2026-09-28 10:25 UTC — Multipoint implementation and backend selection
+
+Core schema, geometry, typed equations, structural interpolation and native handles are implemented. Focused checks pass: Multipoint core, paint handles (262), lists (44), expressions (94). Shared fixes preserve unrelated equations during canvas drags and list hide/purge/reorder; sorted-list insertion now keeps visibility attached to its element. A guessed test filename paint_ir_test.js was absent; this was a command-selection error, not a passing test. Earlier exact-text edits missed line wrapping/import spelling and changed nothing until corrected.
+
+Selected the CPU finite-cut multigrid/PCG prototype after comparing real Chrome/Skia results. About 20/68/302 ms at 128/256/512 squared; float-image upload works on the existing CanvasKit GPU surface. GPU fixed-iteration relaxation had a 0.068 colour error unless thousands more passes were used, eliminating its hoped-for speed advantage. The adopted solver must share the canvas polyline math, support off-box controls, duplicate colour stops and defined finite-radius points. Production solver adaptation is delegated in isolated new files. Planned rendering policy: synchronous low-resolution interaction, bounded cache, deferred worker refinement on idle, full-quality synchronous export. No separate rendering context and no persisted generated pixels.
+
+The SVG/PDF export agent passed 41 route/rejection checks and 146 existing regressions, but has not proved actual shader pixels. It found cropSubtree and lens borders parsing paints as solid colours; these shared IR builders need review. PPTX has no raster callback in its current exporter, so it needs explicit treatment rather than claiming native fidelity.
+
+The user added editable spiral/psychedelic/bokeh-style presets. A later server/pipeline request was withdrawn as intended for someone else; it is not a PowerRP requirement. No private images were sent.
+
+## 2026-09-28 10:47 UTC — Multipoint integration and first real-browser failures
+
+- All 14 native presets rendered with final-quality shared Skia; actual gallery
+  `.scratchpad/multipoint/gallery/contact.png` was inspected. Spirals, ribbons,
+  rings and soft bokeh are distinct. Shipped thumbnails are generated by
+  `cli/build_multipoint_thumbnails.mjs`, not hand-made CSS approximations.
+- Production-build browser screenshots in `.scratchpad/multipoint/visual/`
+  exposed a real worker failure: `DataCloneError: [object Array] could not be
+  cloned`. Parsed node tuples still referenced Svelte proxies. Fixed the IR
+  normalization boundary to own plain numeric tuples; added a structuredClone
+  regression using proxy-wrapped nodes. Verification rerun is pending.
+- The same harness initially targeted a nonexistent `.color-field-swatch`
+  selector instead of `.colorfield-swatch`, and omitted `?static=1` on localhost,
+  triggering the expected backend probe. Corrected the harness; neither was a
+  product rendering fix. One attempted exact edit had a duplicate match and
+  changed nothing before the corrected atomic edit.
+- `npm run build` builds the component library, NOT PowerRP. Also ran the actual
+  app build with `POWERRP_BASE=/SvelteLib/` and its own web/vite.config.js; passed,
+  including the new worker and 14 hashed thumbnail assets. Existing unrelated
+  accessibility/large-chunk warnings remain visible in the full build log.
+- Independent review found actionable gaps despite green unit tests: dependent
+  equations can be baked by the second drag preview; sparse scalar drags can
+  lose ordinary polygon interpolation and parent list modes; knot insertion
+  beside hidden nodes splits the wrong segment; raw whole-list equations can
+  crash the new inspector; text handles and text ink paint frames disagree.
+  These are open defects to fix and regress, not accepted limitations.
+- Production finite-cut PCG solver review results: 16 focused groups pass,
+  independent 16² dense reference max error 2.98e-8; 60 variations preserve
+  reversal within 5.96e-8 and node splitting within 3.79e-6. M4 Max medians for
+  5/20 curves plus 3 points are 13.7/13.3 ms at128², 59.9/57.8 ms at256²,
+  258.2/227.8 ms at512². 200 curves at512² converge in238 ms. Subpixel topology
+  remains a documented finite-grid approximation, never an infinite seam.
+
+### 2026-09-28 10:58 UTC — Multipoint implementation and first real visual pass
+
+- Selected finite-cut CPU PCG with multigrid preconditioning after testing a GPU
+  diffusion prototype; no second render engine. The final field is premultiplied
+  Float32 and consumed by the existing Skia shader. Independent 16² dense solve
+  comparison: maximum error 2.98e-8. Production solver's 16 groups pass; 60 geometry
+  variations preserve reversal within 5.96e-8 and knot insertion within 3.79e-6.
+  On this M4 Max, 512² medians were 228–258 ms (5–20 curves + three points), so the
+  browser uses a smaller immediate field and debounced worker refinement. This is
+  not a claim of 60 Hz final-quality animated diffusion.
+- Native schema, independent colour stops, nested list controls, canvas geometry,
+  direct colour-handle picker and fourteen editable presets are implemented.
+  Preset PNG thumbnails are generated by the real final-quality shared renderer,
+  via cli/build_multipoint_thumbnails.mjs, not an approximate thumbnail algorithm.
+  The actual gallery and large presets were inspected visually; spirals, ribbons,
+  concentric rings and soft circular glows are visibly distinct.
+- First PRODUCTION-BUILD browser exercise failed when Worker.postMessage received
+  Svelte's reactive node-tuple proxies (DataCloneError). Node-only tests could not
+  reveal this. Fix: parsePaint detaches tuples into plain numeric arrays at the IR
+  boundary. A proxy regression now checks structuredClone(parsePaint(...)).
+  Second production capture passed with zero page errors. Images live under
+  .scratchpad/multipoint/visual/; preset-gallery.png, canvas-color-picker.png and
+  narrow-editor.png were opened and examined. The browser's expected VideoV7
+  WebGPU-unavailable warning is unrelated; the new paint still uses Skia.
+- Visual inspection caught cramped Multipoint numeric rows and wrapped source
+  titles in a narrow inspector. The new nested rows now use an intrinsic-width
+  wrapping grid with chrome above values, and source titles ellipsize instead of
+  breaking onto a second line. A fresh capture still needs to verify this change.
+- Independent correctness review found five issues: sparse array edits changed
+  legacy polygon interpolation; modifier drags could bake dependent equations on
+  their second move; reversing could bake equation-driven flags; knot insertion
+  followed a hidden node instead of the visible curve; and text shader bounds did
+  not match handle bounds. Interpolation and text fixes are in scoped delegates.
+  Main fixed grab-snapshot-based modifier updates, disabled destructive structural
+  edits for equation-driven geometry/flags, made whole-list equation UI read-only
+  rather than crashing, and splits visible neighbours while keeping closed-loop
+  colour origin stable. These fixes require rerun/regression proof; they are not
+  declared fully verified merely because the edits were applied.
+- A core-test rerun during the interpolation delegate's edits found weight 1→2
+  rounding to 1 at alpha .25 (expected 1.25). This is recorded as a real regression
+  pending the delegate's settled result, not dismissed as timing noise.
+- Several exact-text edits missed current whitespace/wrapping and changed no
+  files; corrected by reading the current section and applying unique matches.
+  The user withdrew the misdirected VLLM/paired/leftovers request; it is not part
+  of PowerRP acceptance and no external images were sent anywhere.
+- Still pending: settled interpolation/text fixes, end-to-end persistence and
+  export browser probe, full canonical gate, final production visual acceptance,
+  coherent commits and phone notification after all jobs finish.
+
+## 2026-09-28 17:51 UTC — Whole-tree hardening and release candidate
+
+- After the initial unattended interval, verification was incomplete, not a
+  success. User requested continuation. Resumed the renderer reviewer and export
+  pixel-test worker from their saved sessions rather than treating empty final
+  replies as delivered work. Both produced actionable results on continuation.
+- Fixed the missing expression-owner registration for declared-list interpolation.
+  Sparse geometry/weight/stop patches now obey parent list modes, preserve raw
+  equations on untouched leaves, and interpolate integer-valued coordinates
+  continuously. All focused core/list suites pass.
+- Independent renderer review plus a real multi-fill stress probe exposed an
+  endless refinement loop: eight final CPU fields exceeded the bounded cache,
+  causing visible fields to evict/requeue each other forever. Completion is now
+  scoped by visible content keys, including cache hits; each refines once until
+  leaving the scene. Pressure reports reduced viewport quality; final exports
+  remain strict. `tests/multipoint_cache_probe.js` reproduces and checks the fix.
+- An actual sampled-GPU test found that a non-null RGBA_F32 image was not evidence
+  of float texture precision: Chromium/ANGLE's Metal path quantized it before
+  dither. Reused the existing half-float converter and uploaded RGBA_F16 instead.
+  `tests/multipoint_float_probe.js` passes premultiplied color/alpha/opacity and
+  dither checks on both SwiftShader and the real Apple Metal backend. CPU arrays
+  alone could not have detected this failure.
+- Final browser screenshots exposed overlapping width/height text at narrow
+  inspector widths. Shared compound controls now wrap at the existing vector
+  field width. The actual full-app pipeline test asserts readable field widths
+  and captures `.scratchpad/multipoint/pipeline/narrow-inspector.png`.
+- The first canonical full gate completed with 639 passed / 6 failed / 2 missing
+  video-fixture skips in 1662 seconds. Failures were not dismissed: fixed three
+  syntactically invalid solver doctest examples; preserved identity of rich-text
+  runs whose paint did not crossfade; corrected generated UI-harness import paths;
+  distinguished generated screenshot output paths from absent gitignored input
+  fixtures; updated the existing PaintField mode check to its seven-mode contract.
+  The patch-sound navigation timeout did not reproduce in its canonical browser
+  gate rerun. The full gate is being rerun on the settled tree, not replaced by
+  these focused successes.
+- Real SVG/PDF export roundtrips now render three fixtures back to pixels using
+  native SVG decoding and pdf.js. They cover multicolor fields, alpha + operation
+  opacity, and transformed fill/stroke with vector neighbors. Artifacts and
+  comparison images: `.scratchpad/multipoint/export_pixels/`; suite
+  `tests/multipoint_export_pixels_probe.js`. This is stronger evidence than the
+  earlier mock-raster routing assertions.
+- The production-host harness initially claimed automatic browser-local detection
+  while its child probe forced `?static=1`. Removed that shortcut for external
+  `POWER_RP_TEST_URL` hosts. Only the expected `/api/projects/` 404 may be ignored;
+  missing workers, thumbnails or other resources remain test errors. Final static
+  acceptance must run again against this corrected harness.
+- Current limitations are explicit, not silent substitutions: 128² interactive /
+  512² final field resolution; off-box geometry can reduce effective resolution;
+  cache pressure may retain interactive viewport fields; native vector-only SVG
+  and PPTX refuse Multipoint paint. Ordinary SVG/PDF exports preserve appearance
+  with embedded raster regions and retain vector neighbors.
+- One manifest update failed exact text matching because prior F16/cache wording
+  had already changed; no partial edit occurred. Re-read the live section and
+  applied targeted replacements. No source changes were made after launching the
+  final gate; only documentation/bookkeeping and isolated verification remain.
+
+### 2026-09-28 18:03 UTC — final visual/static acceptance
+
+- A verification setup mistake, not an application defect: the canonical gate's
+  public-build probe also writes `dist-powerrp/`, so using that directory for a
+  concurrent `/SvelteLib/` check raced the other build. Rebuilt into the isolated
+  `.scratchpad/multipoint/static-final/SvelteLib/` directory and served its parent
+  with Python's ordinary HTTP server. Keep concurrent build outputs isolated.
+- With `?static=1` removed, the production probe caught an obsolete expected-warning
+  regex. Actual automatic local-mode discovery correctly reported no project
+  server at `/api/projects/`; replaced the old warning text in the test, not the
+  application behavior. This test-only allowlist correction followed final-gate
+  startup; production source remained unchanged.
+- Corrected real static-host verification passed: 12 Multipoint pipeline groups
+  and 16 SVG recovery groups. URL had no forced storage query. Real browser
+  worker chunks, presets, auto-local storage, save/reload, ZIP and SVG recovery
+  loaded successfully. Log: `.scratchpad/logs/multipoint-final-production-local.log`.
+- Opened the final actual Metal-browser screenshots, including
+  `.scratchpad/multipoint/visual/spiral-editor.png`, `preset-gallery.png`,
+  `bokeh-editor.png`, `canvas-color-picker.png`, `narrow-editor.png`, and
+  `.scratchpad/multipoint/pipeline/narrow-inspector.png`. Spirals/bokeh render,
+  presets have actual previews, color editing is visible, and the previous narrow
+  width/height overlap is gone. Export pixel triptychs were also opened earlier.
+- Corrected manifest paths to the actual thumbnail directory and sparse-animation
+  test. Thumbnails have a checked-in regeneration script, not a scratch-only recipe.
+- Tool-hygiene mistake: `git remote -v` revealed the existing credential-bearing
+  remote URL in local tool output. No credential was added to source, commits or
+  this record. Avoid printing that setting; rotate the token if the local session
+  log is ever shared outside its intended audience.
+- Remote Pages already runs the prior SVG-recovery commit `09f00ea3`. Multipoint
+  has not been published yet; await the final full gate before commit/push/deploy.
+- Additional real-browser clipboard check passed after this visual pass: the
+  actual app copied a Chromatic Rings rectangle, generated a 120153-byte PNG,
+  cleared to a new document, and pasted the native editable rectangle with an
+  exactly equal fill object. Only the OS clipboard write was captured, to avoid
+  overwriting the user's clipboard; real copy/render/mirror/paste code ran.
+  Harness: `.scratchpad/multipoint/clipboard.mjs`; log:
+  `.scratchpad/logs/multipoint-clipboard.log`.
+
+### 2026-09-28 18:20 UTC — final full gate green
+
+Canonical `node src/demo_apps/PowerRP/tests/run_all.mjs` completed with exit 0:
+**646 passed / 0 failed / 3 skipped**, 1749 seconds. Breakdown: 400 Node, 14 Python,
+1 shell, 231 browser passes. Skips: `github_live_probe.js` exhausted anonymous
+GitHub quota; `video_perf_probe.js` lacked `/tmp/perf_test_0.mp4`;
+`video_v2_live_probe.js` lacked `/tmp/video_v2_motion.mp4`.
+All new Multipoint suites were included. Full log:
+`.scratchpad/logs/multipoint-final-gate.log`. The independent renderer review was
+resumed after its first no-final-response failure; its cache/precision findings
+were fixed and tested. Every delegate is finished. Proceeding to orthogonal
+commits, Pages deployment and a smoke check of the actual hosted build; do not
+conflate the local green gate with a completed remote deployment.

@@ -70,10 +70,10 @@ export function toHalf(v) {
   if (v === 0) return sign;
   if (!Number.isFinite(v)) return sign | 0x7c00;
   let e = Math.floor(Math.log2(v));
-  if (e < -24) return sign;                       // underflow to zero
-  if (e < -14) {                                  // subnormal
+  if (e < -25) return sign;                       // below half the smallest subnormal
+  if (e < -14) {                                  // subnormal; rounding may carry into the smallest normal
     const m = Math.round(v / 2 ** -24);
-    return sign | (m & 0x3ff);
+    return sign | m;
   }
   if (e > 15) return sign | 0x7c00;               // overflow to Inf
   let mant = Math.round((v / 2 ** e - 1) * 1024);

@@ -33,7 +33,10 @@
 -->
 <script>
   import "iconify-icon";
+  import { getPath } from "../core/deltas.js";
+  import { handleElementList } from "../core/lists.js";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import ColorField from "./ColorField.svelte";
   import FloatingCanvasPanel, { widgetPanelAnchor } from "./FloatingCanvasPanel.svelte";
 
   // app = the app store; handles = the SELECTED handles in world space (each
@@ -69,6 +72,10 @@
   // of the mixed-state problem: two explicit verbs, never a guessing toggle.
   let elements = $derived(handles.filter((h) => h.element));
   let allVisible = $derived(elements.length > 0 && elements.every((h) => h.active));
+  // A selected colour handle exposes the SAME field as the inspector. Geometry
+  // and other handles declare no colour path, so their toolbar is unchanged.
+  let colorHandle = $derived(handles.length === 1 && handles[0].colorPath ? handles[0] : null);
+  let colorPath = $derived(colorHandle && node ? ["items", node.itemId, ...colorHandle.colorPath] : null);
 
   // ── POINT TOGGLES (curve on/off, new-subpath) ────────────────────────────────
   // The widget DECLARES which on/off states its list-element handles carry
@@ -78,10 +85,11 @@
   // none simply shows no toggles. Each element's RAW stored tuple is read off the
   // owning node's state by the handle's list key + index, so `isOn` can report the
   // group's state and a click flips it for ALL selected points at once.
-  let toggles = $derived(node?.plugin.handleToggles ?? []);
+  let toggles = $derived(elements.length && elements.every((h) => h.element.list === elements[0].element.list)
+    ? elements[0].element.toggles ?? (elements[0].element.path ? [] : node?.plugin.handleToggles ?? []) : []);
   /** Query. The raw stored element tuples behind the selected list-element handles. */
   let rawElements = $derived(
-    elements.map((h) => node?.state?.[h.element.list.key]?.[h.element.index]).filter((el) => el != null)
+    elements.map((h) => { const info = handleElementList(h); return getPath(node?.state, [...info.listPath, info.index]); }).filter((el) => el != null)
   );
   /** Pure function. Is a toggle ON for the whole selection (every element isOn)? */
   function toggleAllOn(t) {
@@ -144,6 +152,12 @@
           {/each}
         {/if}
       </div>
+      {#if colorPath}
+        <div class="handle-color-field">
+          <ColorField {app} path={colorPath} label={colorHandle.label}
+            value={getPath(app.rawState(), colorPath)} />
+        </div>
+      {/if}
     {/snippet}
   </FloatingCanvasPanel>
 {/if}

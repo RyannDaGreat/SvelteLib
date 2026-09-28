@@ -113,7 +113,10 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
-import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_WAVELENGTH, spreadPeriodHalves } from "./properties.js";
+import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_WAVELENGTH, spreadPeriodHalves, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST } from "./properties.js";
+import { elementActive } from "./lists.js";
+import { featurePolyline, pointAlongPolyline, nearestPolylineOffset, MULTIPOINT_TYPE } from "./multipoint.js";
+import { parseColor, rgbaToCss } from "../render_gpu/ir.js";
 
 /**
  * Pure function. A gradient sub-state's wavelength, clamped to the one bound that
@@ -428,6 +431,7 @@ export function allPaintModifierPoints(state, keys) {
 }
 
 export function paintModifierPoints(state, key = "fill") {
+  if (state[key]?.type === MULTIPOINT_TYPE) return multipointModifierPoints(state, key);
   const ag = activeGradient(state[key]);
   if (!ag) return [];
   const W = state.w ?? 0, H = state.h ?? 0;
@@ -510,4 +514,114 @@ export function paintModifierPoints(state, key = "fill") {
     },
   };
   return [centerBead, directionBead];
+}
+
+/**
+ * Pure function. Changes one source without replacing remembered paint modes.
+ * @param {object} state - Widget state containing the paint.
+ * @param {string} key - Paint property.
+ * @param {number} index - Source index.
+ * @param {function} transform - Pure feature → feature transform.
+ * @returns {object} Partial widget state.
+ * @example withMultipointFeature({fill:{type:"multipointGradient",multipoint:{features:[{weight:1}]}}}, "fill", 0, f => ({...f,weight:2})).fill.multipoint.features[0].weight // 2
+ */
+function withMultipointFeature(state, key, index, transform) {
+  const paint = state[key], source = paint.multipoint ?? paint;
+  const changed = { ...source, features: source.features.map((f, i) => i === index ? transform(f) : f) };
+  return { [key]: paint.multipoint ? { ...paint, multipoint: changed } : changed };
+}
+
+/**
+ * Pure function. Native source anchors, Bézier controls and independent colour-stop
+ * handles. Hidden nodes remain addressable; a zero handle has no coincident bead
+ * stealing its anchor's hit target. Positions use the same normalized paint box
+ * as rendering. Stops slide along arc length rather than reshaping the curve.
+ * @param {object} state - Widget state with w/h and a Multipoint paint.
+ * @param {string} key - Paint property name, e.g. fill or stroke.
+ * @returns {object[]} Local-space modifier points; tuples read as [N,6] anchor/in/out.
+ * @example multipointModifierPoints({w:200,h:100,fill:{type:"multipointGradient",multipoint:{features:[{nodes:[[0.25,0.5,0,0,0,0]],stops:[{offset:0,color:"#f00"}],weight:1}]}}},"fill")[0].x // 50
+ */
+export function multipointModifierPoints(state, key) {
+  const paint = state[key], source = paint.multipoint ?? paint;
+  const W = state.w ?? 0, H = state.h ?? 0, out = [];
+  for (let fi = 0; fi < source.features.length; fi++) {
+    const feature = source.features[fi];
+    const sourceActive = elementActive(source.featuresActive, fi);
+    const featurePath = [key, ...(paint.multipoint ? ["multipoint"] : []), "features", fi];
+    const visibleNodes = feature.nodes.filter((_, i) => elementActive(feature.nodesActive, i));
+    const firstHandle = out.length;
+    const pointStop = feature.stops.findIndex((_, i) => elementActive(feature.stopsActive, i));
+    for (let ni = 0; ni < feature.nodes.length; ni++) {
+      const n = feature.nodes[ni];
+      const active = sourceActive && elementActive(feature.nodesActive, ni);
+      out.push({
+        id: `${key}-mp-${fi}-node-${ni}`, x: n[0] * W, y: n[1] * H,
+        glyph: "boxedO", label: `Multipoint source ${fi + 1}, node ${ni + 1} (${key})`, active,
+        ...(visibleNodes.length === 1 && pointStop >= 0 ? {
+          color: rgbaToCss(parseColor(feature.stops[pointStop].color)),
+          colorPath: [...featurePath, "stops", pointStop, "color"],
+        } : {}),
+        element: { list: MULTIPOINT_NODES_LIST, path: [...featurePath, "nodes"], index: ni },
+        /** Pure function. Moves the anchor, retaining relative handle offsets. */
+        apply(st, p) {
+          return withMultipointFeature(st, key, fi, (f) => ({ ...f, nodes: f.nodes.map((v, i) => i === ni
+            ? [st.w ? p.x / st.w : v[0], st.h ? p.y / st.h : v[1], ...v.slice(2)] : v) }));
+        },
+      });
+      if (visibleNodes.length < 2) continue;
+      for (const [slot, name] of [[2, "incoming"], [4, "outgoing"]]) {
+        if (n[slot] === 0 && n[slot + 1] === 0) continue;
+        out.push({
+          id: `${key}-mp-${fi}-node-${ni}-${name}`, x: (n[0] + n[slot]) * W, y: (n[1] + n[slot + 1]) * H,
+          glyph: "boxedX", label: `Multipoint ${name} Bézier handle ${ni + 1} (${key})`, active,
+          stem: { x: n[0] * W, y: n[1] * H },
+          /** Pure function. Changes only the chosen relative Bézier handle. */
+          apply(st, p) {
+            return withMultipointFeature(st, key, fi, (f) => ({ ...f, nodes: f.nodes.map((v, i) => {
+              if (i !== ni) return v;
+              const next = v.slice();
+              next[slot] = st.w ? p.x / st.w - v[0] : v[slot];
+              next[slot + 1] = st.h ? p.y / st.h - v[1] : v[slot + 1];
+              return next;
+            }) }));
+          },
+        });
+      }
+    }
+    if (visibleNodes.length < 2) continue; // a point's colour has no path position
+    const polyline = featurePolyline(visibleNodes, feature.closed);
+    if (sourceActive) out[firstHandle].guide = polyline.map(([x,y]) => [x * W, y * H]);
+    for (let si = 0; si < feature.stops.length; si++) {
+      const stop = feature.stops[si], unit = pointAlongPolyline(polyline, stop.offset);
+      const tangentLength = Math.hypot(unit.dx * W, unit.dy * H);
+      const p = {x:unit.x * W, y:unit.y * H,
+        dx:tangentLength ? unit.dx * W / tangentLength : 1, dy:tangentLength ? unit.dy * H / tangentLength : 0};
+      // Colour beads sit just to the path's left, separating endpoint stops from
+      // shaping anchors. This is a view affordance, not a stored colour offset.
+      const gap = Math.min(Math.abs(W), Math.abs(H)) / 24;
+      for (const side of feature.twoSided ? [1, -1] : [1]) {
+        const field = side === 1 ? "color" : "rightColor";
+        out.push({
+          id: `${key}-mp-${fi}-stop-${si}${side < 0 ? "-right" : ""}`,
+          x: p.x + side * p.dy * gap, y: p.y - side * p.dx * gap,
+          glyph: "dottedCircle", label: `Multipoint ${feature.twoSided ? side > 0 ? "left " : "right " : ""}colour ${si + 1}, source ${fi + 1} (${key})`,
+          color: rgbaToCss(parseColor(stop[field])), colorPath: [...featurePath, "stops", si, field],
+          active: sourceActive && elementActive(feature.stopsActive, si), stem: {x:p.x,y:p.y},
+          element: { list: MULTIPOINT_STOPS_LIST, path: [...featurePath,"stops"], index: si },
+          /** Pure function. Projects the dragged colour bead back onto arc length. */
+          apply(st, target) {
+            return withMultipointFeature(st, key, fi, (f) => {
+              const points = featurePolyline(f.nodes.filter((_, i) => elementActive(f.nodesActive, i)), f.closed);
+              const offset = nearestPolylineOffset(points, {
+                x:st.w ? (target.x - side * p.dy * gap) / st.w : unit.x,
+                y:st.h ? (target.y + side * p.dx * gap) / st.h : unit.y,
+              });
+              return { ...f, stops: f.stops.map((s, i) => i === si ? {...s,offset} : s) };
+            });
+          },
+        });
+      }
+    }
+  }
+  return out;
 }

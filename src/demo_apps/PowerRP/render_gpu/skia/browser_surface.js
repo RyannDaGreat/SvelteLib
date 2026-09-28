@@ -13,13 +13,16 @@
  */
 
 import { paintIR } from "./paint_skia.js";
+import { withMultipointPreview, rememberMultipointField } from "./multipoint.js";
+
+const MULTIPOINT_IDLE_MS = 150; // wait for a pause in gestures/playback before expensive refinement
 import { refuseCameraDither } from "./dither_shader.js";
 import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
 import { makeGpuUploader, disposeUploaderScope } from "../gpu/video_registry.js";
 import { disposeVideoV5Scope } from "./video_v5.js"; // free V5's texture Images for this scope on teardown (additive)
 import { clampSurfaceSize, MAX_SURFACE_DIM } from "../../core/clip.js";
-import { reportOnce } from "../../core/report.js";
+import { reportOnce, warnOnce } from "../../core/report.js";
 
 /** Monotonic tag so each SkiaSurface's GPU uploader gets a UNIQUE cache scope:
  * a texture-backed video Image is usable only on its own GL context (editor and
@@ -115,6 +118,15 @@ export class SkiaSurface {
     // (recreated on resize; the GrContext that owns the textures is stable). Its
     // scope is unique per instance so the video registry never crosses contexts.
     this._uploader = makeGpuUploader(CanvasKit, () => this.surface, "gl:" + (_scopeSeq++));
+    this._multipointWorker = null;
+    this._multipointTimer = null;
+    this._multipointPending = [];
+    this._multipointActive = new Set();
+    this._multipointCompleted = new Set();
+    this._multipointFailed = new Set();
+    this._multipointBusy = false;
+    this._multipointReady = false;
+    this._lastRender = null;
   }
 
   /** Command. (Re)creates the on-screen GL surface when the canvas size changes.
@@ -178,15 +190,76 @@ export class SkiaSurface {
       // stops at the first `)` — so an inline call silently defeats the one check
       // guarding the wire that, unconnected, leaves materials blank with no error.
       const canvas = this.surface.getCanvas();
-      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface, antialias, maxUniformRows: this.maxUniformRows });
+      const draw = () => paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface, antialias, maxUniformRows: this.maxUniformRows });
+      const refinements = opts.multipointFinal ? (draw(), []) : withMultipointPreview(draw);
       this.surface.flush();
+      this._lastRender = [ir, view, opts];
+      this._queueMultipoint(refinements);
     } finally {
       built.release(); // free per-paint video frame Images even if paint throws (review MED)
     }
   }
 
-  /** Command. Frees WASM/GPU resources. */
+  /**
+   * Command. Replaces pending work with this frame's sources; never queues every
+   * intermediate drag frame. Already-running work may finish into the bounded cache.
+   * @param {object[]} requests - All visible fields, with final-cache ready flags.
+   * @returns {undefined}
+   */
+  _queueMultipoint(requests) {
+    clearTimeout(this._multipointTimer);
+    this._multipointActive = new Set(requests.map((r) => r.key));
+    this._multipointFailed = new Set([...this._multipointFailed].filter((key) => this._multipointActive.has(key)));
+    this._multipointCompleted = new Set([...this._multipointCompleted].filter((key) => this._multipointActive.has(key)));
+    for (const {key,ready} of requests) {
+      if (ready) this._multipointCompleted.add(key);
+      else if (this._multipointCompleted.has(key)) warnOnce("multipoint-cache-budget",
+        "Multipoint viewport cache evicted a visible final field; some fills remain at interactive resolution. Exports still use final resolution.");
+    }
+    this._multipointPending = requests.filter((r) => !r.ready && !this._multipointCompleted.has(r.key) && !this._multipointFailed.has(r.key));
+    this._multipointReady = false;
+    if (this._multipointPending.length) this._multipointTimer = setTimeout(() => {
+      this._multipointReady = true;
+      this._pumpMultipoint();
+    }, MULTIPOINT_IDLE_MS);
+  }
+
+  /** Command. Starts at most one worker solve; successful current results repaint. */
+  _pumpMultipoint() {
+    this._multipointPending = this._multipointPending.filter((r) => !this._multipointCompleted.has(r.key) && !this._multipointFailed.has(r.key));
+    if (this._multipointBusy || !this._multipointReady || !this._multipointPending.length) return;
+    if (!this._multipointWorker) {
+      this._multipointWorker = new Worker(new URL("./multipoint_worker.js", import.meta.url), {type:"module"});
+      this._multipointWorker.onmessage = ({data:{key,result,error}}) => {
+        this._multipointBusy = false;
+        if (error) {
+          this._multipointFailed.add(key);
+          reportOnce(`multipoint-refinement:${key}`, `Multipoint final-quality refinement failed; the viewport still shows its lower-resolution preview. ${error}`);
+        } else {
+          rememberMultipointField(key,result);
+          if (this._multipointActive.has(key)) this._multipointCompleted.add(key);
+          if (this._lastRender && this._multipointActive.has(key)) this.render(...this._lastRender);
+        }
+        this._pumpMultipoint();
+      };
+      this._multipointWorker.onerror = (event) => {
+        this._multipointBusy = false;
+        this._multipointFailed = new Set(this._multipointActive);
+        this._multipointPending = [];
+        reportOnce("multipoint-worker", `Multipoint refinement worker failed: ${event.message} (${event.filename}:${event.lineno}). The viewport remains at preview resolution.`);
+        this._multipointWorker.terminate(); this._multipointWorker = null;
+      };
+    }
+    const request = this._multipointPending.shift();
+    this._multipointBusy = true;
+    this._multipointWorker.postMessage(request);
+  }
+
+  /** Command. Frees WASM/GPU resources and cancels this surface's pending refinement. */
   dispose() {
+    clearTimeout(this._multipointTimer);
+    this._multipointWorker?.terminate(); this._multipointWorker = null;
+    this._multipointPending = []; this._lastRender = null;
     // Free this context's reused video textures BEFORE the GrContext dies — a
     // later eviction .delete() on a torn-down context would fault the wasm heap.
     disposeUploaderScope(this._uploader.scopeId);

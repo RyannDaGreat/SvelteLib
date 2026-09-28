@@ -481,6 +481,31 @@ function itemGeometryPairs(itemId, delta) {
  * @example // a gesture that changed nothing writes nothing:
  * @example geometryPairs("r", {x: 10}, {x: 10}) // []
  */
+/**
+ * Pure function. Expands unchanged-shape nested geometry to individually writable
+ * coordinates. A node move must not bake its sibling colour/position equations.
+ * Structural replacements (changed array length or object keys) remain atomic.
+ * @param {object} start - Resolved grab-time values.
+ * @param {object} desired - Composed modifier-handle partial.
+ * @returns {{start:object,desired:object}} Dotted stored paths for geometryPairs.
+ * @example geometryLeafCoordinates({p:[[0,2]]},{p:[[1,2]]}) // {start:{"p.0.0":0,"p.0.1":2},desired:{"p.0.0":1,"p.0.1":2}}
+ */
+export function geometryLeafCoordinates(start, desired) {
+  const a = {}, b = {};
+  /** Command. Walks matching containers into the call's private result records. */
+  function visit(old, next, path) {
+    const compatible = old && next && typeof old === "object" && typeof next === "object"
+      && Array.isArray(old) === Array.isArray(next)
+      && Object.keys(old).length === Object.keys(next).length
+      && Object.keys(next).every((key) => Object.hasOwn(old, key));
+    if (compatible && Object.keys(next).length) {
+      for (const key of Object.keys(next)) visit(old[key], next[key], `${path}.${key}`);
+    } else { a[path] = old; b[path] = next; }
+  }
+  for (const key of Object.keys(desired)) visit(start[key], desired[key], key);
+  return {start:a,desired:b};
+}
+
 export function geometryPairs(itemId, start, desired, constrain = UNCONSTRAINED) {
   const allowed = constrain(start, desired);
   return itemGeometryPairs(itemId, diffState(start, allowed, Object.keys(desired)));

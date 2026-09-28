@@ -126,6 +126,8 @@
   let {
     onpick, onpreview = null, oncancelpreview = null, onopenchange = null,
     families = RAMP_PRESET_FAMILIES, disabled = false,
+    // Native Multipoint paints reuse the same picker with real rendered swatches.
+    copyPreset = freshRamp, swatchStyle = cssRampSwatch,
   } = $props();
 
   let open = $state(false);
@@ -187,14 +189,14 @@
    * created. The next hover overwrites it; leaving the grid reverts it. */
   function preview(preset) {
     if (disabled || !onpreview) return;
-    onpreview(freshRamp(preset));
+    onpreview(copyPreset(preset));
   }
 
   /** Command. Applies a preset durably (one undo unit, via onpick) and collapses
    * the library. The commit consumes the staged preview, so close()'s revert is
    * a no-op here — it only guards the unmount-without-pointerleave case. */
   function pick(preset) {
-    onpick(freshRamp(preset));
+    onpick(copyPreset(preset));
     close();
   }
 
@@ -269,15 +271,15 @@
                as an unexplained change of colour halfway down the tiles. -->
           <div class="gradient-presets-family">{family.title}</div>
           {#each family.presets as p (p.name)}
-            <Tooltip text={p.name}>
+            <Tooltip text={p.description ? `${p.name}: ${p.description}` : p.name}>
               <button
                 type="button"
                 class="gradient-swatch"
                 role="option"
                 aria-selected="false"
                 aria-label={p.name}
-                data-ramp-stops={p.stops.length}
-                style:--gp-swatch={cssRampSwatch(p)}
+                data-ramp-stops={p.stops?.length}
+                style:--gp-swatch={swatchStyle(p)}
                 onpointerenter={() => preview(p)}
                 onclick={() => pick(p)}
               ></button>

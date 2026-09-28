@@ -143,7 +143,7 @@ const ITEM_MAP_KEY = "items";
  * makes the result independent of the delta's key order, which the fold's
  * determinism requires.
  */
-function mutBlendApply(state, delta, alpha, parentKey = null) {
+function mutBlendApply(state, delta, alpha, parentKey = null, path = []) {
   // Shallow is enough: a mode governs a leaf at THIS level, and each recursion
   // step takes its own snapshot of the sub-object it is about to mutate.
   const outgoing = { ...state };
@@ -175,6 +175,7 @@ function mutBlendApply(state, delta, alpha, parentKey = null) {
     // a mode that CLAIMS the leaf (`claimsTrees`) handles the whole subtree as
     // one value, and everything else falls through to the untouched branches
     // below, byte-identically.
+    const valuePath = parentKey === ITEM_MAP_KEY ? [] : [...path, key];
     const modeKey = interpKeyFor(key);
     const storedMode = outgoing[modeKey] ?? delta[modeKey];
     // MODE PARAMETERS (WORKSTREAM AP) follow the mode's OWN rule exactly — the
@@ -194,8 +195,15 @@ function mutBlendApply(state, delta, alpha, parentKey = null) {
       const mode = storedMode !== undefined
         ? modeForBlend(outgoing[modeKey], delta[modeKey])
         : defaultModeFor(state[key], val, key);
+      // Sparse and whole-array writes share ONE law; only addressed leaves publish.
+      if (Array.isArray(state[key]) && isTree(val)) {
+        const target = patchedListLeaves(state[key], val, val);
+        const blended = blendUnderMode(state[key], target, alpha, { key, mode, params: paramsFor(mode), path: valuePath, patch: val });
+        state[key] = Array.isArray(blended) ? patchedListLeaves(state[key], val, blended) : blended;
+        continue;
+      }
       if (modeClaimsTrees(mode)) {
-        state[key] = blendUnderMode(state[key], val, alpha, { key, mode, params: paramsFor(mode) });
+        state[key] = blendUnderMode(state[key], val, alpha, { key, mode, params: paramsFor(mode), ...(Array.isArray(val) ? { path: valuePath } : {}) });
         continue;
       }
     }
@@ -257,7 +265,7 @@ function mutBlendApply(state, delta, alpha, parentKey = null) {
       } else if (!isTree(state[key])) {
         state[key] = {};
       }
-      mutBlendApply(state[key], val, alpha, key);
+      mutBlendApply(state[key], val, alpha, key, valuePath);
     } else if (key in state) {
       // THE ENDPOINT IS NOT A MODE'S CALL. At alpha 1 the answer IS the stored
       // target — that is what `applied()` means and what makes the fold
@@ -287,7 +295,7 @@ function mutBlendApply(state, delta, alpha, parentKey = null) {
         const mode = storedMode !== undefined
           ? modeForBlend(outgoing[modeKey], delta[modeKey])
           : defaultModeFor(state[key], val, key);
-        state[key] = blendUnderMode(state[key], val, alpha, { key, mode, params: paramsFor(mode) });
+        state[key] = blendUnderMode(state[key], val, alpha, { key, mode, params: paramsFor(mode), ...(Array.isArray(val) ? { path: valuePath } : {}) });
       }
     } else {
       // An ADDITION is discrete under every mode (there is no `a` to blend from
@@ -310,6 +318,30 @@ function mutBlendApply(state, delta, alpha, parentKey = null) {
   // recurse forever — and it must not mint anyway: alpha 1 IS the document's own
   // stored values, per the endpoint law enforced above.
   if (alpha < 1) mutMorphProperty(state, outgoing, delta, alpha);
+}
+
+/**
+ * Pure function. Copy-on-write projection of addressed leaves from a complete value.
+ * Untouched elements keep identity; null builds a deletion whose timing follows the mode.
+ * @param {*} base - Original list or nested record.
+ * @param {object} patch - Sparse delta selecting paths.
+ * @param {*} values - Complete sampled value (or patch itself to build the target).
+ * @returns {*} Patched array/record, without mutating inputs.
+ * @example patchedListLeaves([[0, 2]], {0: {0: 1}}, [[0.25, 2]]) // [[0.25, 2]]
+ */
+function patchedListLeaves(base, patch, values) {
+  // A whole-value mode may return a token instead of an array (e.g. blend).
+  // Such a value owns this subtree; projecting indices would destroy the token.
+  if (values !== patch && Array.isArray(base) && !Array.isArray(values)) return values;
+  if (values === null || typeof values !== "object") return values;
+  const out = Array.isArray(base) ? base.slice() : isTree(base) ? { ...base } : {};
+  for (const [key, val] of Object.entries(patch)) {
+    if ((values === patch && val === NONE) || !(key in values)) delete out[key];
+    else out[key] = isTree(val)
+      ? patchedListLeaves(base?.[key], val, values[key])
+      : values[key];
+  }
+  return out;
 }
 
 /**

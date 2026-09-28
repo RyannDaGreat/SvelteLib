@@ -743,6 +743,37 @@ export const RAMP_STOP_ELEMENT = {
   ],
 };
 
+/** Shared declarations for the native Multipoint paint's nested editable lists.
+ * Numeric node tuples keep the established continuous coordinate tween law. */
+export const MULTIPOINT_NODES_LIST = {
+  kind: LIST_ROW_KIND, label: "Nodes", order: "sequence", activeKey: "nodesActive", minLength: 1,
+  element: { storage: "tuple", fields: [
+    { name: "x", kind: "number", label: "X", help: "Anchor X, as a fraction of the paint box." },
+    { name: "y", kind: "number", label: "Y", help: "Anchor Y, as a fraction of the paint box." },
+    { name: "inX", kind: "number", label: "Incoming X", help: "Incoming Bézier handle's horizontal offset from the anchor." },
+    { name: "inY", kind: "number", label: "Incoming Y", help: "Incoming Bézier handle's vertical offset from the anchor." },
+    { name: "outX", kind: "number", label: "Outgoing X", help: "Outgoing Bézier handle's horizontal offset from the anchor." },
+    { name: "outY", kind: "number", label: "Outgoing Y", help: "Outgoing Bézier handle's vertical offset from the anchor." },
+  ] },
+};
+export const MULTIPOINT_STOPS_LIST = {
+  kind: LIST_ROW_KIND, label: "Colours", order: "sorted", orderKey: "offset", activeKey: "stopsActive", minLength: 1,
+  element: { storage: "record", fields: [
+    ...RAMP_STOP_ELEMENT.fields,
+    { name: "rightColor", kind: "color", label: "Right colour", help: "Colour on the other side of a two-sided path. Kept, but inactive, when sides are linked." },
+  ] },
+};
+export const MULTIPOINT_FEATURES_LIST = {
+  kind: LIST_ROW_KIND, label: "Sources", order: "sequence", activeKey: "featuresActive", minLength: 0,
+  element: { storage: "record", fields: [
+    { name: "weight", kind: "number", min: 0, label: "Weight", help: "Source influence. Zero removes its contribution without deleting its geometry or colours." },
+    { name: "twoSided", kind: "boolean", label: "Two sides", help: "Give the left and right sides of a path independent colours. A point has only one colour." },
+    { name: "closed", kind: "boolean", label: "Closed", help: "Connect the last shaping node back to the first." },
+    { name: "nodes", ...MULTIPOINT_NODES_LIST },
+    { name: "stops", ...MULTIPOINT_STOPS_LIST },
+  ] },
+};
+
 export const GRADIENT_STOPS_LIST = {
   kind: LIST_ROW_KIND,
   label: "Stops",
@@ -2562,6 +2593,7 @@ for (const [key, def] of Object.entries(PROPS)) {
 // The gradient stop list is a declaration too (it is just not a PROPS key — see
 // GRADIENT_STOPS_LIST), so it gets the SAME guard rather than a weaker one.
 checkListRow("GRADIENT_STOPS_LIST", "stops", GRADIENT_STOPS_LIST);
+checkListRow("MULTIPOINT_FEATURES_LIST", "features", MULTIPOINT_FEATURES_LIST);
 
 /**
  * BUNDLES — named ORDERED lists of property keys (manifest "SHARED STYLE

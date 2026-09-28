@@ -71,6 +71,8 @@ import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
 import { DITHER_MODES, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS, PAINT_DEFAULT_BIT_DEPTH, PAINT_MIN_BIT_DEPTH, PAINT_MAX_BIT_DEPTH, DITHER_BAYER_SIZES, PAINT_DITHER_DEFAULT_BAYER_SIZE, angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_SPREAD, GRADIENT_SPREAD_MODES, GRADIENT_COLLAPSE_WAVELENGTH, spreadPeriodHalves, rampAverageColor, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
+import { MULTIPOINT_TYPE } from "../core/multipoint.js";
+import { MULTIPOINT_FEATURES_LIST, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST } from "../core/properties.js";
 import { reportOnce } from "../core/report.js";
 import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 
@@ -256,7 +258,7 @@ export function rgbaToCss(rgba) {
 // shader Paint variants are DECLARED but throw a loud "not implemented" (the
 // Axis-1 phasing: build the common cases, stub the fancy ones).
 
-export const GRADIENT_TYPES = ["linearGradient", "radialGradient"];
+export const GRADIENT_TYPES = ["linearGradient", "radialGradient", MULTIPOINT_TYPE];
 const STUB_PAINT_TYPES = ["pattern", "image", "shader"];
 
 /**
@@ -360,7 +362,7 @@ export function isCrossfadePaint(paint) {
  * Pure function. THE PAINT SLOTS AN OP CAN CARRY, in one place. An op's ink does
  * NOT always live on `fill`: a text op puts it on `color` (see text()), a
  * glyph-bearing op adds `glyphStroke` for its letterform outline, and a RICH text
- * op additionally carries one `color` PER RUN, nested inside `rich.runs`.
+ * op additionally carries `color` and `outlineColor` PER RUN inside `rich.runs`.
  *
  * Stated here because that spread is exactly what a slot-blind consumer gets
  * wrong, twice now. `resolveMaterialFillPaints` (ports.js) learned it the hard
@@ -378,7 +380,7 @@ export function isCrossfadePaint(paint) {
  */
 export function opPaintSlots(cmd) {
   const slots = [cmd.fill, cmd.stroke, cmd.color, cmd.glyphStroke];
-  if (Array.isArray(cmd.rich?.runs)) for (const r of cmd.rich.runs) slots.push(r.color);
+  if (Array.isArray(cmd.rich?.runs)) for (const r of cmd.rich.runs) slots.push(r.color, r.outlineColor);
   return slots.filter((p) => p !== undefined && p !== null);
 }
 
@@ -445,8 +447,12 @@ export function crossfadeSide(cmd, side) {
   const out = { ...cmd, opacity: (cmd.opacity ?? 1) * share };
   for (const slot of ["fill", "stroke", "color", "glyphStroke"])
     if (isCrossfadePaint(cmd[slot])) out[slot] = cmd[slot][side];
-  if (Array.isArray(cmd.rich?.runs) && cmd.rich.runs.some((r) => isCrossfadePaint(r.color)))
-    out.rich = { ...cmd.rich, runs: cmd.rich.runs.map((r) => (isCrossfadePaint(r.color) ? { ...r, color: r.color[side] } : r)) };
+  if (Array.isArray(cmd.rich?.runs) && cmd.rich.runs.some((r) => isCrossfadePaint(r.color) || isCrossfadePaint(r.outlineColor)))
+    out.rich = { ...cmd.rich, runs: cmd.rich.runs.map((r) =>
+      isCrossfadePaint(r.color) || isCrossfadePaint(r.outlineColor) ? { ...r,
+        ...(isCrossfadePaint(r.color) ? { color: r.color[side] } : {}),
+        ...(isCrossfadePaint(r.outlineColor) ? { outlineColor: r.outlineColor[side] } : {}),
+      } : r) };
   return out;
 }
 
@@ -465,6 +471,27 @@ export function crossfadeSide(cmd, side) {
  */
 export function opHasMaterialFill(cmd) {
   return isMaterialPaint(cmd.fill);
+}
+
+/**
+ * Pure function. Whether a paint contains a Multipoint field, including crossfades.
+ * @param {*} paint - Stored or parsed paint.
+ * @returns {boolean}
+ * @example isMultipointPaint({type:"multipointGradient", features:[]}) // true
+ */
+export function isMultipointPaint(paint) {
+  return paint?.type === MULTIPOINT_TYPE || (paint?.type === CROSSFADE_PAINT_TYPE &&
+    (isMultipointPaint(paint.from) || isMultipointPaint(paint.to)));
+}
+
+/**
+ * Pure function. Raster-export routing for every paint slot, including rich text.
+ * @param {object} cmd - Display-list operation.
+ * @returns {boolean}
+ * @example opHasMultipointPaint({op:"text",color:{type:"multipointGradient",features:[]}}) // true
+ */
+export function opHasMultipointPaint(cmd) {
+  return opPaintSlots(cmd).some(isMultipointPaint);
 }
 
 /** The material ids whose fill has a REAL VECTOR FORM in the PDF/SVG exporters, so
@@ -556,6 +583,10 @@ export function paintSolidColor(paint) {
   // color of a comic-halftone shader"; gray is the documented stand-in, the
   // same role the proxy tints play for whole materials.
   if (paint.type === "material") return "#888888";
+  if (paint.type === MULTIPOINT_TYPE) {
+    const parsed = parseMultipoint(paint.multipoint ?? paint);
+    return parsed.features[0]?.stops[0]?.color ?? [0, 0, 0, 0];
+  }
   const g = paint.type === "radialGradient" ? (paint.radial ?? paint) : (paint.linear ?? paint);
   const stops = Array.isArray(g?.stops) ? g.stops : Array.isArray(paint.stops) ? paint.stops : null;
   if (stops && stops[0] && stops[0].color != null) return stops[0].color;
@@ -633,6 +664,7 @@ export function parsePaint(paint) {
   // gradient shader's type switch throws on the unknown type (never a silent
   // gray fill).
   if (type === "material") return paint;
+  if (type === MULTIPOINT_TYPE) return { type, ...parseMultipoint(paint.multipoint ?? paint), ...paintDepthFields(paint) };
   // A CROSSFADE paint (the `blend` interp mode's mid-transition value —
   // core/interp_modes.js): two paints and a mix factor, drawn as two passes at
   // complementary alpha. It PASSES THROUGH like a material does, but with both
@@ -667,6 +699,44 @@ export function parsePaint(paint) {
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
   return { type, stops, center, r: g.r, ...dither };
+}
+
+/**
+ * Near-pure function (parseColor memoizes). Validates and normalizes the active
+ * Multipoint state, discarding hidden/zero-weight sources only in the render IR.
+ * @param {object} state - {features, featuresActive?}; nodes are [N,6] anchor/handle tuples.
+ * @returns {{features:object[]}} Visible features with continuous RGBA [4] colours.
+ * @example parseMultipoint({features:[]}) // {features:[]}
+ * @example parseMultipoint({features:[{nodes:[[0.5,0.5,0,0,0,0]],stops:[{offset:0,color:"#f00"}],weight:1}]}).features[0].stops[0].color // [1,0,0,1]
+ */
+export function parseMultipoint(state) {
+  if (!state || !Array.isArray(state.features)) throw new Error("parsePaint: Multipoint needs a features list");
+  const features = [];
+  for (const feature of visibleElements(MULTIPOINT_FEATURES_LIST, { list: state.features, active: state.featuresActive })) {
+    if (!feature || !Array.isArray(feature.nodes) || !Array.isArray(feature.stops))
+      throw new Error("parsePaint: each Multipoint source needs nodes and stops lists");
+    const weight = feature.weight ?? 1;
+    if (!Number.isFinite(weight) || weight < 0) throw new Error("parsePaint: Multipoint weight must be finite and nonnegative");
+    for (const key of ["twoSided", "closed"]) if (feature[key] !== undefined && typeof feature[key] !== "boolean")
+      throw new Error(`parsePaint: Multipoint ${key} must be boolean`);
+    const nodes = visibleElements(MULTIPOINT_NODES_LIST, { list: feature.nodes, active: feature.nodesActive });
+    if (nodes.some((n) => !Array.isArray(n) || n.length !== 6 || !n.every(Number.isFinite)))
+      throw new Error("parsePaint: Multipoint nodes must be finite [x,y,inX,inY,outX,outY] tuples");
+    const visible = visibleElements(MULTIPOINT_STOPS_LIST, { list: feature.stops, active: feature.stopsActive });
+    const stops = (nodes.length === 1 ? visible.slice(0, 1) : visible).map((stop) => {
+      if (!stop || !Number.isFinite(stop.offset)) throw new Error("parsePaint: Multipoint colour offset must be finite");
+      const color = parseColor(stop.color);
+      const rightColor = feature.twoSided && nodes.length > 1 ? parseColor(stop.rightColor) : color;
+      if (![...color, ...rightColor].every((n) => Number.isFinite(n) && n >= 0 && n <= 1))
+        throw new Error("parsePaint: Multipoint colours must contain finite RGBA channels in [0,1]");
+      return { offset: Math.max(0, Math.min(1, stop.offset)), color, rightColor };
+    }).sort((a, b) => a.offset - b.offset);
+    // The document may contain Svelte proxies. IR owns plain numeric tuples:
+    // workers must be able to structured-clone it without carrying UI state.
+    if (nodes.length && stops.length && weight > 0) features.push({ nodes: nodes.map((n) => [...n]), stops,
+      weight, twoSided: !!feature.twoSided && nodes.length > 1, closed: !!feature.closed && nodes.length > 1 });
+  }
+  return { features };
 }
 
 /**

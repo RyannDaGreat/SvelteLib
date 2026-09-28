@@ -231,7 +231,18 @@
     insertedElement, withElementActive, withElementInserted, withElementPurged,
   } from "../core/lists.js";
 
-  let { app, decl, path, label, disabled = false, seedElement = null, forceCollapsed = false } = $props();
+  let {
+    app, decl, path, label, disabled = false, seedElement = null, forceCollapsed = false,
+    elementContent = null, oninsert = null, insertHelp = null, allowInsert = true,
+    fieldVisible = null, keepExpandedDuringPreview = false,
+    preserveStoredElements = false, insertDisabledReason = null,
+  } = $props();
+  // elementContent(el,index,path) replaces fields with a collapsible body;
+  // oninsert(index) supplies geometry-aware insertion; fieldVisible(el,field,index)
+  // hides inactive fields. preserveStoredElements keeps equations on insert/purge.
+  // Custom bodies keep the shared hide/purge/keyframe header. Index keys stay
+  // mounted during coordinate previews; only explicit user clicks fold sources.
+  let foldedElements = $state({});
 
   // ── THE PRESET LIBRARY, MOUNTED FROM THE DECLARATION ──────────────────────
   // A list that declares `presets: COLOR_RAMP_LIBRARY` (core/properties.js
@@ -333,6 +344,7 @@
   let userCollapsed = $state(false);
   $effect(() => {
     userCollapsed = loadCollapsed()[collapseKey] === true;
+    foldedElements = {};
   });
 
   // A WHOLE-LIST PREVIEW staged over this exact path: an ARRAY at the list's own
@@ -363,7 +375,7 @@
   // and this is the flag. The rows then render the PREVIEWED list live for the
   // whole drag; a row trading places with its neighbour mid-gesture is the reorder
   // the drag is performing, and showing it is the point.
-  let suppressed = $derived(Boolean(forceCollapsed) || presetsOpen || (listPreviewStaged && !beadDragging));
+  let suppressed = $derived(Boolean(forceCollapsed) || presetsOpen || (listPreviewStaged && !beadDragging && !keepExpandedDuringPreview));
   let collapsed = $derived(userCollapsed || suppressed);
 
   let hiddenCount = $derived(value.list.filter((_, i) => !elementActive(value.active, i)).length);
@@ -475,6 +487,8 @@
    *  core/lists.insertedElement, the same pure function the click commits, so the
    *  tooltip can never disagree with the result. */
   function insertTip(index) {
+    if (insertDisabledReason) return insertDisabledReason;
+    if (insertHelp) return insertHelp;
     const summary = elementSummary(insertedElement(decl, value.list, index));
     // "extrapolated outward from the first two" → "extrapolated from the first
     // two": outward is the only direction an extrapolation off the end can go.
@@ -530,8 +544,17 @@
    * an all-true companion into a document that never hid anything would mint
    * state nobody asked for (web/app.svelte.js purgeHandleSelection's own rule). */
   function commitMoved(next) {
-    const pairs = [[path, next.list]];
-    if (next.active) pairs.push([activePath, next.active]);
+    // Insert/purge retain existing element identities. Restore their stored
+    // values so nested source equations are not baked by an unrelated edit.
+    const stored = getPath(app.rawState(), path);
+    const storedActive = getPath(app.rawState(), activePath);
+    const indices = next.list.map((el) => value.list.indexOf(el));
+    const list = preserveStoredElements ? next.list.map((el, i) => indices[i] < 0 ? el : stored[indices[i]]) : next.list;
+    const active = preserveStoredElements && next.active
+      ? next.active.map((flag, i) => indices[i] < 0 ? flag : storedActive?.[indices[i]] ?? flag)
+      : next.active;
+    const pairs = [[path, list]];
+    if (active) pairs.push([activePath, active]);
     app.setPreview(pairs);
     app.commitPreview();
   }
@@ -542,7 +565,11 @@
    * setHandleSelectionActive makes for the canvas handle toolbar: one hide
    * mechanism, so the two surfaces cannot disagree. */
   function setActive(index, active) {
-    app.setPreview([[activePath, withElementActive(decl, value, index, active).active]]);
+    const next = withElementActive(decl, value, index, active).active;
+    const stored = getPath(app.rawState(), activePath);
+    app.setPreview([[activePath, preserveStoredElements
+      ? next.map((flag, i) => i === index ? flag : stored?.[i] ?? flag)
+      : next]]);
     app.commitPreview();
   }
 
@@ -552,8 +579,9 @@
    * because the render path consumes gradient stop ORDER (core/lists.js's
    * measured warning: an out-of-order stop COLLAPSES instead of swapping). */
   function insert(index) {
-    if (disabled) return;
-    commitMoved(withElementInserted(decl, value, index));
+    if (disabled || insertDisabledReason) return;
+    if (oninsert) oninsert(index);
+    else commitMoved(withElementInserted(decl, value, index));
   }
 
   /** Command. Inserts the FIRST element of an empty list from the property's own
@@ -580,11 +608,12 @@
      happens at this seam". `index` is the insertion position (0 = before the
      first, list.length = after the last). -->
 {#snippet insertSlice(index)}
+  {#if allowInsert}
   <Tooltip text={insertTip(index)}>
     <button
       type="button"
       class="list-insert"
-      {disabled}
+      disabled={disabled || !!insertDisabledReason}
       aria-label={`${label}: insert at position ${index + 1}`}
       onclick={() => insert(index)}
     >
@@ -593,6 +622,7 @@
       <span class="list-insert-line"></span>
     </button>
   </Tooltip>
+  {/if}
 {/snippet}
 
 <!-- THE PRESET LIBRARY IS A SIBLING OF `.listfield`, NOT A CHILD, and the wrapper
@@ -694,7 +724,7 @@
       <!-- `list-el-selected` is set by the STOP BAR above: picking a bead lights
            up the row that edits that stop, which is how the bar answers "select
            one to edit its colour" without growing a second colour control. -->
-      <div class="list-el" class:list-el-hidden={!visible} class:list-el-selected={selectedElement === index}>
+      <div class="list-el" class:list-el-custom={!!elementContent} class:list-el-hidden={!visible} class:list-el-selected={selectedElement === index}>
         <span class="list-index">{index + 1}</span>
         <!-- VISIBILITY: the app's ONE boolean control, but the WRITE is ours —
              it is not a single scalar (the whole canonicalized companion array
@@ -714,7 +744,16 @@
           disabled={disabled || hideBlocked(index)}
         />
         <span class="list-fields">
+          {#if elementContent}
+            <button type="button" class="cat-header" aria-expanded={!foldedElements[index]}
+              aria-label={`${label} ${index + 1}`}
+              onclick={() => { foldedElements[index] = !foldedElements[index]; }}>
+              <iconify-icon icon={foldedElements[index] ? "mdi:chevron-right" : "mdi:chevron-down"} width={ICON} height={ICON}></iconify-icon>
+              <span class="cat-title">{label} {index + 1}</span>
+            </button>
+          {:else}
           {#each fields as f (f.name)}
+            {#if !fieldVisible || fieldVisible(el, f, index)}
             {@const fieldPath = [...path, index, elementStorageKey(decl.element, f.name)]}
             {@const fieldInert = decl.elementFieldDisabled?.(el, f.name) ?? false}
             <span class="list-field">
@@ -755,7 +794,7 @@
                      text, never a live field — its value survives, it is just inert. -->
                 <input type="text" class="disabled-val" value={String(elementFieldValue(decl.element, el, f.name) ?? "")} disabled />
               {:else if f.kind === "number"}
-                <NumericField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} min={f.min ?? null} max={f.max ?? null} />
+                <NumericField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} min={f.min ?? null} max={f.max ?? null} scrub={f.scrub ?? null} step={f.step ?? null} value={elementFieldValue(decl.element, el, f.name)} />
               {:else if f.kind === "color"}
                 <ColorField {app} path={fieldPath} label={`${label} ${index + 1} ${f.name}`} value={elementFieldValue(decl.element, el, f.name)} {disabled} />
               {:else if f.kind === "angle"}
@@ -795,7 +834,9 @@
                 <span class="list-field-unsupported">no "{f.kind}" control</span>
               {/if}
             </span>
+            {/if}
           {/each}
+          {/if}
         </span>
         <!-- ONE keyframe triad per ELEMENT, on the element's own path, so a stop or
              a vertex keyframes and tweens as a unit (PaintField's per-stop ◆,
@@ -820,6 +861,11 @@
             <iconify-icon icon="mdi:delete-forever-outline" width={ICON} height={ICON}></iconify-icon>
           </button>
         </Tooltip>
+        {#if elementContent && !foldedElements[index]}
+          <div class="list-el-content">
+            {@render elementContent(el, index, [...path, index])}
+          </div>
+        {/if}
       </div>
       {@render insertSlice(index + 1)}
     {/each}

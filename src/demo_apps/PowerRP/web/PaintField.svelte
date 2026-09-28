@@ -89,6 +89,7 @@
   const DEFAULT_FILL_MATERIAL = fillCapableMaterialIds()[0] ?? "comic";
   const DEFAULT_STROKE_MATERIAL = strokeMaterialIds()[0] ?? "alongGradient";
   import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE } from "../core/properties.js";
+  import { freshMultipoint } from "../core/multipoint.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
 
@@ -180,7 +181,7 @@
 
   /**
    * Pure function. Normalizes ANY stored paint value into the complete
-   * multi-sub-state record {type, solid, linear, radial} — filling missing
+   * multi-sub-state record, preserving paint-level keys and filling missing
    * sub-states with fresh defaults (seeded from the current solid) and lifting
    * a LEGACY inline gradient ({type, stops, from/to|center/r}) into its wrapper.
    * This is what a type-switch writes when the stored value is not yet a
@@ -207,7 +208,9 @@
     // linear/radial so choosing a material, trying a gradient, and coming back
     // loses nothing.
     const material = isObj && value.material ? value.material : { id: DEFAULT_FILL_MATERIAL, params: {} };
-    return { type, solid, linear, radial, material };
+    const multipoint = isObj && value.multipoint ? value.multipoint : freshMultipoint(seed);
+    // Keep paint-level settings and future mode substates when materializing.
+    return { ...(isObj ? value : {}), type, solid, linear, radial, material, multipoint };
   }
 
   /**
@@ -228,6 +231,7 @@
 <script>
   import "iconify-icon";
   import ColorField from "./ColorField.svelte";
+  import MultipointField from "./MultipointField.svelte";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
   import { appRankItems } from "./searchRank.js";
@@ -348,22 +352,22 @@
    * MODE, not a destructive clear. */
   function setMode(next) {
     if (disabled || next === mode) return;
-    if (next === "equation") commitWhole(`=${seedSolid(raw)}`); // seed: a color-literal equation
-    else if (next === "material") {
-      // Materialize the whole paint AND force a material id valid for THIS slot: a
-      // stroke slot must never store a fill-material id (the painter would call
-      // getStrokeMaterial on it and throw). An existing valid id + its params are
-      // kept; a foreign/absent one falls back to the slot default.
-      const base = paintSubstates(raw);
-      const stored = base.material ?? {};
-      const id = matRegistryIds.includes(stored.id) ? stored.id : matDefaultId;
-      // Seed any kind:"stops" list the chosen material declares (a fresh alongGradient
-      // gets its default ramp), so the stops editor is never empty and the render
-      // matches — withSeededLists leaves every other knob sparse.
-      commitWhole({ ...base, type: "material", material: { id, params: withSeededLists(matGet(id), stored.params ?? {}) } });
-    }
-    else if (isCompletePaint(raw)) commitAt(["type"], next);
-    else commitWhole({ ...paintSubstates(raw), type: next });
+    // Materialize EACH target from its own stored modes/settings, never primary.
+    app.setPreview(writePaths.map((target) => {
+      const storedPaint = getPath(app.rawState(), target);
+      if (next === "equation") return [target, `=${seedSolid(storedPaint)}`];
+      if (next !== "material" && isCompletePaint(storedPaint) && (next !== "multipointGradient" || storedPaint.multipoint))
+        return [[...target, "type"], next];
+      const base = paintSubstates(storedPaint);
+      if (next === "material") {
+        // Keep valid stored material params; seed a slot-valid material otherwise.
+        const stored = base.material;
+        const id = matRegistryIds.includes(stored.id) ? stored.id : matDefaultId;
+        base.material = { id, params: withSeededLists(matGet(id), stored.params ?? {}) };
+      }
+      return [target, perTarget({ ...base, type: next })];
+    }));
+    app.commitPreview();
   }
 
   /** Command. Commits the raw equation text (the whole fill becomes the "="
@@ -636,6 +640,7 @@
     { id: "solid", label: "Solid" },
     { id: "linearGradient", label: "Linear" },
     { id: "radialGradient", label: "Radial" },
+    { id: "multipointGradient", label: "Multipoint" },
     { id: "material", label: "Mat" },
     { id: "equation", label: "= Eq" },
   ];
@@ -645,6 +650,7 @@
     solid: "Solid color",
     linearGradient: "Linear gradient",
     radialGradient: "Radial gradient",
+    multipointGradient: "Multipoint gradient",
     material: strokeMaterials ? "Stroke material" : "Material fill",
     equation: "Equation",
   });
@@ -658,6 +664,7 @@
           type="button"
           class="paint-type-tab"
           {disabled}
+          aria-label={`${label}: ${t.id}`}
           aria-pressed={mode === t.id}
           onclick={() => setMode(t.id)}
         >{t.label}</button>
@@ -912,6 +919,14 @@
              color:var(--fg); background:transparent; border:1px solid var(--border); border-radius:0;
              padding:var(--a-sp-1) var(--a-sp-2);"
     />
+  {:else if mode === "multipointGradient"}
+    {#if multi}
+      <p class="paint-stops-multi-note">
+        Multipoint sources are edited one item at a time — select a single item to edit them.
+      </p>
+    {:else}
+      <MultipointField {app} path={[...path, "multipoint"]} {label} {disabled} seedColor={sub.solid} />
+    {/if}
   {:else}
     <!-- STOPS — THE GENERAL LIST CONTROL (web/ListField.svelte), driven by the
          SAME declaration core types these slots from (GRADIENT_STOPS_LIST). It
@@ -1074,6 +1089,11 @@
         </span>
       </div>
     {/if}
+    </div>
+  {/if}
+  {#if ["linearGradient", "radialGradient", "multipointGradient"].includes(mode)}
+    <div class="paint-sub-rows" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_VARIABLE]}>
+      <LabelDivider {app} dividerKey={LABEL_DIVIDER_VARIABLE} />
       <!-- THE DITHER BUNDLE — rendered FROM its declaration, not hand-written.
            `bundle("dither")` (core/properties.js BUNDLES) is the single source of
            these rows' labels, kinds, options, bounds, defaults and visibility, so

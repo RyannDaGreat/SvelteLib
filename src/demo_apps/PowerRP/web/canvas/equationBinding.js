@@ -82,7 +82,12 @@ import { pinning } from "../../core/derive.js";
 export function equationBoundKeys(app, itemId, plugin, keys) {
   return keys.filter((key) => {
     const path = key.split(".");
-    return isEquationValue(plugin, path, app.storedItemValue(itemId, path));
+    // A leaf of a whole-paint/list equation is bound too: writing below it would
+    // replace the expression with a partial object, not edit an independent leaf.
+    return path.some((_, i) => {
+      const prefix = path.slice(0, i + 1);
+      return isEquationValue(plugin, prefix, app.storedItemValue(itemId, prefix));
+    });
   });
 }
 

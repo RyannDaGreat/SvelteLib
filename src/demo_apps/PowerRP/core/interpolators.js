@@ -37,6 +37,36 @@
  * same rule.)
  */
 
+/** Optional declaration lookup, installed by the declaration owner (no reverse import). */
+let interpolationListResolver = () => null;
+
+/**
+ * Command. Installs the item-relative list declaration query without an import cycle.
+ * @param {Function} resolver - Returns {decl, rel, companion}, or null, for a path.
+ * @returns {void}
+ * @example setInterpolationListResolver(listDeclAt) // subsequent blends use declared numeric fields
+ */
+export function setInterpolationListResolver(resolver) {
+  interpolationListResolver = resolver;
+}
+
+/**
+ * Query. Is this path a declared continuous list field? Reads the installed schema query.
+ * @param {Array} path - Item-relative storage path, e.g. ["points", 0, 0].
+ * @returns {boolean}
+ * @example continuousListNumber(["points", 0, 0]) // true after installing polygon declarations
+ */
+export function continuousListNumber(path) {
+  const found = path && interpolationListResolver(path);
+  if (!found || found.companion || found.rel.length !== 2) return false;
+  const { element } = found.decl;
+  const key = found.rel[1];
+  const field = element.storage === "tuple"
+    ? element.fields[Number(key)]
+    : element.fields.find((field) => field.name === key);
+  return field?.kind === "number";
+}
+
 /**
  * Pure function. True for plain object-literal trees (not arrays/class
  * instances) — the structural-recursion gate, kept local so interpolators.js
@@ -105,7 +135,13 @@ export function rgbToHex(rgb) {
 }
 
 /**
- * Pure function. Interpolate leaf value a → b at alpha in [0,1].
+ * Query. Interpolate leaf value a → b at alpha in [0,1], consulting list declarations.
+ * @param {*} a - Start value.
+ * @param {*} b - End value with the same shape for a continuous blend.
+ * @param {number} alpha - Blend fraction.
+ * @param {boolean} roundIntegers - Legacy integer law; false for continuous geometry.
+ * @param {Array} [path] - Item-relative storage path for declared numeric list fields.
+ * @returns {*} Blended value, or target when the structure changes.
  *
  * @example interpolate(0, 10, 0.5) // 5
  * @example interpolate(1, 4, 0.5) // 3 (int pair → rounded, tweenline rule)
@@ -124,12 +160,12 @@ export function rgbToHex(rgb) {
  * @example // same key-set record tweens field-wise:
  * @example interpolate({x: 0, y: 0}, {x: 10, y: 20}, 0.5) // {x: 5, y: 10}
  */
-export function interpolate(a, b, alpha) {
-  if (alpha <= 0) return a;
+export function interpolate(a, b, alpha, roundIntegers = true, path) {
+  if (alpha <= 0 || a === b) return a;
   if (alpha >= 1) return b;
   if (typeof a === "number" && typeof b === "number") {
     const v = lerp(a, b, alpha);
-    return Number.isInteger(a) && Number.isInteger(b) ? Math.round(v) : v;
+    return roundIntegers && !continuousListNumber(path) && Number.isInteger(a) && Number.isInteger(b) ? Math.round(v) : v;
   }
   if (isHexColor(a) && isHexColor(b)) {
     const ca = hexToRgb(a), cb = hexToRgb(b);
@@ -147,14 +183,14 @@ export function interpolate(a, b, alpha) {
     // so point/coord lists stay byte-identical); mixed/record lists recurse.
     if (a.every((v) => typeof v === "number") && b.every((v) => typeof v === "number"))
       return a.map((v, i) => lerp(v, b[i], alpha));
-    return a.map((v, i) => interpolate(v, b[i], alpha));
+    return a.map((v, i) => interpolate(v, b[i], alpha, roundIntegers, path && [...path, i]));
   }
   if (isPlainObject(a) && isPlainObject(b)) {
     const ka = Object.keys(a);
     // STRUCTURAL: any key-set difference is discrete (snap the whole record).
     if (ka.length !== Object.keys(b).length || !ka.every((k) => k in b)) return b;
     const out = {};
-    for (const k of ka) out[k] = interpolate(a[k], b[k], alpha);
+    for (const k of ka) out[k] = interpolate(a[k], b[k], alpha, roundIntegers, path && [...path, k]);
     return out;
   }
   return b; // discrete

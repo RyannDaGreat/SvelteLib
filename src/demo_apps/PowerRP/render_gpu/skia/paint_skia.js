@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, isMaterialPaint, opHasCrossfadePaint, crossfadeSide, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, isMaterialPaint, isMultipointPaint, opHasCrossfadePaint, crossfadeSide, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 // THE PER-NODE PAINT BOUNDARY's two halves: the shared error affordance, and the
 // ERROR-level report. The alias survives its original reason — this file used to
 // carry a PRIVATE console.warn helper also called `reportOnce`, and the import had
@@ -50,7 +50,7 @@ import { flattenIR, parseColor, parsePaint, isGradientPaint, isMaterialPaint, op
 // answer to print the stack exactly once.
 import { reportOnce as reportPaintFailureOnce, warnOnce } from "../../core/report.js";
 import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, isConfigurationError } from "../../core/paint_containment.js";
-import { getTextLayout, DEFAULT_TEXT_SIZE, materialShaderForGlyphs } from "./text_layout.js";
+import { getTextLayout, DEFAULT_TEXT_SIZE, materialShaderForGlyphs, multipointTextBounds } from "./text_layout.js";
 // THE GLYPH-OUTLINE SEAM — real letterform paths for the text GLYPH STROKE, which
 // CanvasKit cannot supply (0.41.1 has no glyph-outline API; see text_layout.js's
 // header for the measurement). The same seam the morph reads, deliberately, so an
@@ -4943,7 +4943,11 @@ function drawTextGlyphStroke(CanvasKit, canvas, cmd, opacity, aa) {
   const union = builder.detach();
   builder.delete();
   const b = union.getBounds();
-  const bounds = { x: cmd.x + b[0], y: cmd.y + b[1], w: b[2] - b[0], h: b[3] - b[1] };
+  // Multipoint's frame belongs to the full text box, not the glyph ink. The
+  // canvas translation below already supplies cmd.x/y, so this frame is local.
+  const bounds = isMultipointPaint(cmd.glyphStroke)
+    ? multipointTextBounds(cmd.boxW, cmd.boxH)
+    : { x: cmd.x + b[0], y: cmd.y + b[1], w: b[2] - b[0], h: b[3] - b[1] };
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Stroke);
   p.setStrokeWidth(cmd.glyphStrokeWidth);

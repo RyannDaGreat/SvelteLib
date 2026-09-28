@@ -120,6 +120,7 @@
  */
 
 import { interpolate } from "./interpolators.js";
+import { MULTIPOINT_TYPE } from "./multipoint.js";
 
 /**
  * The sigil joining a property key to its interpolation-mode companion.
@@ -528,7 +529,58 @@ export function blendUnderMode(a, b, alpha, ctx) {
     throw new Error(
       `Unknown interpolation mode ${JSON.stringify(ctx.mode)} on "${ctx.key}${INTERP_KEY_SUFFIX}". Registered: ${interpModeIds().join(", ")}`,
     );
-  return entry.blend(a, b, alpha, ctx);
+  const value = entry.blend(a, b, alpha, ctx);
+  // Lists carry modes at any depth. Preserve the parent's WHOLE-value law,
+  // then replace only descendants with an explicit, nearer mode. This also
+  // works for extension modes (e.g. hold); never reinterpret them per scalar.
+  return ctx.inList || (Array.isArray(a) && Array.isArray(b))
+    ? listModeOverrides(a, b, value, alpha, ctx)
+    : value;
+}
+
+/**
+ * Query. Applies explicit descendant modes to a list's sampled value.
+ * Reads the mode registry; copies only changed branches, never mode endpoints.
+ * @param {*} a - Complete source subtree.
+ * @param {*} b - Complete target subtree.
+ * @param {*} value - Parent mode's sampled subtree.
+ * @param {number} alpha - Interior transition fraction.
+ * @param {object} ctx - Mode context, including optional sparse path mask.
+ * @returns {*} Sample with more-specific child modes applied.
+ * @example listModeOverrides([{x:0,"x~interp":"step"}], [{x:1,"x~interp":"step"}], [{x:0.25,"x~interp":"step"}], 0.25, {}) // [{x:1,"x~interp":"step"}]
+ */
+function listModeOverrides(a, b, value, alpha, ctx) {
+  if (!a || !b || !value || typeof a !== "object" || typeof b !== "object" || typeof value !== "object") return value;
+  if (Array.isArray(a) !== Array.isArray(b) || Array.isArray(b) !== Array.isArray(value)) return value;
+  const keys = Object.keys(b).filter((key) => !isInterpKey(key) && !isInterpParamKey(key));
+  const fromKeys = Object.keys(a).filter((key) => !isInterpKey(key) && !isInterpParamKey(key));
+  if (keys.length !== fromKeys.length || !keys.every((key) => key in a && key in value)) return value;
+  let out = value;
+  const numericArray = Array.isArray(a) && a.every((v) => typeof v === "number") && b.every((v) => typeof v === "number");
+  for (const key of ctx.patch ? Object.keys(ctx.patch) : Object.keys(b)) {
+    if (isInterpKey(key) || isInterpParamKey(key)) {
+      if (value[key] !== b[key]) {
+        if (out === value) out = Array.isArray(value) ? value.slice() : { ...value };
+        if (key in b) out[key] = b[key];
+        else delete out[key];
+      }
+      continue;
+    }
+    if (!(key in a) || !(key in b)) continue;
+    const modeKey = interpKeyFor(key);
+    const mode = b[modeKey] ?? a[modeKey];
+    const child = { key, path: ctx.path && [...ctx.path, key], continuous: numericArray, inList: true, patch: ctx.patch?.[key] };
+    // Whole replacement values are not sparse path masks.
+    if (!child.patch || Array.isArray(child.patch) || typeof child.patch !== "object") delete child.patch;
+    const next = mode !== undefined
+      ? blendUnderMode(a[key], b[key], alpha, { ...child, mode, params: modeParamsFrom(mode, key, b, a) })
+      : listModeOverrides(a[key], b[key], value[key], alpha, child);
+    if (next !== value[key]) {
+      if (out === value) out = Array.isArray(value) ? value.slice() : { ...value };
+      out[key] = next;
+    }
+  }
+  return out;
 }
 
 // ── The shipped modes ────────────────────────────────────────────────────────
@@ -549,7 +601,7 @@ registerInterpMode({
   appliesTo: ({ key }) => key !== TYPE_KEY,
   // Byte-identical to the pre-mode path: this IS core/interpolators.interpolate,
   // which is why an absent companion key folds to exactly the old bytes.
-  blend: (a, b, alpha) => interpolate(a, b, alpha),
+  blend: (a, b, alpha, ctx) => interpolate(a, b, alpha, !ctx?.continuous, ctx?.path),
 });
 
 registerInterpMode({
@@ -644,11 +696,11 @@ registerInterpMode({
   // `defaultModeFor` makes for paints, and for the same reason: this must be
   // answerable with no registry in hand.
   appliesTo: ({ value }) => typeof value === "boolean",
-  blend: (a, b, alpha) => {
+  blend: (a, b, alpha, ctx) => {
     const bothBoolish = (v) => typeof v === "boolean" || typeof v === "number" || v === undefined;
     // A boolean pair (or a fraction already in flight) fades; anything else has
     // no coverage meaning, so it takes the default law. See the note above.
-    if (!bothBoolish(a) || typeof b !== "boolean") return interpolate(a, b, alpha);
+    if (!bothBoolish(a) || typeof b !== "boolean") return interpolate(a, b, alpha, !ctx?.continuous, ctx?.path);
     return lerpFade(fadeLevel(a), fadeLevel(b), alpha);
   },
 });
@@ -748,10 +800,10 @@ registerInterpMode({
   blend: (a, b, alpha, ctx) => {
     // An ADDITION (no `a`) or a REMOVAL has only one operand — there is nothing
     // to composite against, so the ordinary discrete/tween law applies.
-    if (a === undefined || a === null || b === undefined || b === null) return interpolate(a, b, alpha);
+    if (a === undefined || a === null || b === undefined || b === null) return interpolate(a, b, alpha, !ctx?.continuous, ctx?.path);
     // Two plain numbers under `blend` mean the author picked it on a numeric row;
     // a number has no second operand to draw, so lerp (see `fade`'s same note).
-    if (typeof a === "number" && typeof b === "number") return interpolate(a, b, alpha);
+    if (typeof a === "number" && typeof b === "number") return interpolate(a, b, alpha, !ctx?.continuous, ctx?.path);
     // NESTING FLATTENED — see the note above.
     const from = isCrossfadeValue(a) ? a.to : a;
     if (deepSame(from, b)) return b; // identical paints: no reason to draw twice
@@ -920,11 +972,11 @@ registerInterpMode({
   // decides (not the key name), so any plugin's own numeric knob gets the mode
   // for free — the same shape-driven argument `fade` and `blend` make.
   appliesTo: ({ value }) => typeof value === "number",
-  blend: (a, b, alpha) => {
+  blend: (a, b, alpha, ctx) => {
     // A non-scalar pair reaching here means the author picked the mode on a row
     // it cannot describe (or the leaf is an ADDITION with no `a`). Defer to the
     // ordinary law rather than inventing one — the `fade`-on-`x` precedent.
-    if (typeof a !== "number" || typeof b !== "number") return interpolate(a, b, alpha);
+    if (typeof a !== "number" || typeof b !== "number") return interpolate(a, b, alpha, !ctx?.continuous, ctx?.path);
     return expLerp(a, b, alpha);
   },
 });
@@ -1209,7 +1261,7 @@ registerInterpMode({
     // slide, so there is no outgoing value) and a REMOVAL have only one side, and
     // there is no morphing from nothing — those take the ordinary discrete law,
     // exactly as `blend` does for a one-operand paint.
-    if (typeof a !== "string" || typeof b !== "string") return interpolate(a, b, alpha);
+    if (typeof a !== "string" || typeof b !== "string") return interpolate(a, b, alpha, !ctx?.continuous, ctx?.path);
     if (a === b) return b; // nothing changed: no morph to run, and a token would make the render work for no picture
     // THE CONTENT ARM. Same mode, same question, different leaf — see the section
     // note above for why this is not a second mode id.
@@ -1251,7 +1303,7 @@ registerInterpMode({
  * most-used discriminator in this codebase, so it is exactly the wrong field to
  * key an open test on.
  */
-export const PAINT_TYPE_TAGS = ["solid", "material", "linearGradient", "radialGradient", "none", CROSSFADE_PAINT_TYPE];
+export const PAINT_TYPE_TAGS = ["solid", "material", "linearGradient", "radialGradient", MULTIPOINT_TYPE, "none", CROSSFADE_PAINT_TYPE];
 
 /**
  * Pure function. Is this value an OBJECT-shaped paint — a material, a gradient,
@@ -1314,6 +1366,7 @@ export function isPaintShaped(v) {
  * @example defaultModeFor(false, true, "active") // "tween" (fade stays OPT-IN — the user asked for step-by-default on Visible)
  */
 export function defaultModeFor(a, b, key) {
+  if (a?.type === MULTIPOINT_TYPE && b?.type === MULTIPOINT_TYPE) return DEFAULT_INTERP_MODE;
   if (isPaintShaped(a) && isPaintShaped(b)) return "blend";
   // THE `type` → `morph` DEFAULT IS GONE, and its removal is the migration
   // (user ruling, 2026-08-02 night — see core/morph_property.js's header). Morph
@@ -1463,9 +1516,9 @@ export function visibleLevel(v) {
  * @example namedVisibleBlend("blurFade", false, true, 0.25, {blur: 64}) // {type: "~visibleFx", mode: "blurFade", v: 0.25, blur: 64}
  * @example namedVisibleBlend("blurFade", 3, 7, 0.5) // 5 (a numeric row falls through to the ordinary tween)
  */
-function namedVisibleBlend(mode, a, b, alpha, params) {
+function namedVisibleBlend(mode, a, b, alpha, params, ctx) {
   const boolish = (v) => typeof v === "boolean" || typeof v === "number" || v === undefined || isVisibleFxToken(v);
-  if (!boolish(a) || typeof b !== "boolean") return interpolate(a, b, alpha);
+  if (!boolish(a) || typeof b !== "boolean") return interpolate(a, b, alpha, !ctx?.continuous, ctx?.path);
   const v = lerpFade(visibleLevel(a), visibleLevel(b), alpha);
   return { type: VISIBLE_FX_TOKEN, mode, v, ...params };
 }
@@ -1557,7 +1610,7 @@ registerInterpMode({
     min: 0,
     help: "How much EXTRA blur the item starts with, in canvas units, on top of whatever blur it settles at. The entry runs from (its own blur + this) down to its own blur, so it always ends on the item's real look. Larger is more dramatically out of focus; 0 makes this a plain fade.",
   }],
-  blend: (a, b, alpha, ctx) => namedVisibleBlend("blurFade", a, b, alpha, ctx?.params),
+  blend: (a, b, alpha, ctx) => namedVisibleBlend("blurFade", a, b, alpha, ctx?.params, ctx),
 });
 
 // ── `manim`: THE BORDER DRAWS ITSELF, THEN THE FILL ARRIVES ──────────────────
@@ -1588,7 +1641,7 @@ registerInterpMode({
   label: "Manim",
   help: "Draw the item on the way Manim does: its outline traces itself in first, contour by contour, then the fill rises underneath. Reverses to match when it is hidden — the fill fades out, then the border un-draws. Items with no outline (photos, video) simply fade.",
   appliesTo: ({ value }) => typeof value === "boolean",
-  blend: (a, b, alpha) => namedVisibleBlend("manim", a, b, alpha),
+  blend: (a, b, alpha, ctx) => namedVisibleBlend("manim", a, b, alpha, ctx?.params, ctx),
 });
 
 // ── `grow`: THE WIDGET SCALES UP FROM NOTHING, AND BACK DOWN ─────────────────
@@ -1629,5 +1682,5 @@ registerInterpMode({
   // BOOLEAN-VALUED ROWS ONLY — the same domain and the same argument as `fade`
   // and `blurFade`: this ramps COVERAGE, and coverage is what a boolean has.
   appliesTo: ({ value }) => typeof value === "boolean",
-  blend: (a, b, alpha) => namedVisibleBlend("grow", a, b, alpha),
+  blend: (a, b, alpha, ctx) => namedVisibleBlend("grow", a, b, alpha, ctx?.params, ctx),
 });

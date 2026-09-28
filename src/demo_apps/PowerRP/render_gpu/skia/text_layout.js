@@ -35,7 +35,7 @@
  * the module-level cache never mixes Paragraphs across instances.
  */
 
-import { parseColor, parsePaint, isGradientPaint, isMaterialPaint, isPaintOff, paintSolidColor } from "../ir.js";
+import { parseColor, parsePaint, isGradientPaint, isMaterialPaint, isMultipointPaint, isPaintOff, paintSolidColor } from "../ir.js";
 import { skShaderForPaint } from "./gradient.js";
 import { getMaterial, materialEffect, isFillCapableMaterial, isBackdropMaterial, isSamplerMaterial } from "./materials.js";
 import { fontFamilyChain } from "../fonts.js";
@@ -188,7 +188,7 @@ function buildTextLayout(CanvasKit, fc, norm, opacity) {
   const vOffset = valignOffset(boxStyle.valign ?? DEFAULT_VALIGN, boxH, totalH);
   let y = vOffset;
   for (const b of built) { b.yTop = y; y += b.height; }
-  return new TextLayout(CanvasKit, built, vOffset, totalH, opacity);
+  return new TextLayout(CanvasKit, built, vOffset, totalH, opacity, boxW, boxH);
 }
 
 // ── glyph pass (OUTLINE stroke + gradient fill) ───────────────────────────────
@@ -650,12 +650,14 @@ const MEASURE_CACHE_MAX = 4096;
  * LOCAL (op-relative) space with MODEL code-point offsets.
  */
 export class TextLayout {
-  constructor(CanvasKit, built, vOffset, totalH, opacity = 1) {
+  constructor(CanvasKit, built, vOffset, totalH, opacity = 1, boxW = Infinity, boxH = Infinity) {
     this.CanvasKit = CanvasKit;
     this.built = built;      // [{para, height, text, textStart, charCount, yTop, glyphGroups}]
     this.vOffset = vOffset;  // local y the whole stack is shifted by (valign)
     this.totalH = totalH;    // total laid-out height (pre-valign)
     this.opacity = opacity;  // folded into the stroke/gradient glyph-pass alpha (Paragraph fill already folds it at build)
+    this.boxW = boxW;        // existing layout dimensions also frame Multipoint paints
+    this.boxH = boxH;
     this.disposed = false;   // true once the cache has evicted + freed this layout (see live())
   }
 
@@ -717,11 +719,17 @@ export class TextLayout {
   draw(canvas, ox, oy, aa = true) {
     this.live();
     const CK = this.CanvasKit;
+    const needsBox = this.built.some(b => b.glyphGroups.some(g =>
+      isMultipointPaint(g.style.color) || (g.style.outlineWidth > 0 && isMultipointPaint(g.style.outlineColor))));
+    // Glyph origins and paragraph/valign offsets move only the mask, never the
+    // field. The canvas already carries the node/world transform; ox/oy are the
+    // text op's origin in that same local space, NOT a particular run's origin.
+    const paintBounds = needsBox ? multipointTextBounds(this.boxW, this.boxH, ox, oy) : null;
     for (const b of this.built) {
       const y = oy + b.yTop;
-      for (const g of b.glyphGroups) drawGlyphOutline(CK, canvas, g, y, ox, this.opacity, aa);
+      for (const g of b.glyphGroups) drawGlyphOutline(CK, canvas, g, y, ox, this.opacity, aa, paintBounds);
       canvas.drawParagraph(b.para, ox, y);
-      for (const g of b.glyphGroups) drawGlyphShaderFill(CK, canvas, g, y, ox, this.opacity, aa);
+      for (const g of b.glyphGroups) drawGlyphShaderFill(CK, canvas, g, y, ox, this.opacity, aa, paintBounds);
     }
   }
 
@@ -946,14 +954,24 @@ function firstRect(rects) {
 /** Command (draws one glyph group's OUTLINE stroke, behind the fill). No-op when
  * the group's piece has no outline (outlineWidth <= 0). Stroke width is in LOCAL
  * units (the canvas is already view+world transformed) and the join is Skia's
- * default MITER — matching the SVG export's unset stroke-linejoin. `aa` is the
- * camera's coverage-AA flag: false ⇒ crisp, jagged glyph edges. */
-function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
+ * default MITER — matching the SVG export's unset stroke-linejoin. Multipoint
+ * outlines use the same whole-box frame as their fills; other outline colours
+ * keep their historical representative-solid behavior. `aa` is the camera's
+ * coverage-AA flag: false ⇒ crisp, jagged glyph edges. */
+function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity, aa = true, paintBounds = null) {
   const width = group.style.outlineWidth ?? 0;
   if (!(width > 0)) return;
-  const rgba = parseColor(group.style.outlineColor ?? "#000000");
+  const outline = group.style.outlineColor ?? "#000000";
+  if (isMultipointPaint(outline) && outline.type === "crossfade")
+    throw new Error("text_layout: a Multipoint outlineColor crossfade must be split by the op paint router before drawing");
+  const shader = isMultipointPaint(outline)
+    ? skShaderForPaint(CanvasKit, parsePaint(outline), paintBounds, opacity, canvas.getTotalMatrix()) : null;
   const paint = new CanvasKit.Paint();
-  paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
+  if (shader) paint.setShader(shader);
+  else {
+    const rgba = parseColor(outline);
+    paint.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
+  }
   paint.setStyle(CanvasKit.PaintStyle.Stroke);
   paint.setStrokeWidth(width);
   paint.setAntiAlias(aa);
@@ -961,6 +979,24 @@ function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
   canvas.drawGlyphs(group.glyphs, group.positions, ox, y, font, paint);
   font.delete();
   paint.delete();
+  shader?.delete();
+}
+
+/**
+ * Pure function. Whole text box in the canvas's current local coordinate frame.
+ * Multipoint handles use the box, not the ink; unbounded text has no such frame.
+ *
+ * @param {number} boxW - Existing layout width, finite and positive.
+ * @param {number} boxH - Existing layout height, finite and positive.
+ * @param {number} ox - Text op x (zero inside a canvas translated to the op).
+ * @param {number} oy - Text op y (not a paragraph's yTop or a glyph baseline).
+ * @returns {{x:number,y:number,w:number,h:number}} Shared field bounds.
+ * @example multipointTextBounds(600, 240, 25, 40) // {x:25,y:40,w:600,h:240}
+ */
+export function multipointTextBounds(boxW, boxH, ox = 0, oy = 0) {
+  if (![boxW, boxH].every(v => Number.isFinite(v) && v > 0))
+    throw new Error("text_layout: Multipoint text requires finite positive boxW and boxH; glyph bounds are not the paint frame");
+  return { x: ox, y: oy, w: boxW, h: boxH };
 }
 
 /** Command (draws one glyph group's SHADER fill — gradient OR material — on top
@@ -976,10 +1012,10 @@ function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
  * why extending gradient text to material text needed no new drawing machinery.
  *
  * `aa` is the camera's coverage-AA flag: false ⇒ crisp, jagged glyph edges. */
-function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
+function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true, paintBounds = null) {
   const fill = group.style.color;
   if (!isGradientPaint(fill)) return;
-  const bounds = glyphGroupBounds(group, ox, y, CanvasKit);
+  const bounds = isMultipointPaint(fill) ? paintBounds : glyphGroupBounds(group, ox, y, CanvasKit);
   // A MATERIAL is asked of the RAW paint (its shader is built from the sparse
   // {material:{id,params}} record, which parsePaint passes through untouched).
   if (isMaterialPaint(fill)) {

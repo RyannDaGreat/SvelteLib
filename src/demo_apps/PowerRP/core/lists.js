@@ -253,6 +253,7 @@ export function checkListDeclaration(label, def, fieldKinds, sortableKinds) {
     if (f.name === ACTIVE_FIELD.name) bad(`declares an element field named "${ACTIVE_FIELD.name}" — per-element visibility is UNIVERSAL and injected by core/lists.js (it lives in the "${def.activeKey}" companion, never inside the element); remove the hand-declared copy`);
     seen.add(f.name);
     if (!fieldKinds.includes(f.kind)) bad(`element field "${f.name}" declares kind "${f.kind}", not one of ${JSON.stringify(fieldKinds)} — element fields use the SAME control vocabulary as any other property row`);
+    if (f.kind === LIST_ROW_KIND) checkListDeclaration(`${label}.${f.name}`, f, fieldKinds, sortableKinds);
   }
   if (typeof def.activeKey !== "string" || !def.activeKey)
     bad(`declares no \`activeKey\` — every list carries per-element visibility, stored in a companion list beside it (see core/lists.js)`);
@@ -529,8 +530,8 @@ export function elementActive(active, index) {
  * meaning (the index-stability invariant in the module header). The companion is
  * padded with `true` up to `index` when it was short or absent.
  *
- * The returned companion is always a FULL, list-length array of booleans, so it
- * CANONICALIZES whatever shape it was handed: absent, short, or the numeric-keyed
+ * The returned companion is a FULL, list-length array; untouched stored equation
+ * strings are retained rather than baked to true. It canonicalizes a numeric-keyed
  * OBJECT a sparse per-index keyframe folds to when no base array existed yet
  * (core/deltas.js setPath documents that encoding). One write and the companion is
  * a well-formed array that later sparse keyframes merge into element-wise.
@@ -543,7 +544,7 @@ export function withElementActive(decl, value, index, active) {
   const list = value.list;
   if (!(Number.isInteger(index) && index >= 0 && index < list.length))
     throw new Error(`lists.withElementActive: index ${index} is outside a ${list.length}-element list`);
-  return { list, active: list.map((_, i) => (i === index ? active : elementActive(value.active, i))) };
+  return { list, active: list.map((_, i) => (i === index ? active : value.active?.[i] ?? true)) };
 }
 
 /**
@@ -597,9 +598,12 @@ export function visibleIndices(value) {
  */
 export function withElementInserted(decl, value, index) {
   const el = insertedElement(decl, value.list, index);
-  const list = canonicalOrder(decl, [...value.list.slice(0, index), el, ...value.list.slice(index)]);
-  if (!value.active) return { list, active: undefined };
-  return { list, active: [...value.active.slice(0, index), true, ...value.active.slice(index)] };
+  const list = [...value.list.slice(0, index), el, ...value.list.slice(index)];
+  const active = value.active ? value.list.map((_, i) => value.active[i] ?? true) : undefined;
+  active?.splice(index, 0, true);
+  if (decl.order !== "sorted") return { list, active };
+  const ordered = withElementsOrderedBy({ list, active }, list.map((v) => elementFieldValue(decl.element, v, decl.orderKey)));
+  return { list: ordered.list, active: ordered.active };
 }
 
 /**
@@ -629,7 +633,7 @@ export function withElementPurged(decl, value, index) {
     throw new Error(`lists.withElementPurged: purging element ${index} would leave ${list.length - 1} element${list.length === 2 ? "" : "s"}, below the declared minimum of ${floor}`);
   return {
     list: list.filter((_, i) => i !== index),
-    active: value.active ? value.active.filter((_, i) => i !== index) : undefined,
+    active: value.active ? list.map((_, i) => value.active[i] ?? true).filter((_, i) => i !== index) : undefined,
   };
 }
 
@@ -680,13 +684,13 @@ export function withElementsOrderedBy(value, keys) {
   const indices = [];
   for (let at = 0; at < order.length; at++) indices[order[at]] = at;
   if (order.every((from, at) => from === at)) return { list, active, indices };
-  // The companion is read through elementActive, so BOTH stored encodings permute
+  // Preserve raw companion expressions while BOTH stored encodings permute
   // correctly — a flags array and the numeric-keyed object a sparse per-index
   // keyframe folds to (core/deltas.js setPath) — and the result canonicalizes to
   // a full array, exactly as withElementActive's does.
   return {
     list: order.map((from) => list[from]),
-    active: active ? order.map((from) => elementActive(active, from)) : undefined,
+    active: active ? order.map((from) => active[from] ?? true) : undefined,
     indices,
   };
 }
@@ -803,6 +807,40 @@ export function activeListPath(decl, listPath) {
 }
 
 /**
+ * Pure function. Resolves the deepest declared nested list or visibility companion.
+ * @param {object} decl - Root list declaration.
+ * @param {Array} rel - Path below that list, in logical or storage spelling.
+ * @returns {{decl:object,rel:Array,companion:boolean}} Matching list and remainder.
+ * @example nestedListAt({element:{storage:"record",fields:[]}}, [2,"x"]).rel // [2,"x"]
+ */
+export function nestedListAt(decl, rel) {
+  if (rel.length >= 2) {
+    for (const field of decl.element.fields) {
+      if (field.kind !== LIST_ROW_KIND) continue;
+      if (rel[1] === field.activeKey) return { decl: field, rel: rel.slice(2), companion: true };
+      if (rel[1] === field.name || rel[1] === elementStorageKey(decl.element, field.name))
+        return nestedListAt(field, rel.slice(2));
+    }
+  }
+  return { decl, rel, companion: false };
+}
+
+/**
+ * Pure function. Resolves a canvas handle's list/companion paths at any nesting depth.
+ * @param {object} handle - Modifier point with optional {element:{list,index,path?}}.
+ * @returns {{decl:object,listPath:Array,activePath:Array,index:number}|null} Null for scalar handles.
+ * @example handleElementList({element:{list:{kind:"list",key:"points",activeKey:"pointsActive"},index:2}}).listPath // ["points"]
+ */
+export function handleElementList(handle) {
+  if (!handle.element) return null;
+  const { list: decl, index, path } = handle.element;
+  const listPath = path ?? (decl?.key ? [decl.key] : []);
+  if (decl?.kind !== LIST_ROW_KIND || !decl.activeKey || !listPath.length || !Number.isInteger(index) || index < 0)
+    throw new Error(`Handle ${JSON.stringify(handle.id)} needs a list declaration, index, and list key or nested path`);
+  return { decl, index, listPath, activePath: activeListPath(decl, listPath) };
+}
+
+/**
  * Pure function. Every addressable SLOT of a concrete list value: per element,
  * the universal VISIBILITY flag first (ACTIVE_FIELD — the row's hide toggle,
  * leading the way item `active` leads an item's rows), then one entry per declared
@@ -846,14 +884,12 @@ export function listSlotPaths(decl, list, prefix = []) {
       path: [...activePath, index],
       address: [...activePath, index].join("."),
     });
-    for (const field of decl.element.fields)
-      out.push({
-        index,
-        field: field.name,
-        kind: field.kind,
-        path: [...prefix, index, elementStorageKey(decl.element, field.name)],
-        address: [...prefix, index, field.name].join("."),
-      });
+    for (const field of decl.element.fields) {
+      const path = [...prefix, index, elementStorageKey(decl.element, field.name)];
+      out.push({ index, field: field.name, kind: field.kind, path, address: [...prefix, index, field.name].join(".") });
+      const value = elementFieldValue(decl.element, list[index], field.name);
+      if (field.kind === LIST_ROW_KIND && Array.isArray(value)) out.push(...listSlotPaths(field, value, path));
+    }
   }
   return out;
 }

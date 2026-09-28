@@ -1728,7 +1728,7 @@ export function nodeModifierPoints(node) {
   return rows.map((m) => {
     const p = T.apply(node.world, m.x, m.y);
     const stem = m.stem ? T.apply(node.world, m.stem.x, m.stem.y) : null;
-    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED, shape: m.shape ?? null, glyph: m.glyph ?? null, label: m.label ?? null, stem: stem ? { x: stem.x, y: stem.y } : null };
+    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED, shape: m.shape ?? null, glyph: m.glyph ?? null, label: m.label ?? null, stem: stem ? { x: stem.x, y: stem.y } : null, ...(m.guide ? { guide: m.guide.map(([x, y]) => T.apply(node.world, x, y)) } : {}), ...(m.colorPath ? {colorPath: m.colorPath, color: m.color} : {}) };
   });
 }
 

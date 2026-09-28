@@ -17,6 +17,7 @@
 export { isGradientPaint } from "../ir.js";
 import { isGradientPaint, linearGradientRender, collapsedGradientColor, paintDepth } from "../ir.js";
 import { depthShader } from "./dither_shader.js";
+import { multipointShader } from "./multipoint.js";
 
 /**
  * Pure function. A spread mode ("mirror" | "loop" | "pad") → the CanvasKit TileMode
@@ -82,6 +83,7 @@ export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1, ctm = nu
  */
 function unditheredShaderForPaint(CanvasKit, paint, bounds, opacity = 1) {
   if (!isGradientPaint(paint)) throw new Error("skShaderForPaint: expected a gradient Paint (solid paints use setColor, not a shader)");
+  if (paint.type === "multipointGradient") return multipointShader(CanvasKit, paint, bounds, opacity);
   const colors = paint.stops.map((s) => CanvasKit.Color4f(s.color[0], s.color[1], s.color[2], s.color[3] * opacity));
   const positions = paint.stops.map((s) => s.offset);
   // Unit-space (objectBoundingBox) → local: translate to the bbox origin, scale by

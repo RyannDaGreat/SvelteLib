@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, reportVectorDitherOmission, reportReducedDepthRaster, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, isMultipointPaint, opHasMultipointPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, reportVectorDitherOmission, reportReducedDepthRaster, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
@@ -383,6 +383,7 @@ export function detachedContourStrokeSVG(cmd, shape, element) {
  * group `opacity` attr instead). A gradient requires `ctx` (to mint the def).
  */
 export function paintRef(ctx, paint, opacity = 1) {
+  if (isMultipointPaint(paint)) throw new Error("svg_backend: Multipoint paint has no native SVG representation — use irToSVG with a rasterize callback");
   if (!isGradientPaint(paint)) {
     const [r, g, b, a] = paint;
     return rgbaToCss([r, g, b, a * opacity]);
@@ -413,6 +414,8 @@ export function paintRef(ctx, paint, opacity = 1) {
  * @example gradientDefSVG({type: "radialGradient", stops: [{offset: 0, color: [1,1,1,1]}, {offset: 1, color: [0,0,0,1]}], center: {x: 0.5, y: 0.5}, r: 0.5}, "rg1", 1).startsWith('<radialGradient id="rg1" cx="0.5" cy="0.5" r="0.5">') // true
  */
 export function gradientDefSVG(paint, id, opacity = 1) {
+  if (paint.type !== "linearGradient" && paint.type !== "radialGradient")
+    throw new Error(`svg_backend: unsupported native SVG gradient type "${paint.type}" — use irToSVG with a rasterize callback for Multipoint paints`);
   // THE DITHER IS DROPPED HERE, LOUDLY. An SVG gradient def cannot carry a
   // per-pixel pattern; render_gpu/ir.js reportVectorDitherOmission owns that
   // decision and its reasoning (shared with pdf_backend so the two cannot tell
@@ -1100,7 +1103,11 @@ function reportTextGlyphStrokeRaster(cmd) {
 async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, out, ctx) {
   for (let i = start; i < end; i++) {
     const { cmd, world } = flat[i];
-    if (cmd.op === "magnifyBackdrop") {
+    if (opHasMultipointPaint(cmd)) {
+      // Before crop/lens dispatch: their own paint slots also need the real field.
+      reportExportFailureOnce("svg_backend:multipoint", "PowerRP SVG export: Multipoint paints have no native SVG representation — affected operations are embedded as rasters to preserve appearance and opacity.");
+      out.push(await emitRasterOpSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
+    } else if (cmd.op === "magnifyBackdrop") {
       out.push(await emitLensSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
     } else if (cmd.op === "cropSubtree" && !opStrokeNeedsRaster(cmd)) {
       // A crop box's BORDER is a stroke, so it faces the same question every other
@@ -1658,7 +1665,7 @@ class SvgAssembly {
     // BRANDED so the per-node export boundary (emitRegionSVG) RETHROWS it instead
     // of containing it — the PDF twin's reasoning, verbatim.
     if (!this.rasterize)
-      throw configurationError(new Error("svg_backend: scene needs a raster region (blur / deep lens) but no rasterize callback was provided"));
+      throw configurationError(new Error("svg_backend: scene needs a raster region (Multipoint / unsupported paint or op / blur / deep lens) but no rasterize callback was provided"));
     const density = srcView.zoom * this.rasterScale; // px per world unit at the placed location
     const wPx = Math.max(1, Math.round(placeRect.w * density));
     const hPx = Math.max(1, Math.round(placeRect.h * density));

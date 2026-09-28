@@ -255,6 +255,8 @@
      not map the app's several PURPLE modifier colours onto a yellow that would
      then collide with --a-keyed's amber diamonds. */
   --a-handle-accent-default: var(--a-modifier);
+  --a-handle-swatch: var(--a-handle-accent-default);
+  --a-handle-color-field-w: 240px;
   --a-handle-accent-paint: var(--a-modifier);
   --a-handle-accent-paint-rotate: 150deg;
   /* Saturation floor for the rotated accent. A hue rotation cannot separate two
@@ -436,6 +438,10 @@
      scroll cap on the inline grid (so a 343-swatch library never runs off the
      Inspector — it scrolls internally). */
   --a-gradient-swatch-h: 22px;
+  --a-multipoint-swatch-h: 64px;
+  --a-multipoint-field-w: calc(var(--a-input-w) / (1 - var(--a-label-frac)) + var(--a-sp-1));
+  --a-multipoint-grid-rows: 3;
+  --a-multipoint-grid-max-h: calc(var(--a-multipoint-grid-rows) * var(--a-multipoint-swatch-h) + (var(--a-multipoint-grid-rows) - 1) * var(--a-sp-2) + 2 * var(--a-sp-1));
   --a-gradient-swatch-min-w: 46px;
   /* VISUAL STOP BAR (web/GradientStopBar.svelte): the ramp track, one draggable
      bead, and the gap between the two rows. Neither size is a taste call — both
@@ -4175,19 +4181,19 @@ textarea {
    full-bleed middle child would otherwise push the trailing controls onto a
    third line. Scoped by :has() to rows that actually contain the picker, so
    every ordinary row keeps the ONE shared label|value|controls grid above. */
-.inspector .row:has(.gradient-presets) {
+.inspector .row:has(.gradient-presets, .multipoint-field) {
   grid-template-columns: 1fr var(--a-kf-w);
 }
-.inspector .row:has(.gradient-presets) > .label,
-.inspector .row:has(.gradient-presets) > .row-label-chrome {
+.inspector .row:has(.gradient-presets, .multipoint-field) > .label,
+.inspector .row:has(.gradient-presets, .multipoint-field) > .row-label-chrome {
   grid-area: 1 / 1;
 }
-.inspector .row:has(.gradient-presets) > .kf-controls {
+.inspector .row:has(.gradient-presets, .multipoint-field) > .kf-controls {
   grid-area: 1 / 2;
 }
 /* PaintField's root is the only child holding the picker (it carries no class
    of its own — it is styled inline by the component). */
-.inspector .row:has(.gradient-presets) > :has(.gradient-presets) {
+.inspector .row:has(.gradient-presets, .multipoint-field) > :has(.gradient-presets, .multipoint-field) {
   grid-area: 2 / 1 / 3 / 3;
 }
 
@@ -4257,6 +4263,14 @@ textarea {
   border-radius: var(--a-radius-control); /* app chrome is square */
   background: var(--gp-swatch);
   cursor: pointer;
+}
+
+.multipoint-presets .gradient-swatch {
+  height: var(--a-multipoint-swatch-h);
+}
+
+.multipoint-presets .gradient-presets-grid {
+  max-height: var(--a-multipoint-grid-max-h);
 }
 
 .gradient-swatch:hover {
@@ -5804,6 +5818,18 @@ textarea {
    before this rule existed. */
 .overlay .modifier-glyph[data-accent="paint"] {
   filter: hue-rotate(var(--a-handle-accent-paint-rotate)) saturate(var(--a-handle-accent-paint-saturate));
+}
+
+/* A source-colour bead is data, not a theme accent. Its selection rim stays
+   visible; hidden sources stay hollow and preserve the existing hit target. */
+.overlay .modifier-glyph[data-color] {
+  filter: none;
+}
+.overlay .modifier-glyph[data-color] .modifier:not(.hidden-element) {
+  fill: var(--a-handle-swatch);
+}
+.handle-color-field {
+  width: var(--a-handle-color-field-w);
 }
 
 /* The <g> that wraps ONE handle's outline + inner mark. It carries the pointer
@@ -8282,16 +8308,16 @@ audio.ae-preview-media {
    edge still lands where a plain row's does. */
 .inspector .compound-value {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--a-sp-2);
   min-width: 0;
 }
-/* Each inline leaf field shrinks to share the cell (a lone NumericField would
-   otherwise claim the whole column and shove the pad out of the row). */
+/* Share the vector-field width; narrow panels wrap before values overlap. */
 .inspector .compound-value > .numfield,
 .inspector .compound-value > input {
   min-width: 0;
-  flex: 1 1 0;
+  flex: 1 1 var(--a-vec2-box-w);
 }
 /* EXPANDED, the pad gets the cell to itself and the leaves are full rows below,
    which is the user's `v [DragPad]` over `[X] [Y]`. */
@@ -8829,8 +8855,8 @@ audio.ae-preview-media {
    (it is not a box, so an opacity on it would be ignored) — dimming the parts
    themselves is the only spelling that actually holds. The eye especially must
    stay full strength: the way back must never be the dimmed-out control. */
-.listfield .list-el-hidden .list-index,
-.listfield .list-el-hidden .list-fields {
+.listfield .list-el-hidden > .list-index,
+.listfield .list-el-hidden > .list-fields {
   opacity: var(--a-list-hidden-opacity);
 }
 
@@ -8852,6 +8878,53 @@ audio.ae-preview-media {
   text-align: right;
 }
 
+/* Custom source bodies reuse list headers; coordinate previews never fold them. */
+.listfield .list-el-custom {
+  flex-wrap: wrap;
+}
+.list-el-content {
+  flex: 0 0 100%;
+  min-width: 0;
+}
+.multipoint-field,
+.multipoint-source {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  min-width: 0;
+}
+.multipoint-source {
+  padding: var(--a-sp-2) 0 var(--a-sp-2) var(--a-sp-2);
+  border-left: var(--a-hairline) solid var(--border);
+}
+/* Intrinsic wrapping keeps numeric inputs legible in narrow inspector panes;
+   a fixed two-column grid let 90px controls overlap their neighbours. */
+.listfield .multipoint-source .list-el {
+  flex-wrap: wrap;
+}
+.listfield .multipoint-source .list-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--a-multipoint-field-w)), 1fr));
+  flex-basis: 100%;
+  order: 1;
+}
+.list-el-custom > .list-fields .cat-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.listfield .multipoint-source .list-field {
+  min-width: 0;
+}
+.multipoint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--a-sp-2);
+}
+.inspector .multipoint-source .paint-sub-row {
+  grid-template-columns: calc(var(--a-label-frac) * 100%) minmax(var(--a-input-w), 1fr) var(--a-kf-w);
+}
 .listfield .list-fields {
   display: flex;
   flex: 1;

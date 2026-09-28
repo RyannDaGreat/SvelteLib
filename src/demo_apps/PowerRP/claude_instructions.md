@@ -8,6 +8,230 @@
 > the authority for the requirements below. If/when the container manifest is
 > reachable again, merge this into it (semantic merge, keep both histories).
 
+## Native Multipoint gradient fill (2026-09-28)
+
+**Implemented and verified.** The user requested
+autonomous implementation and hardening, then explicitly requested continuation.
+Native editing, fourteen presets, browser-local/ZIP recovery, animation, production
+hosting and real PNG/SVG/PDF render roundtrips have targeted passing checks.
+Autopilot means routine choices are resolved without blocking on questions;
+bulldog means continuing through failures rather than stopping at a proposal.
+The final canonical gate passed: **646 pass / 0 fail / 3 skip** (400 Node,
+14 Python, 1 shell, 231 browser). Skips were two absent video fixtures and exhausted
+anonymous GitHub API quota. Real `/SvelteLib/` static hosting passed 12 Multipoint
+and 16 SVG recovery groups without forcing local mode; actual Metal-browser
+screenshots and SVG/PDF render triptychs were opened and inspected. A real native
+copy → new document → paste check preserved the editable paint and generated its
+PNG; the OS clipboard write alone was captured to protect the user's clipboard.
+Preserve this end-to-end and visual acceptance requirement for future changes.
+Pull before commits; retain unrelated user changes. Notify via
+`rp call ntfy_send --- "…"` only after all jobs/delegates finish.
+
+The requested feature is one editable fill combining freely
+placed colour points, straight paths and Bézier curves, including different
+colours on either side of a path. These controls must coexist, as in the user's
+Logoist 6 screenshots; multiple overlaid radial gradients are not equivalent.
+
+Vocabulary: **Multipoint** is the user-facing fill mode. A **feature** is an
+independent colour-bearing point or path. A **Bézier handle** bends a path; a
+**colour stop** changes its colour along its length. **Diffusion curves** spread
+colours from curve boundaries across a region, potentially with different
+colours on the two sides. A **solver** computes that resulting colour field.
+- **Field**: the sampled colour image produced from the editable sources.
+  **Screened diffusion** balances smoothness against soft colour constraints.
+  **Finite cuts** stop diffusion across the actual curve, not its infinite extension.
+- **Stiffness / Robin conductance**: how strongly a source attracts the field to
+  its colour; it is not a brush radius. **No-flux boundary** means the solve-domain
+  border neither introduces another colour nor drains colour out of the domain.
+- **PCG**: preconditioned conjugate gradients, an iterative sparse linear solver.
+  **Multigrid** accelerates it by correcting errors on coarse and fine grids.
+- **Encoded sRGB**: ordinary display-encoded colour channels rather than
+  linear-light values. **Premultiplied RGBA** stores RGB multiplied by alpha,
+  keeping transparent interpolation from introducing coloured fringes.
+- **F16 / binary16**: 16-bit floating-point channels, not 16-bit integers.
+  **ANGLE** translates browser graphics calls to platform APIs; **Metal** is
+  Apple's GPU API and **SwiftShader** is a software graphics implementation.
+- **Headless**: rendering without the interactive editor. **Cache**: disposable,
+  bounded computed data; it never replaces the source controls in the document.
+
+Required integration and reasons:
+- Add Multipoint to the shared paint union and `PaintField.svelte`, not a widget,
+  material-specific workaround, image upload or separate canvas renderer. Keep
+  its inactive substate through fill-mode switches, like Linear and Radial.
+- Represent features using shared path geometry: a singleton is a point, straight
+  segments make a line, and handles make curves. Reuse existing Bézier math,
+  typed-list controls and canvas drag/undo machinery; do not copy an entire
+  widget editor or build three parallel tools. A point has one colour; paths can
+  have matching or independent side colours. Define weight semantics explicitly
+  rather than assuming Logoist's undocumented meaning.
+- Keep path geometry and along-path colour stops independent: adding a shaping
+  handle must not implicitly add a colour stop. Reuse the existing colour/number
+  fields and structural keyframes. Geometry/colour edits should animate; changes
+  in feature/node count need an explicit, tested structural-transition policy.
+  Inserting a shaping node must split the Bézier without changing the picture.
+  Reversing a path must preserve the visible sides by swapping side attributes.
+- Put editable coordinates, colours and controls in the document. Generated
+  pixels are only a disposable renderer cache, never saved blob URLs or uploaded
+  assets. Validate save/reload, ZIP round-trip, copy/paste, mode switching and
+  undo, not just the first screenshot.
+- Prefer a diffusion-curve solver for the two-sided boundaries. A nearest-side
+  inverse-distance blend can invent discontinuities beyond a finite curve's
+  endpoints. A singleton must have a defined point-constraint/influence model,
+  not simply rasterize a zero-length curve or let its strength depend on pixel
+  resolution. The canonical field solver is CPU finite-cut diffusion with
+  multigrid-preconditioned conjugate gradients. It keeps Float32 premultiplied RGBA
+  numerical fields and uploads an explicit RGBA_F16 image to an ordinary shader
+  on the existing Skia surface, reusing the renderer's half-float conversion.
+  A non-null RGBA_F32 image is NOT a sufficient GPU capability check: Chromium's
+  Metal backend quantized that source to 8-bit before dither. Browser regression
+  tests must prove distinct fractional colours, alpha/opacity and functioning
+  dither on the actual sampled GPU path, not just the CPU numerical array. Strict 128² / 256² / 512²
+  solves measured about 20 / 68 / 302 ms in Chrome on this M4 Max; increasing
+  five curves to twenty did not dominate cost. GPU relaxation was not selected:
+  insufficient iterations shifted colours by about 0.068, while converged 512²
+  results still took about 240 ms and thousands of submitted passes. Use bounded
+  caching and an explicit interactive/final quality policy; a cold 512² solve is
+  not 60 Hz. Each continuously visible content key gets at most one idle refinement
+  per surface; track all visible fields, including cache hits. Cache eviction
+  must not resubmit the same solve indefinitely. If the bounded viewport cache
+  cannot retain all visible final fields, report that some retain preview quality;
+  explicit final renders/exports still solve every field at final resolution.
+  Off-box sources expand the finite solve domain. Report reduced effective
+  paint-box resolution for distant sources rather than silently claiming that
+  convergence guarantees geometric detail. Do not discard a low-weight source
+  behind the author's back. Production uses the canvas's exact Bézier/arc-length
+  helpers, includes off-box sources, supports duplicate stops, and reports
+  numerical nonconvergence instead of substituting a solid. Reuse the existing Skia
+  render/context lifecycle, preserve fractional alpha and continuous colour,
+  and share the result between editor, presentation and headless rendering.
+  Do not add a separate WebGL engine or introduce triangulated colour fills.
+- Integrate at `render_gpu/ir.js` (paint parsing),
+  `render_gpu/skia/gradient.js` (shared paint shading), `core/properties.js` /
+  `core/lists.js` / `core/expressions.js` (typed editable leaves),
+  `web/PaintField.svelte` (inspector), and `core/paint_handles.js` /
+  `web/CanvasView.svelte` (on-canvas controls). Cover backgrounds, ordinary
+  shapes, text and strokes that consume shared paint, rather than assuming one
+  rectangle proves universal support. Multipoint text uses one whole text-box
+  coordinate frame across runs, lines and outlines, matching canvas handles;
+  legacy gradient text keeps its existing frame. Rich-run `outlineColor` must
+  participate in paint enumeration, crossfade splitting and raster-export routing.
+  Crossfade splitting copies only runs whose paint changes; unrelated rich-text
+  runs retain their identity and established cache behavior.
+  Preserve existing gradient output.
+  Handle element actions resolve nested typed paint-list paths, rather than
+  assuming top-level widget lists. The handles and shader share the same paint
+  coordinate frame, including whole text boxes, transformed/non-square objects.
+  Colour-carrying handles show their actual source swatch (not the theme's generic
+  handle hue). Two-sided paths expose separate left/right colour beads; selecting
+  one uses the existing floating handle toolbar and ColorField to edit it. Point
+  anchors expose their first visible colour the same way. Do not add a separate
+  picker implementation or hide source colours behind opaque selection tints.
+- User addition during implementation: provide a substantial preset gallery,
+  including swirly spirals, psychedelic ribbons/rings and bokeh-style glows.
+  Presets are native editable Multipoint data, not images or external assets.
+  Reuse the ordinary paint transaction for application so undo, keyframes,
+  persistence and later individual edits work. Verify real rendered thumbnails
+  and full-size examples; attractive names are not visual verification.
+  Narrow inspectors must keep compound number controls readable: share the
+  existing two-vector field width and wrap the control group, rather than
+  shrinking width/height values until their text overlaps.
+- Final verification covers the PowerRP pipeline end to end, not only isolated
+  helpers: native editing → save/reload → animation → exports. The user explicitly
+  requested a final visual acceptance pass AFTER implementation: automate the
+  real browser with Puppeteer, open/read its screenshots, and inspect preset
+  appearance, handles, colour editing, animation, save/reload, exported images,
+  narrow/wide inspector layout and production hosting. Fix visible defects;
+  green assertions alone are insufficient. Use synthetic fixtures, not private
+  presentations. Only then finish jobs/delegates and send the phone notification.
+- Native project/ZIP files retain the editable controls; PNG uses the shared
+  renderer. SVG/PDF embed raster images only for operations requiring Multipoint
+  paint, leaving supported neighboring operations vector. The image includes
+  source and operation opacity exactly once. The vector-only `native_svg` and
+  PPTX writers reject this paint explicitly; they do not approximate it with a
+  solid or claim to contain editable diffusion controls.
+
+Implementation contract (2026-09-28):
+- Stored tag `multipointGradient`, substate `multipoint: {features, featuresActive?}`.
+  A feature is `{nodes, nodesActive?, stops, stopsActive?, twoSided, closed, weight}`.
+  Nodes are numeric tuples `[x, y, inX, inY, outX, outY]`: anchor fractions of the
+  paint box followed by independent incoming/outgoing HANDLE OFFSETS. No separate
+  point/line/curve tags: one node is a point; zero handles are straight paths.
+  Stops are independent records `{offset, color, rightColor}`; offset is normalized
+  arc length, not a shaping-node index. In linked-side mode only `color` acts;
+  `rightColor` is retained for switching back. Each shared colour-picker gesture,
+  including Hex Enter followed by blur, commits exactly one undo unit; fix this
+  at the shared SvelteLib ColorPicker rather than adding a Multipoint workaround.
+  A singleton uses its first visible
+  stop's main colour; its right side, closed flag and other stops are inactive.
+- `weight` is nonnegative source influence, with zero contributing nothing; exact
+  numerical interpretation is recorded with the selected solver. An empty feature
+  list, all-hidden list, or no visible colour sources paints transparent. Invalid
+  nonfinite geometry, negative weights and malformed lists are rejected loudly.
+- Shared typed-list declarations include nested lists; schema-driven discovery,
+  equation evaluation and controls must recurse rather than guessing from indices.
+  List coordinates must interpolate continuously even at integer endpoints.
+  Sparse list-leaf patches obey the same whole-list interpolation mode as an
+  equivalent complete value, including nearer child overrides; untouched leaves
+  keep their equations/identity. The expression/declaration owner installs the
+  item-relative list lookup into interpolation through an acyclic callback.
+  Do not special-case the Multipoint paint tag or round declared numeric list
+  fields merely because both endpoint values happen to be integers.
+  Structural count changes follow the existing discrete list-shape rule; mode
+  switches use the existing paint crossfade. Stored equations survive drags of
+  unrelated leaves. No generated source pixels are added to asset storage.
+
+Numerical and runtime contract:
+- `core/multipoint_diffusion.js` minimizes screened finite-difference energy:
+  `½ Σ_uncut (u_i−u_j)² + ½ Σ_sources m_i (u_i−color_i)²`, independently for the
+  four premultiplied encoded-sRGB channels. Finite curve crossings remove neighbor
+  edges and impose independently sampled left/right constraints; source influence
+  uses Robin conductance. This avoids invented infinite nearest-side seams.
+  Arc-length stops premultiply before interpolation; coincident offsets have a
+  stable last-wins right limit.
+- Point support radius is 0.04 original paint-box units, not pixels; integrated
+  point stiffness is 128 × weight. Curve conductance is 2048 × weight per original
+  logical unit. Positive curves remain barriers even at weak weight; exactly zero
+  removes the source/barrier. The no-flux square includes active off-box geometry.
+  Subpixel sources use conservative deposition, not disappearance or invented cuts.
+- Browser surfaces use an explicit 128² interactive field and refine after 120 ms
+  idle with one disposable module worker per surface to 512². Headless/export paths
+  solve 512² synchronously. Both call the same solver. Numerical nonconvergence
+  fails loudly; coarse geometric detail is a distinct limitation, not convergence.
+- Field and GPU-image caches each have a 32 MiB budget. A visible content key
+  requests refinement at most once while it remains visible. Completed keys,
+  including final cache hits, prevent endless cycles under cache pressure;
+  evicted fields may retain interactive quality. Leaving the visible scene clears
+  this completion scope so returning content can refine again. Disposal terminates
+  the worker and releases image resources. Distant sources warn about reduced
+  effective paint-box resolution rather than claiming full geometric resolution.
+- New production modules: `core/multipoint.js` (shared geometry/edit operations),
+  `core/multipoint_diffusion.js` (solver), `core/multipoint_presets.js` (fourteen
+  native paints), `render_gpu/skia/multipoint.js` (cache/F16 shader),
+  `render_gpu/skia/multipoint_worker.js`, and `web/MultipointField.svelte`.
+  Thumbnails in `web/multipoint_thumbnails/` are generated previews, not document
+  data. Regenerate them with `node cli/build_multipoint_thumbnails.mjs` from the
+  PowerRP directory (or use its full repo-relative path from the repository root).
+- Regression suites under `tests/`: `multipoint_test.js`,
+  `multipoint_diffusion_test.js`, `multipoint_presets_test.js`,
+  `multipoint_text_test.js`, `multipoint_export_test.js`,
+  `list_sparse_animation_test.js`, `multipoint_ui_probe.js`,
+  `multipoint_pipeline_probe.js`, `multipoint_export_pixels_probe.js`,
+  `multipoint_cache_probe.js`, and `multipoint_float_probe.js`.
+  The float probe checks actual SwiftShader and, on macOS, Metal uploads against
+  premultiplied float values. End-to-end probes accept `POWER_RP_TEST_URL` for real
+  `/SvelteLib/` static hosting, where local storage must autodetect without a
+  forced query parameter.
+
+Reference: Orzan et al., *Diffusion Curves: A Vector Representation for
+Smooth-Shaded Images*, SIGGRAPH 2008; CACM 2013 expanded article,
+https://doi.org/10.1145/2483852.2483873. The supplied article confirms independent
+geometry/colour controls, two-sided constraints and Poisson/multigrid rendering.
+This is a suitable algorithm family, not evidence of Logoist's private algorithm.
+Point constraints and influence weights require specified extensions. The small
+MIT `Lichtso/FreeFormGradients` implementation is a reference candidate, not a
+verified drop-in dependency: its current image-alpha seed mask, RGBA8 buffers and
+separate WebGL context do not meet PowerRP's paint contract unchanged.
+
 ## SVG uploads and reload safety (2026-09-28)
 
 The GitHub-hosted editor must create an **SVG widget** when a user drops an SVG,

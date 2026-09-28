@@ -171,7 +171,7 @@ try {
   // this fail on a copy edit — which is precisely the churn that put the
   // shortening pass into a test-fixing loop in the first place.
   {
-    const TAB_MODE_WORD = { Off: /^off/i, Solid: /solid/i, Linear: /linear/i, Radial: /radial/i, Mat: /material/i, "= Eq": /equation/i };
+    const TAB_MODE_WORD = { Off: /^off/i, Solid: /solid/i, Linear: /linear/i, Radial: /radial/i, Multipoint: /multipoint/i, Mat: /material/i, "= Eq": /equation/i };
     const TIP_MAX_CHARS = 60; // "one short line" — the longest shipped tip is Off's slot sentence
     const seen = await page.evaluate(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -189,7 +189,7 @@ try {
       }
       return out;
     });
-    assert(seen.length === 6, `all six paint mode tabs are present (got ${seen.length})`);
+    assert(seen.length === Object.keys(TAB_MODE_WORD).length, `all paint mode tabs are present (got ${seen.length})`);
     for (const [label, tip] of seen) {
       assert(tip.length > 0, `the "${label}" tab has an immediate tooltip (got ${JSON.stringify(tip)})`);
       assert(tip.length <= TIP_MAX_CHARS, `the "${label}" tip is ONE SHORT LINE, <=${TIP_MAX_CHARS} chars (got ${tip.length}: ${JSON.stringify(tip)})`);
