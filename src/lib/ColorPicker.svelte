@@ -421,8 +421,9 @@
   function onHexBlur() {
     commitHex();
   }
-  /** Command. Settle the hex field: normalize display, fire onchange. */
+  /** Command. Settle a pending hex draft once; cleared drafts (including Escape) do not commit. */
   function commitHex() {
+    if (hexDraft === null) return;
     hexDraft = null; // hexFieldValue falls back to hex8 (normalized)
     emitChange();
   }

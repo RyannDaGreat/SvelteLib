@@ -8,6 +8,9 @@
  *   - pointerup SETTLES = ONE undo unit (undo reverts it, redo restores it);
  *     preview cleared; committed doc changed;
  *   - alpha drag produces an 8-digit #rrggbbaa storage value;
+ *   - real hex typing + Enter/blur adds exactly ONE undo entry; ONE undo
+ *     restores the exact previous document (including RGB and alpha);
+ *   - Escape from the focused hex field cancels without an undo entry;
  *   - Escape while open REVERTS the live preview and closes the picker;
  *   - the color row's keyframe diamond still works;
  *   - a legacy #rrggbb (opaque) value loads and opens the picker.
@@ -256,6 +259,117 @@ try {
   const legacyPickerHex = await page.evaluate(() => document.querySelector(".inspector .colorfield-picker .cp-hex")?.value ?? null);
   ok(legacyPickerHex && legacyPickerHex.toLowerCase().startsWith("#abcdef"),
     `legacy value opens the picker seeded to the color; hex field got ${JSON.stringify(legacyPickerHex)}`);
+
+  // Count actual history additions at the undo log, not just commit callbacks.
+  await page.evaluate(() => {
+    const log = window.__powerrp_app.undoLog;
+    const commit = log.commit.bind(log);
+    window.__colorEntries = 0;
+    /**
+     * Command. Count newly stored snapshots, then forward to the real undo log.
+     * @param {object} snapshot - App document/selection snapshot.
+     * @returns {void}
+     */
+    log.commit = (snapshot) => {
+      if (snapshot !== log.doc) window.__colorEntries++;
+      commit(snapshot);
+    };
+  });
+  const hexSelector = ".inspector .colorfield-picker .cp-hex";
+  /** Query. Read committed/preview color, undo additions and the displayed draft. */
+  const hexState = () => page.evaluate((id, selector) => ({
+    fill: window.__powerrp_app.doc.slides[0].delta.items[id].fill,
+    doc: JSON.stringify(window.__powerrp_app.doc),
+    preview: window.__powerrp_app.previewDelta,
+    previewFill: window.__powerrp_app.previewDelta?.items?.[id]?.fill,
+    entries: window.__colorEntries,
+    draft: document.querySelector(selector)?.value,
+    focused: document.activeElement === document.querySelector(selector),
+  }), rectId, hexSelector);
+  /**
+   * Command. Focus/select the hex field and type through real browser key events.
+   * @param {string} text - Replacement draft, e.g. "#12efb8".
+   * @returns {Promise<void>}
+   */
+  async function typeHex(text) {
+    await page.$eval(hexSelector, (el) => { el.focus(); el.select(); });
+    await page.keyboard.type(text);
+  }
+
+  // Invalid tails retain the last valid preview; wholly invalid drafts retain
+  // the original color. Both normalize on settle without a second undo entry.
+  for (const { text, stored, key } of [
+    { text: "#12efb8", stored: "#12efb8", key: "Enter" },
+    { text: "#12efb880", stored: "#12efb880", key: "Enter" },
+    { text: "#f08c", stored: "#ff0088cc", key: "Enter" },
+    { text: "12efb8", stored: "#12efb8", key: "Enter" },
+    { text: "#00ff00zz", stored: "#00ff00", key: "Enter" },
+    { text: "not-a-color", stored: "#abcdef", key: "Enter" },
+    { text: "#65432180", stored: "#65432180", key: "Tab" },
+  ]) {
+    const baseline = await hexState();
+    await typeHex(text);
+    const typing = await hexState();
+    ok(typing.doc === baseline.doc && typing.entries === baseline.entries,
+      `${text}: typing previews without changing document or undo history`);
+    if (text !== "not-a-color") ok(typing.previewFill === stored,
+      `${text}: live preview matches ${stored}; got ${typing.previewFill}`);
+    await page.keyboard.press(key);
+    const settled = await hexState();
+    ok(settled.entries - baseline.entries === 1,
+      `${text} + ${key}: exactly ONE undo entry; got ${settled.entries - baseline.entries}`);
+    ok(settled.fill === stored && settled.preview === null && !settled.focused,
+      `${text} + ${key}: committed ${stored}, cleared preview and blurred`);
+    ok(settled.draft === (stored.length === 7 ? stored + "ff" : stored),
+      `${text} + ${key}: normalized hex display (${settled.draft})`);
+    await page.evaluate(() => window.__powerrp_app.undo());
+    const undone = await hexState();
+    ok(undone.fill === baseline.fill && undone.doc === baseline.doc,
+      `${text} + ${key}: ONE undo restores exact previous value and document`);
+  }
+
+  // Escape must reach ColorField's cancel handler WITHOUT committing on blur.
+  for (const text of ["#12efb880", "#00ff00zz", "not-a-color"]) {
+    const baseline = await hexState();
+    await typeHex(text);
+    await page.keyboard.press("Escape");
+    const cancelled = await hexState();
+    ok(cancelled.entries === baseline.entries && cancelled.doc === baseline.doc,
+      `${text} + Escape: no undo entry and exact document unchanged`);
+    ok(cancelled.preview === null && cancelled.draft === undefined,
+      `${text} + Escape: preview cancelled and picker closed`);
+    await clickFillSwatch();
+    await page.waitForSelector(hexSelector);
+  }
+
+  // A synthetic Enter need not have focus: commit the draft even when blur()
+  // cannot dispatch an event. This also proves the fix is not focus-dependent.
+  const syntheticBaseline = await hexState();
+  await page.$eval(hexSelector, (el) => {
+    if (document.activeElement === el) throw new Error("Synthetic Enter must start unfocused");
+    el.value = "#12345680";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  });
+  const synthetic = await hexState();
+  ok(synthetic.entries - syntheticBaseline.entries === 1 && synthetic.fill === "#12345680",
+    "unfocused synthetic Enter settles once with the typed color");
+  await page.evaluate(() => window.__powerrp_app.undo());
+  ok((await hexState()).doc === syntheticBaseline.doc, "unfocused Enter: ONE undo restores exact previous document");
+
+  // RGB (hue) and alpha use sliders, not text inputs. Each arrow key settles
+  // once; an unrelated Enter must not manufacture another history entry.
+  for (const strip of [".cp-hue", ".cp-alpha"]) {
+    const baseline = await hexState();
+    await page.focus(`.inspector .colorfield-picker ${strip}`);
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Enter");
+    const settled = await hexState();
+    ok(settled.entries - baseline.entries === 1 && settled.fill !== baseline.fill && settled.preview === null,
+      `${strip}: arrow + Enter adds ONE undo entry and changes color`);
+    await page.evaluate(() => window.__powerrp_app.undo());
+    ok((await hexState()).doc === baseline.doc, `${strip}: ONE undo restores exact previous document`);
+  }
 
   // ── Report ─────────────────────────────────────────────────────────────────
   if (errors.length) {
