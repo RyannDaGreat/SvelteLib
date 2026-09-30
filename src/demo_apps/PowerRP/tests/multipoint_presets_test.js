@@ -2,16 +2,36 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  MULTIPOINT_PRESETS, getMultipointPreset, hermiteNodes, ellipseNodes, spiralNodes, waveNodes,
+  MULTIPOINT_PRESETS, getMultipointPreset,
 } from "../core/multipoint_presets.js";
+import { hermiteNodes, ellipseNodes, spiralNodes, waveNodes } from "../core/multipoint_shapes.js";
 import { nodeCubic, featurePolyline } from "../core/multipoint.js";
 import { evalCubic } from "../core/morph_geometry.js";
 import { parsePaint, parseColor } from "../render_gpu/ir.js";
 
 const EXPECTED_IDS = [
-  "neon-spiral", "twin-spiral", "acid-ribbons", "chromatic-rings", "aurora-curtains",
-  "prism-fan", "rainbow-arches", "warm-bokeh", "cool-bokeh", "lava-lagoons",
-  "candy-vortex", "sunset-tide", "tidal-lagoon", "velvet-folds",
+  // Signature
+  "neon-spiral", "twin-spiral", "acid-ribbons", "chromatic-rings", "aurora-curtains", "prism-fan", "rainbow-arches", "warm-bokeh", "cool-bokeh", "lava-lagoons", "candy-vortex", "sunset-tide", "tidal-lagoon", "velvet-folds",
+  // Basics · soft blends
+  "peach-lilac", "pastel-quartet", "tri-tone", "sorbet-trio", "dusty-rose", "sage-sand", "pastel-dawn", "lavender-haze", "cool-greys", "apricot-rise", "slate-sidelight", "linen-halo", "teal-lumen", "amethyst-bloom", "garnet-cushion", "oat-folds", "emerald-glade", "ocean-mint", "window-light",
+  // Basics · classic shapes
+  "clear-sky", "side-fade", "diagonal-sweep", "diagonal-split", "conic-sweep", "center-glow", "soft-spotlight", "dark-vignette", "horizon-split", "corner-flare", "soft-band", "stage-beam", "studio-paper", "four-corners", "black-white", "blue-diamond", "green-hills", "crimson-disc", "amber-rise", "violet-halo",
+  // Nature
+  "hillside-dawn", "sunlit-shafts", "coral-atoll", "sunlit-grove", "dune-crests", "glacier-facets", "lavender-rows", "misty-ridges", "lightning-strike", "autumn-leaves", "sakura-bloom", "frost-star", "mossy-stones", "ember-volcano", "moonlit-sea",
+  // Geometric
+  "bauhaus-balance", "memphis-party", "chevron-stack", "faceted-star", "tumbling-blocks", "retro-sunburst", "bold-stripes", "split-circles", "swiss-poster", "deco-fan", "triangle-mosaic", "honey-cells", "cut-diamond",
+  // Fluid & materials
+  "carrara-marble", "watercolor-bloom", "oil-slick", "holo-foil", "liquid-chrome", "molten-gold", "pearl-drops", "sapphire-satin", "gilded-bole", "black-opal", "smoke-wisps", "lava-lamp", "soap-bubble", "ink-marbling",
+  // Planets & moons
+  "jupiter-globe", "jupiter-belts", "saturn-rings", "neptune-globe", "uranus-globe", "mars-globe", "venus-globe", "earth-marble", "moon-maria", "io-volcanic", "europa-lineae", "titan-haze", "sun-disc",
+  // Space & sci-fi
+  "emission-nebula", "ring-nebula", "spiral-galaxy", "quasar-jet", "solar-eclipse", "solar-prominence", "event-horizon", "pulsar-beams", "synthwave-sun", "neon-skyline", "hologram-cone", "plasma-globe", "warp-tunnel", "portal-ring",
+  // Mathematical
+  "mandelbrot-bulb", "cup-caustic", "compass-rose", "lissajous-weave", "harmonograph-trace", "lemniscate-lobes", "superellipse-ladder", "golden-nautilus", "fermat-swirl", "involute-turbine", "spirograph-star", "fay-butterfly", "golden-pearls", "cassini-ovals", "limacon-bulb",
+  // Art homages
+  "rothko-field", "homage-square", "water-lilies", "starry-swirl", "great-wave", "klimt-gold", "turner-haze", "paper-cutouts", "klint-altarpiece", "rose-window", "floating-world", "several-circles", "soak-stain", "primary-grid",
+  // Food & moods
+  "citrus-slice", "watermelon-slice", "peach-sorbet", "strawberry-milk", "matcha-latte", "cotton-candy", "candy-cane", "pumpkin-spice", "valentine-heart", "lucky-coin", "calm-ripples", "energetic-zigzag", "foggy-lamp", "dream-crescent",
 ];
 const ROUND_OFF = 1e-12;
 const MAX_UNIT_BOX_CURVE_ERROR = 0.001; // one pixel at 1000 px, independent of solver

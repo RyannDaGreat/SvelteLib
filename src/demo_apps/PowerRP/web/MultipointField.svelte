@@ -3,7 +3,7 @@
 <script>
   import ListField from "./ListField.svelte";
   import GradientPresetPicker from "./GradientPresetPicker.svelte";
-  import { MULTIPOINT_PRESETS, getMultipointPreset } from "../core/multipoint_presets.js";
+  import { MULTIPOINT_PRESET_FAMILIES, getMultipointPreset } from "../core/multipoint_presets.js";
   import NumericField from "./NumericField.svelte";
   import BooleanField from "./BooleanField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
@@ -24,9 +24,10 @@
     fields: MULTIPOINT_NODES_LIST.element.fields.map((f) => ({ ...f, scrub: BOX_SCRUB })),
   } };
   const SOURCE_KINDS = ["point", "line", "curve"];
-  const PRESET_FAMILIES = [{ id: "multipoint", title: "Multipoint · editable sources",
-    presets: MULTIPOINT_PRESETS.map((p) => ({ ...p, name: p.label })),
-  }];
+  // One picker section per catalog family (core/multipoint_presets.js owns order and titles).
+  const PRESET_FAMILIES = MULTIPOINT_PRESET_FAMILIES.map((family) => ({ id: family.id, title: family.title,
+    presets: family.presets.map((p) => ({ ...p, name: p.label })),
+  }));
   const thumbnails = import.meta.glob("./multipoint_thumbnails/*.png", { eager: true, import: "default", query: "?url" });
   let presetsOpen = $state(false);
   let previewingPreset = false;
