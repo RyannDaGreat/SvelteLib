@@ -204,12 +204,14 @@
     onpreview(copyPreset(preset));
   }
 
-  /** Command. Applies a preset durably (one undo unit, via onpick) and collapses
-   * the library. The commit consumes the staged preview, so close()'s revert is
-   * a no-op here — it only guards the unmount-without-pointerleave case. */
+  /** Command. Applies a preset durably (one undo unit, via onpick) and LEAVES THE
+   * LIBRARY OPEN (user, 2026-09-30: "it would be nice if the preset library didn't
+   * close as soon as I clicked one of the items. Should wait until I collapse it
+   * again. I like cycling through the presets"). Only the toggle, Escape or
+   * unmount close it. The commit consumes the staged preview, so hovering the next
+   * swatch simply stages a new one on top of the committed state. */
   function pick(preset) {
     onpick(copyPreset(preset));
-    close();
   }
 
   /** Escape closes the library (mirrors ColorField's inline picker); stops

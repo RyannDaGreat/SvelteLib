@@ -704,8 +704,12 @@ try {
     await page.evaluate(() => document.querySelectorAll(".gradient-swatch")[0].click());
   });
   await settle(250);
-  ok(await page.evaluate(() => !document.querySelector(".gradient-presets-body")), "picking a preset closes the library");
-  ok(await rowCount() > 0, `and the stop list is showing the picked preset's stops again (${await rowCount()} rows)`);
+  // The library STAYS OPEN after a pick (user, 2026-09-30: "Should wait until I
+  // collapse it again. I like cycling through the presets"); collapsing is the user's.
+  ok(await page.evaluate(() => !!document.querySelector(".gradient-presets-body")), "picking a preset leaves the library open for cycling");
+  await page.keyboard.press("Escape");
+  await settle(300);
+  ok(await rowCount() > 0, `collapsing it shows the picked preset's stops again (${await rowCount()} rows)`);
   await shotOfList("gradient_after_preset_pick");
 
   // SINGULAR: a one-element list reads "1 point", not "1 points". Last, because it

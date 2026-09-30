@@ -13,6 +13,7 @@ import { launchBrowser } from "./puppeteerLaunch.js";
 import { freePort } from "./free_port.js";
 import { imageDistance, readPng } from "./imageDistinctness.js";
 import { foldState } from "../core/document.js";
+import { MULTIPOINT_PRESETS } from "../core/multipoint_presets.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../../../..");
@@ -228,10 +229,11 @@ try {
   pass("native type UI paints spatially varied canvas pixels");
 
   const pictures = [];
+  // The library stays open across picks (cycling), so it is opened ONCE.
+  await click('.multipoint-presets .gradient-presets-toggle');
+  assert.equal(await page.$$eval('.multipoint-presets .gradient-swatch',els=>els.length),MULTIPOINT_PRESETS.length,"real catalog: every preset has a swatch");
   for (const label of ["Neon spiral","Warm bokeh"]) {
     stage = `gallery ${label}`;
-    await click('.multipoint-presets .gradient-presets-toggle');
-    assert.equal(await page.$$eval('.multipoint-presets .gradient-swatch',els=>els.length),14,"real catalog contains 14 presets");
     await oneUndo(() => click(`.multipoint-presets [aria-label="${label}"]`));
     const name=label.toLowerCase().replaceAll(' ','-');
     pictures.push(await shot(name));
