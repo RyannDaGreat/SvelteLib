@@ -30,14 +30,24 @@
   no-transform rule all come from FloatingCanvasPanel. Styling lives in app.css
   (.canvas-toolbar-row / .canvas-toolbar-count; the app convention: no <style>
   block, every colour/size from an --a-* token).
+
+  ── THE MULTIPOINT ISLAND RIDES IN THIS SAME PANEL ────────────────────────────
+  When the selected widget's paint is Multipoint the bar also hosts
+  web/MultipointIsland.svelte (add / split / path toggles / colour fields), and it
+  shows even with NO handle selected, because the handles are visible then and the
+  author is editing the gradient. One panel rather than two, because two floating
+  surfaces anchored to the same widget would stack on the same spot. The colour
+  editing that used to live here for a single colour handle moved into the island,
+  which generalises it (several handles, both sides, the colour AT a path node).
 -->
 <script>
   import "iconify-icon";
   import { getPath } from "../core/deltas.js";
   import { handleElementList } from "../core/lists.js";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import ColorField from "./ColorField.svelte";
   import FloatingCanvasPanel, { widgetPanelAnchor } from "./FloatingCanvasPanel.svelte";
+  import MultipointIsland from "./MultipointIsland.svelte";
+  import { multipointTarget } from "./multipointCanvas.js";
 
   // app = the app store; handles = the SELECTED handles in world space (each
   // {id, x, y, element, active}); node = the render node OWNING those handles, which
@@ -72,10 +82,12 @@
   // of the mixed-state problem: two explicit verbs, never a guessing toggle.
   let elements = $derived(handles.filter((h) => h.element));
   let allVisible = $derived(elements.length > 0 && elements.every((h) => h.active));
-  // A selected colour handle exposes the SAME field as the inspector. Geometry
-  // and other handles declare no colour path, so their toolbar is unchanged.
-  let colorHandle = $derived(handles.length === 1 && handles[0].colorPath ? handles[0] : null);
-  let colorPath = $derived(colorHandle && node ? ["items", node.itemId, ...colorHandle.colorPath] : null);
+  // Is the selected widget's paint Multipoint? Then the island rides in this panel
+  // (see the header). The reads name the reactive inputs multipointTarget consults.
+  let island = $derived.by(() => {
+    app.doc; app.slideIndex; app.selection; app.handleSelection;
+    return node ? multipointTarget(app) !== null : false;
+  });
 
   // ── POINT TOGGLES (curve on/off, new-subpath) ────────────────────────────────
   // The widget DECLARES which on/off states its list-element handles carry
@@ -103,9 +115,10 @@
   }
 </script>
 
-{#if handles.length && anchor}
-  <FloatingCanvasPanel x={anchor.x} topY={anchor.topY} bottomY={anchor.bottomY} label="Selected points">
+{#if (handles.length || island) && anchor}
+  <FloatingCanvasPanel x={anchor.x} topY={anchor.topY} bottomY={anchor.bottomY} label={handles.length ? "Selected points" : "Multipoint editing"}>
     {#snippet children()}
+      {#if handles.length}
       <div class="canvas-toolbar-row">
         <span class="canvas-toolbar-count">{handles.length} selected</span>
         {#if elements.length}
@@ -152,11 +165,9 @@
           {/each}
         {/if}
       </div>
-      {#if colorPath}
-        <div class="handle-color-field">
-          <ColorField {app} path={colorPath} label={colorHandle.label}
-            value={getPath(app.rawState(), colorPath)} />
-        </div>
+      {/if}
+      {#if island}
+        <MultipointIsland {app} />
       {/if}
     {/snippet}
   </FloatingCanvasPanel>

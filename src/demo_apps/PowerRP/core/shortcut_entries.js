@@ -212,6 +212,24 @@ export const editSelection = (c) => editMode(c) && c.hasSelection && !c.handlesS
  */
 export const handlesSelected = (c) => editMode(c) && c.hasSelection && !!c.handlesSelected;
 /**
+ * Pure function. The one selected widget's paint is MULTIPOINT, so its island is up
+ * and its handles/paths answer double-clicks (web/multipointCanvas.js). Requires
+ * `hasSelection` for handlesSelected's reason: the flag only exists for a selection.
+ *
+ * @example multipointEditing({mode: "edit", hasSelection: true, multipointEditing: true}) // true
+ * @example multipointEditing({mode: "edit", hasSelection: true}) // false
+ */
+export const multipointEditing = (c) => editMode(c) && !!c.hasSelection && !!c.multipointEditing;
+/**
+ * Pure function. Selected Multipoint handles include one that carries a colour — the
+ * scope of the `C` key (open their colour picker). A Bézier control alone does not
+ * qualify: it shapes, it has no colour.
+ *
+ * @example multipointColorSelection({mode: "edit", hasSelection: true, handlesSelected: true, multipointEditing: true, multipointColorSelection: true}) // true
+ * @example multipointColorSelection({mode: "edit", hasSelection: true, handlesSelected: true, multipointEditing: true}) // false
+ */
+export const multipointColorSelection = (c) => multipointEditing(c) && !!c.handlesSelected && !!c.multipointColorSelection;
+/**
  * Pure function. KEYBOARD FOCUS IS INSIDE THE SLIDE RAIL — the scope that owns
  * the SLIDE clipboard keys.
  *
@@ -669,6 +687,12 @@ export const KEYBINDING_DEFAULTS = [
   // construction and exactly one of each pair is ever live.
   { command: "hide-points", keys: ["Backspace"], when: "handlesSelected" },
   { command: "purge-points", keys: ["Cmd", "Backspace"], when: "handlesSelected" },
+  // C = COLOUR, for selected Multipoint colour handles (points, path nodes, colour
+  // beads): opens the island's colour picker for all of them — the keyboard twin of
+  // double-clicking one. No other binding claims plain C (Ctrl+C is a different
+  // combo), and the scope requires a selected colour handle, so it can never fire
+  // on an ordinary selection.
+  { command: "multipoint-edit-color", keys: ["C"], when: "multipointColorSelection" },
 ];
 
 /** HintBar labels for the command-bound keys above (toShortcutEntries throws on
@@ -703,10 +727,11 @@ export const KEYBINDING_LABELS = {
   "toggle-audio-mute": "Mute",
   deselect: "Deselect",
   "hide-points": "Hide points", "purge-points": "Purge points",
+  "multipoint-edit-color": "Colour",
 };
 
 /** The `when`-name → predicate map the keybinding bridge resolves against. */
-export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected, slideRailFocus, itemClipboardScope, itemClipboardSelection };
+export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected, slideRailFocus, itemClipboardScope, itemClipboardSelection, multipointColorSelection };
 
 /**
  * The HELD-MODIFIER verbs a drag kind can read, keyed by the semantic modifier id
@@ -918,6 +943,14 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
     { keys: ["Delete"], label: "Hide points", hidden: true, when: handlesSelected, command: "hide-points" },
     { keys: ["Cmd", "Delete"], label: "Purge points", hidden: true, when: handlesSelected, command: "purge-points" },
     { keys: ["Escape"], label: "Deselect points", when: handleDeselectable, run: () => app.clearHandleSelection() },
+    // MULTIPOINT DOUBLE-CLICK (web/multipointCanvas.js multipointDoubleClick):
+    // on a colour handle it opens that colour, on a Multipoint path it splits it.
+    // Display-only (a mouse token; CanvasView.onDblClick delivers it). ONE chip for
+    // both targets, and withheld when the widget has its own activation: that
+    // widget's double-click chip already owns the token in this context, and one
+    // gesture may carry only one label per context (tests/shortcut_registry_test.js).
+    // The gesture still works on the Multipoint chrome of such a widget.
+    { keys: [MOUSE_DOUBLE_TOKEN], label: "Point colour / split path", when: (c) => multipointEditing(c) && !c.activation && !c.dragging },
     // SPACEBAR opens the palette (manifest Round 12B: Blender spacebar
     // precedent, same action as Cmd+Shift+P) — a second key ALIAS for
     // toggle-palette, hand-registered exactly like the Delete/Backspace alias
@@ -1399,6 +1432,11 @@ export const HINT_PROBE_FLAGS = Object.freeze([
   // makes the handle entries provably live (and their item-scope counterparts
   // provably dark) rather than a claim in a comment.
   { hasSelection: true, handlesSelected: true },
+  // THE MULTIPOINT ISLAND's two real states: a Multipoint-painted widget selected
+  // (the double-click chip), and colour handles selected on it (the C key). Both
+  // ride hasSelection for the same reason the handle scope does.
+  { hasSelection: true, multipointEditing: true },
+  { hasSelection: true, handlesSelected: true, multipointEditing: true, multipointColorSelection: true },
   // FOCUS IN THE SLIDE RAIL — the scope that owns the SLIDE clipboard keys. Both
   // halves are reachable and both must be probed: with an item selected (the real
   // case, and the one where the item entries must stand DOWN — that is what makes

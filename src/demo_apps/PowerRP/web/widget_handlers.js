@@ -114,6 +114,7 @@ import { KNOB_FOCUS_HANDLER } from "./knobFocus.js";
 import { NAVIGATE_INTERIOR_HANDLER } from "./interiorNav.js";
 import { NAVIGATE_SCENE_HANDLER } from "./sceneNav.js";
 import { LIGHT_POSITION_PIN_HANDLER } from "./lightPositionPin.js";
+import { MULTIPOINT_PLACE_HANDLERS, MULTIPOINT_SPLIT_HANDLER } from "./multipointCanvas.js";
 import { POLYGON_CHAIN_HANDLER } from "./polygonDraw.js";
 import { PAINT_PATH_CHAIN_HANDLER } from "./paintPathDraw.js";
 import { SIGNAL_EDIT_HANDLER } from "./signalEdit.js";
@@ -313,6 +314,11 @@ const ACTIVATE_HANDLERS = [
   INSERT_POINT_HANDLER,
   BENTO_BIND_HANDLER,
   LIGHT_POSITION_PIN_HANDLER,
+  // PAINT-level modes, not widget activations: the Multipoint island's
+  // click-to-place and click-to-split (web/multipointCanvas.js). Entered only by
+  // their commands, exactly like LIGHT_POSITION_PIN_HANDLER above.
+  ...MULTIPOINT_PLACE_HANDLERS,
+  MULTIPOINT_SPLIT_HANDLER,
   KNOB_FOCUS_HANDLER,
   KEYBOARD_PLAY_HANDLER,
   SIGNAL_EDIT_HANDLER,

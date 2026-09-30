@@ -99,6 +99,8 @@
   // declares a sustained canvas mode — an activation's interior explore, a
   // creation's multi-step placement — contributes its own registry entries.
   import { activations, canvasModes, handlerFor } from "./widget_handlers.js";
+  import { multipointCommands, multipointTarget } from "./multipointCanvas.js"; // the Multipoint island's commands + its shortcut-context axis
+  import { isMultipointColorHandleId } from "../core/paint_handles.js";
   import { unionRect, alignedPosition, mirroredPosition, flippedBox } from "../core/geometry.js";
   // THE DEMO SUBMENUS (manifest R7-18). ONE table of sections in web/demoInsert.js
   // decides what is grouped where, and the AUDIO PATCH and PRESET sections generate
@@ -2360,6 +2362,10 @@
     // demo widgets — manifest R7-18, and the user's reason for asking: "we gonna
     // have a lot of them". Their command ids are unchanged, and `commands.get`
     // resolves a child, so nothing that named one has broken.
+    // THE MULTIPOINT ISLAND'S ACTIONS (web/multipointCanvas.js): add/split arm a
+    // one-shot canvas mode, the path toggles and colour open act on the handle
+    // selection. The island's buttons and the `C` key surface these same entries.
+    ...multipointCommands(),
   ];
   for (const c of coreCommands) app.commands.add(c);
   // Restore MRU only AFTER every command (plugins from the constructor + the
@@ -2881,6 +2887,12 @@
       // and exactly one chip is ever live (core/shortcut_entries.js editSelection /
       // handlesSelected).
       handlesSelected: app.handleSelection.length > 0,
+      // THE MULTIPOINT ISLAND'S TWO AXES (core/shortcut_entries.js multipointEditing /
+      // multipointColorSelection): the one selected widget's paint is Multipoint, and
+      // the selected handles include one that carries a colour. The second reads
+      // handle ids only, so the gate stays O(cheap).
+      multipointEditing: multipointTarget(app) !== null,
+      multipointColorSelection: app.handleSelection.some(isMultipointColorHandleId),
       dragging: app.dragging,
       dragKind: app.dragKind,
       // How many objects the last selecting click landed on — drives the

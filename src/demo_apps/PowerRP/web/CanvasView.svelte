@@ -135,6 +135,7 @@
   import BentoTargetList from "./BentoTargetList.svelte"; // a canvas mode's LIST of pickable widgets (the second input path for a bento cell bind)
   import CanvasToolbar from "./CanvasToolbar.svelte"; // GENERAL floating canvas toolbar (double-click a widget that declares floatingToolbar); mounted as a canvas overlay
   import HandleToolbar from "./HandleToolbar.svelte"; // the SELECTED-HANDLE tools, on the shared FloatingCanvasPanel shell
+  import { multipointDoubleClick, multipointTarget } from "./multipointCanvas.js"; // Multipoint paint editing: double-click colour/split, and whether the island shows
   import ContextMenu from "./ContextMenu.svelte"; // the on-canvas point menu (F.18)
   import VideoV6Overlay from "./VideoV6Overlay.svelte"; // ONE shared WebGPU external-texture canvas over the scene; draws live V6 video frames (WebGL2 upload fallback on plain HTTP)
   import { copyText } from "./clipboard.js"; // HTTP-safe clipboard write (anchor-copy affordance, below)
@@ -1300,6 +1301,18 @@
     }
     if (drag || modal || app.canvasMode) return; // never open mid-gesture or mid-mode
     const w = worldPoint(e);
+    // MULTIPOINT PAINT CHROME OWNS ITS OWN DOUBLE-CLICKS (web/multipointCanvas.js):
+    // on a colour handle it opens that colour, on a Multipoint path it splits it
+    // there. Checked BEFORE the widget's activation because the handles and dashed
+    // paths are overlay chrome drawn over the widget — a double-click on them is
+    // aimed at them. Anywhere else the widget's own double-click is untouched.
+    // The glyph UNDER THE POINTER, not e.target: the press on a handle took pointer
+    // capture on the overlay (startModifier), so the dblclick is retargeted there.
+    const handleId = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-handle-id]")?.dataset.handleId ?? null;
+    if (multipointDoubleClick(app, handleId, w, SNAP_PX / viewport.zoom)) {
+      window.getSelection()?.removeAllRanges(); // the text-selection hazard documented below
+      return;
+    }
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
     // A DOUBLE-CLICK ON A WIRE INSERTS A ROUTING POINT (user, 2026-08-22: "it would
     // be nice if I could double click on a wire to add a routing point widget").
@@ -1384,9 +1397,12 @@
   }
 
   /** The mode handler's context, rebuilt per event so `node` carries the CURRENT
-   *  (preview-inclusive) state each gesture step accumulates onto. */
+   *  (preview-inclusive) state each gesture step accumulates onto. `slop` is the
+   *  canvas's own hit tolerance in WORLD units (SNAP_PX at the current zoom), so a
+   *  mode that hit-tests geometry (the Multipoint split) uses the same slop as every
+   *  other canvas grab instead of minting a second constant. */
   function modeContext(active) {
-    return { app, node: active.node, plugin: active.node.plugin };
+    return { app, node: active.node, plugin: active.node.plugin, slop: SNAP_PX / viewport.zoom };
   }
 
   /** Command. Ends the live mode gesture: commits whatever the gesture staged as
@@ -5930,6 +5946,14 @@
     if (!actions) return [];
     return app.selectedHandles();
   });
+  // THE MULTIPOINT ISLAND also opens the handle bar with NO handle selected, while
+  // the one selected widget's paint is Multipoint (web/HandleToolbar.svelte says why).
+  // Stood down during a drag (the bar would trail a moving widget) and during an
+  // in-place edit (whose own floating toolbar owns the same spot above the widget).
+  let multipointIsland = $derived.by(() => {
+    app.doc; app.slideIndex; app.selection; app.selectionSet; app.handleSelection; // reactive deps
+    return !app.dragging && app.editingItemId === null && multipointTarget(app) !== null;
+  });
 
   // FLOATING TOOLBAR: the derived node whose floating toolbar is open, or null.
   // Stays open only while its item is still selected AND still declares a
@@ -6339,6 +6363,7 @@
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <g
             class="modifier-glyph"
+            data-handle-id={m.id}
             data-accent={m.look.accent}
             data-color={m.color || undefined}
             style:--a-handle-swatch={m.color}
@@ -6508,7 +6533,7 @@
           onpick={modeList.pick}
         />
       {/if}
-      {#if selectedHandles.length && actions}
+      {#if (selectedHandles.length || multipointIsland) && actions}
         <!-- The SELECTED-HANDLE tools (hide/show, purge, and any curve/subpath
              toggles the widget declares), on the same FloatingCanvasPanel shell as
              the widget toolbar above. Universal: it appears for any widget whose

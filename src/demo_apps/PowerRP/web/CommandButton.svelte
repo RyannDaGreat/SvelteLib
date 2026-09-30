@@ -63,6 +63,9 @@
     buttonClass = "btn-icon",
     /** @type {object=} Value for the `data-nav-action` attribute (probes key on it). */
     dataNavAction = undefined,
+    /** @type {boolean=} A TOGGLE command's current state: sets `aria-pressed` and the
+     *  app's pressed-toggle idiom (`.active`). Absent for a plain action button. */
+    pressed = undefined,
   } = $props();
 
   // Read the entry EVERY render, never captured once: a gate is a function of live
@@ -92,8 +95,9 @@
 
 <Tooltip text={blockedBecause ? `${text} — ${blockedBecause}` : text}>
   <button
-    class={buttonClass}
+    class={pressed ? `${buttonClass} active` : buttonClass}
     aria-label={text}
+    aria-pressed={pressed}
     aria-disabled={unavailable}
     data-nav-action={dataNavAction}
     onclick={() => { if (!unavailable) app.runCommand(id); }}

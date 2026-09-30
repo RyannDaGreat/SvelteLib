@@ -5860,6 +5860,27 @@ textarea {
   width: var(--a-handle-color-field-w);
 }
 
+/* THE MULTIPOINT ISLAND (web/MultipointIsland.svelte) inside the handle bar: its
+   command row, then one labelled colour field per side, stacked with the bar's own
+   row gap. Everything else it wears is existing chrome (.canvas-toolbar-row,
+   .text-format-sep, .handle-color-field, .paint-stops-multi-note). */
+.multipoint-island {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+}
+.canvas-toolbar-row + .multipoint-island {
+  margin-top: var(--a-sp-1);
+}
+.multipoint-island-label {
+  display: block;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+.multipoint-island-note {
+  max-width: var(--a-handle-color-field-w);
+}
+
 /* The <g> that wraps ONE handle's outline + inner mark. It carries the pointer
    handlers (grab, hover, context menu) for both, so the grab target is the whole
    glyph and the hover region is IDENTICAL to it by construction — the handle

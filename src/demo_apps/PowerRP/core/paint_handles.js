@@ -532,6 +532,73 @@ function withMultipointFeature(state, key, index, transform) {
 }
 
 /**
+ * Pure function. The state path of a Multipoint paint's features list — inside the
+ * `multipoint` wrapper PaintField writes, or on a legacy inline paint.
+ * @param {object} paint - The stored/folded paint value.
+ * @param {string} key - Paint property name.
+ * @returns {Array} Item-relative path, e.g. ["fill","multipoint","features"].
+ * @example multipointFeaturesPath({type:"multipointGradient",multipoint:{features:[]}}, "fill") // ["fill","multipoint","features"]
+ * @example multipointFeaturesPath({type:"multipointGradient",features:[]}, "stroke") // ["stroke","features"]
+ */
+export function multipointFeaturesPath(paint, key) {
+  return [key, ...(paint.multipoint ? ["multipoint"] : []), "features"];
+}
+
+// THE MULTIPOINT HANDLE ID GRAMMAR, minted and read in ONE place. The canvas's
+// inner selection scope stores only handle ids (app.handleSelection), so the island
+// and the shortcut gates must recover "which source, which role" from an id; a
+// parser living beside the builder is what keeps the two from drifting.
+const MULTIPOINT_HANDLE_ID = /^(.+)-mp-(\d+)-(node|stop)-(\d+)(?:-(incoming|outgoing|right))?$/;
+
+/**
+ * Pure function. The id of one Multipoint handle.
+ * @param {{key:string, feature:number, role:"anchor"|"control"|"stop", index:number, control?:"incoming"|"outgoing", side?:"color"|"rightColor"}} h
+ * @returns {string}
+ * @example multipointHandleId({key:"fill", feature:2, role:"anchor", index:0}) // "fill-mp-2-node-0"
+ * @example multipointHandleId({key:"fill", feature:0, role:"control", index:1, control:"outgoing"}) // "fill-mp-0-node-1-outgoing"
+ * @example multipointHandleId({key:"stroke", feature:1, role:"stop", index:3, side:"rightColor"}) // "stroke-mp-1-stop-3-right"
+ */
+export function multipointHandleId(h) {
+  if (h.role === "stop") return `${h.key}-mp-${h.feature}-stop-${h.index}${h.side === "rightColor" ? "-right" : ""}`;
+  return `${h.key}-mp-${h.feature}-node-${h.index}${h.role === "control" ? `-${h.control}` : ""}`;
+}
+
+/**
+ * Pure function. The inverse of multipointHandleId, or null for any other handle.
+ * @param {string} id - A modifier-point id.
+ * @returns {{key:string, feature:number, role:string, index:number, control?:string, side?:string}|null}
+ * @example parseMultipointHandleId("fill-mp-2-node-0") // {key:"fill", feature:2, role:"anchor", index:0}
+ * @example parseMultipointHandleId("fill-mp-1-stop-3-right") // {key:"fill", feature:1, role:"stop", index:3, side:"rightColor"}
+ * @example parseMultipointHandleId("fill-mp-0-node-4-incoming").role // "control"
+ * @example parseMultipointHandleId("fill-grad-center") // null
+ */
+export function parseMultipointHandleId(id) {
+  const m = MULTIPOINT_HANDLE_ID.exec(id);
+  if (!m) return null;
+  const [, key, feature, kind, index, suffix] = m;
+  const base = { key, feature: Number(feature), index: Number(index) };
+  if (kind === "stop") return { ...base, role: "stop", side: suffix === "right" ? "rightColor" : "color" };
+  if (suffix === "right") return null; // only colour beads carry a side
+  return suffix ? { ...base, role: "control", control: suffix } : { ...base, role: "anchor" };
+}
+
+/**
+ * Pure function. Can this handle carry a colour on the canvas? Anchors (a point's
+ * colour, or the colour AT a path node) and colour beads can; Bézier controls
+ * only shape. Id-only, so the shortcut/command gates stay O(cheap).
+ * @param {string} id - A modifier-point id.
+ * @returns {boolean}
+ * @example isMultipointColorHandleId("fill-mp-0-node-1") // true
+ * @example isMultipointColorHandleId("fill-mp-0-stop-0") // true
+ * @example isMultipointColorHandleId("fill-mp-0-node-1-outgoing") // false
+ * @example isMultipointColorHandleId("fill-grad-dir") // false
+ */
+export function isMultipointColorHandleId(id) {
+  const h = parseMultipointHandleId(id);
+  return h !== null && h.role !== "control";
+}
+
+/**
  * Pure function. Native source anchors, Bézier controls and independent colour-stop
  * handles. Hidden nodes remain addressable; a zero handle has no coincident bead
  * stealing its anchor's hit target. Positions use the same normalized paint box
@@ -547,7 +614,7 @@ export function multipointModifierPoints(state, key) {
   for (let fi = 0; fi < source.features.length; fi++) {
     const feature = source.features[fi];
     const sourceActive = elementActive(source.featuresActive, fi);
-    const featurePath = [key, ...(paint.multipoint ? ["multipoint"] : []), "features", fi];
+    const featurePath = [...multipointFeaturesPath(paint, key), fi];
     const visibleNodes = feature.nodes.filter((_, i) => elementActive(feature.nodesActive, i));
     const firstHandle = out.length;
     const pointStop = feature.stops.findIndex((_, i) => elementActive(feature.stopsActive, i));
@@ -555,7 +622,7 @@ export function multipointModifierPoints(state, key) {
       const n = feature.nodes[ni];
       const active = sourceActive && elementActive(feature.nodesActive, ni);
       out.push({
-        id: `${key}-mp-${fi}-node-${ni}`, x: n[0] * W, y: n[1] * H,
+        id: multipointHandleId({ key, feature: fi, role: "anchor", index: ni }), x: n[0] * W, y: n[1] * H,
         glyph: "boxedO", label: `Multipoint source ${fi + 1}, node ${ni + 1} (${key})`, active,
         ...(visibleNodes.length === 1 && pointStop >= 0 ? {
           color: rgbaToCss(parseColor(feature.stops[pointStop].color)),
@@ -572,8 +639,8 @@ export function multipointModifierPoints(state, key) {
       for (const [slot, name] of [[2, "incoming"], [4, "outgoing"]]) {
         if (n[slot] === 0 && n[slot + 1] === 0) continue;
         out.push({
-          id: `${key}-mp-${fi}-node-${ni}-${name}`, x: (n[0] + n[slot]) * W, y: (n[1] + n[slot + 1]) * H,
-          glyph: "boxedX", label: `Multipoint ${name} Bézier handle ${ni + 1} (${key})`, active,
+          id: multipointHandleId({ key, feature: fi, role: "control", index: ni, control: name }), x: (n[0] + n[slot]) * W, y: (n[1] + n[slot + 1]) * H,
+          glyph: "paintTriangle", label: `Multipoint ${name} Bézier handle ${ni + 1} (${key})`, active,
           stem: { x: n[0] * W, y: n[1] * H },
           /** Pure function. Changes only the chosen relative Bézier handle. */
           apply(st, p) {
@@ -602,7 +669,7 @@ export function multipointModifierPoints(state, key) {
       for (const side of feature.twoSided ? [1, -1] : [1]) {
         const field = side === 1 ? "color" : "rightColor";
         out.push({
-          id: `${key}-mp-${fi}-stop-${si}${side < 0 ? "-right" : ""}`,
+          id: multipointHandleId({ key, feature: fi, role: "stop", index: si, side: field }),
           x: p.x + side * p.dy * gap, y: p.y - side * p.dx * gap,
           glyph: "dottedCircle", label: `Multipoint ${feature.twoSided ? side > 0 ? "left " : "right " : ""}colour ${si + 1}, source ${fi + 1} (${key})`,
           color: rgbaToCss(parseColor(stop[field])), colorPath: [...featurePath, "stops", si, field],

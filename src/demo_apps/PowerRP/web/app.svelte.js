@@ -760,6 +760,10 @@ export class PowerRPApp {
     // `selection = itemId` BEFORE entering, when canvasMode is still null, so this
     // never cancels the mode it is about to start.
     if (this.canvasMode !== null && id !== this.canvasMode.itemId) this.exitCanvasMode();
+    // The handle colour picker closes only when the ITEM changes: undo/redo re-write
+    // the same selection (applySnapshot), and undoing a colour pick must not slam
+    // the picker shut on the colour being fixed.
+    if (id !== this.#selection) this.handleColorOpen = false;
     this.#selection = id;
     this.selectionSet = []; // single-select write drops the multi override
     // The OUTER scope owns the INNER one: handle ids belong to whichever item was
@@ -799,6 +803,13 @@ export class PowerRPApp {
   //   3. NOTHING here touches the item selection. Clearing handles never deselects
   //      the item; that would make Escape destroy two things at once.
   handleSelection = $state([]);
+  // Is the selected handles' COLOUR PICKER expanded (the Multipoint island's first
+  // colour field, bound to ColorField's `open`)? App state rather than the field's
+  // own, because a double-click on a handle and the `multipoint-edit-color`
+  // command open it from outside the field. It belongs to the handle scope, so
+  // every write that empties that scope closes it: switching between points keeps
+  // it open (recolouring several points in a row), deselecting does not.
+  handleColorOpen = $state(false);
   // TRANSITION selection — the INCOMING slide's slideId whose between-rows
   // transition slice is selected, or null (manifest Round 12: transitions are
   // first-class SELECTABLE things whose properties show in the Property Panel).
@@ -1676,6 +1687,7 @@ export class PowerRPApp {
     this.#selection = filtered[0];
     this.selectionSet = [...filtered];
     this.handleSelection = []; // the outer scope owns the inner one (see handleSelection)
+    this.handleColorOpen = false;
     this.selectedTransition = null; // selecting items clears a transition selection
     this.transitionSelection = []; // …and its multi-selection with it (see the field)
   }
@@ -1747,6 +1759,7 @@ export class PowerRPApp {
    * Escape's inner-scope meaning (see handleSelection precedence rule 2). */
   clearHandleSelection() {
     this.handleSelection = [];
+    this.handleColorOpen = false;
   }
 
   /** Query. The selected handles that ARE list elements, grouped by list key and
@@ -1832,6 +1845,7 @@ export class PowerRPApp {
     }
     this.commit(doc);
     this.handleSelection = [];
+    this.handleColorOpen = false;
   }
 
   /**

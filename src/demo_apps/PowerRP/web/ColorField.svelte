@@ -163,7 +163,13 @@
   import { fanOutPairs } from "../core/multiselect.js";
   import { recentColors, markColorUsed } from "./recentColors.js";
 
-  let { app, path, paths = null, label, value, disabled = false } = $props();
+  // `open` is BINDABLE so a surface can open the picker on the user's behalf (the
+  // Multipoint island opens it on a double-click or the C key); unbound, it is the
+  // field's own local state exactly as before. `pairsFor(storedHex) → setPreview
+  // pairs` REPLACES the leaf fan-out for a caller whose write is not a set of leaf
+  // paths (a Multipoint colour at a path node may insert its colour stop in the
+  // same edit); absent, writes are the fan-out below, byte-identically.
+  let { app, path, paths = null, label, value, disabled = false, open = $bindable(false), pairsFor = null } = $props();
   /**
    * THE WRITE TARGETS. Reads stay on the singular `path` (the PRIMARY item — in a
    * multi-selection every selected item agrees on this value, or the row would be
@@ -172,8 +178,11 @@
    */
   let writePaths = $derived(paths ?? [path]);
 
+  /** Query. The setPreview pairs for one picked colour (stored form). */
+  function writePairs(stored) {
+    return pairsFor ? pairsFor(stored) : fanOutPairs(writePaths, stored);
+  }
 
-  let open = $state(false);
   // THE RECENT-COLOR COLUMN's list. Seeded from the shared store at construction
   // and reassigned on each commit, so every ColorField on screen shows the same
   // history the moment one of them is used — the store is the single owner and
@@ -200,11 +209,11 @@
    * document stays UNCHANGED until commit (the house contract). Stored in
    * collapsed form so opaque colors never grow an alpha channel. */
   function preview(picked) {
-    app.setPreview(fanOutPairs(writePaths, toStored(picked)));
+    app.setPreview(writePairs(toStored(picked)));
   }
   /** Settle: commit the previewed color as ONE undo unit (picker onchange). */
   function commit(picked) {
-    app.setPreview(fanOutPairs(writePaths, toStored(picked)));
+    app.setPreview(writePairs(toStored(picked)));
     app.commitPreview();
     // THE MRU IS RECORDED HERE AND NOT IN preview(), because a drag across the
     // saturation square fires oninput continuously — recording each would push a

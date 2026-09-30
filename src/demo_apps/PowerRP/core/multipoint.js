@@ -26,6 +26,44 @@ export function multipointFeature(kind = "point", color = "#7aa2f7") {
 }
 
 /**
+ * Saturated, mutually distinct hues for sources placed on the canvas: a fresh
+ * source must be visible against its neighbours BEFORE the author recolours it
+ * (its picker opens immediately), so consecutive additions cycle through these.
+ */
+export const MULTIPOINT_NEW_SOURCE_COLORS = Object.freeze(["#ffd166", "#ef476f", "#06d6a0", "#118ab2", "#b56bff"]);
+
+/**
+ * Pure function. The colour a newly placed source starts with, cycling by how
+ * many sources the paint already holds.
+ * @param {number} count - Existing source count (visible or hidden).
+ * @returns {string} Hex colour.
+ * @example newSourceColor(0) // "#ffd166"
+ * @example newSourceColor(6) // "#ef476f" (cycles after five)
+ */
+export function newSourceColor(count) {
+  return MULTIPOINT_NEW_SOURCE_COLORS[count % MULTIPOINT_NEW_SOURCE_COLORS.length];
+}
+
+/**
+ * Pure function. A new source whose anchors' centroid lands on (x, y) in paint-box
+ * units — the click-to-place form of multipointFeature, same shape and size.
+ * @param {"point"|"line"|"curve"} kind - Initial geometry.
+ * @param {string} color - Main colour.
+ * @param {number} x - Paint-box x fraction of the click (may lie off the box).
+ * @param {number} y - Paint-box y fraction.
+ * @returns {object} Feature with [N,6] nodes translated so their anchors centre on (x, y).
+ * @example multipointFeatureAt("point", "#f00", 0.1, 0.9).nodes // [[0.1,0.9,0,0,0,0]]
+ * @example multipointFeatureAt("line", "#f00", 0.5, 0.25).nodes // [[0.25,0.25,0,0,0,0],[0.75,0.25,0,0,0,0]]
+ */
+export function multipointFeatureAt(kind, color, x, y) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error(`Multipoint placement needs a finite point, got (${x}, ${y})`);
+  const feature = multipointFeature(kind, color);
+  const cx = feature.nodes.reduce((s, n) => s + n[0], 0) / feature.nodes.length;
+  const cy = feature.nodes.reduce((s, n) => s + n[1], 0) / feature.nodes.length;
+  return { ...feature, nodes: feature.nodes.map(([nx, ny, ...handles]) => [nx + x - cx, ny + y - cy, ...handles]) };
+}
+
+/**
  * Pure function. A visible three-point starting fill, seeded from the previous solid.
  * @param {string} seed - Existing solid colour.
  * @returns {{features: object[]}} Editable state; no generated pixels.
@@ -130,16 +168,21 @@ export function nearestPolylineOffset(points, point) {
  * Hidden nodes are retained but bypassed, exactly as by the renderer. Open ends
  * extend the visible endpoint's last step. A closed beginning is inserted at the
  * closing seam instead, keeping the colour ramp's origin and addresses unchanged.
+ * `t` picks WHERE on the split cubic the node lands (de Casteljau at t, so the
+ * drawn curve is unchanged for any t); the Inspector's insert uses the midpoint.
  * Stops remain independent; input is immutable.
  * @param {object} feature - Stored feature with [N,6] nodes.
  * @param {number} index - Insertion index in [0,N].
+ * @param {number} t - Cubic parameter in (0,1) of the split point; ignored at an open end.
  * @returns {object} Feature with one additional node, and aligned visibility.
  * @example insertFeatureNode(multipointFeature("line", "#f00"), 1).nodes[1] // [0.5,0.5,-0.125,0,0.125,0]
+ * @example insertFeatureNode(multipointFeature("line", "#f00"), 1, 0.25).nodes[1] // [0.328125,0.5,-0.046875,0,0.140625,0] (a handle-free cubic is not arc-length parametrized)
  */
-export function insertFeatureNode(feature, index) {
+export function insertFeatureNode(feature, index, t = 0.5) {
   const nodes = feature.nodes.map((n) => n.slice());
   const count = nodes.length;
   if (!Number.isInteger(index) || index < 0 || index > count || !count) throw new Error("Multipoint node insertion needs an existing path and a valid index");
+  if (!(t > 0 && t < 1)) throw new Error(`Multipoint node insertion needs a split parameter strictly inside (0,1), got ${t}`);
   const visible = nodes.map((_, i) => i).filter((i) => elementActive(feature.nodesActive, i));
   // A closed curve's seam is also its end. Keep the original visible origin so
   // inserting there does not shift every independent arc-length colour address.
@@ -161,7 +204,7 @@ export function insertFeatureNode(feature, index) {
     inserted = [edge[0] + dx, edge[1] + dy, 0, 0, 0, 0];
   } else {
     const c = nodeCubic(nodes[before], nodes[after]);
-    const l = partialCubic(c, 0, 0.5), r = partialCubic(c, 0.5, 1), p = evalCubic(c, 0.5);
+    const l = partialCubic(c, 0, t), r = partialCubic(c, t, 1), p = evalCubic(c, t);
     nodes[before][4] = l[1][0] - l[0][0]; nodes[before][5] = l[1][1] - l[0][1];
     nodes[after][2] = r[2][0] - r[3][0]; nodes[after][3] = r[2][1] - r[3][1];
     inserted = [p[0], p[1], l[2][0] - p[0], l[2][1] - p[1], r[1][0] - p[0], r[1][1] - p[1]];
@@ -173,12 +216,16 @@ export function insertFeatureNode(feature, index) {
 }
 
 /**
- * Pure function. Reverses traversal while preserving geometry and physical sides.
- * @param {object} feature - Stored nodes/stops and optional visibility companions.
- * @returns {object} Reversed feature; left/right colours and handle roles swapped.
- * @example reverseFeature(multipointFeature("line", "#f00")).nodes[0][0] // 0.75
+ * Pure function. The node permutation reverseFeature applies: entry j is the OLD
+ * index of the node that becomes node j. Exported so a caller holding node
+ * addresses (the canvas handle selection) can follow the same nodes across a
+ * reverse rather than guessing.
+ * @param {object} feature - Stored nodes, optional nodesActive, closed flag.
+ * @returns {number[]} New position → old index.
+ * @example reversedNodeOrder({nodes: [[0],[1],[2]], closed: false}) // [2, 1, 0]
+ * @example reversedNodeOrder({nodes: [[0],[1],[2]], closed: true}) // [0, 2, 1] (a closed path keeps its origin)
  */
-export function reverseFeature(feature) {
+export function reversedNodeOrder(feature) {
   const order = feature.nodes.map((_, i) => i).reverse();
   if (feature.closed && order.length > 1) {
     // Keep the closed path's visible origin, so 1-offset addresses the same spot.
@@ -186,6 +233,17 @@ export function reverseFeature(feature) {
     const pivot = order.indexOf(origin < 0 ? 0 : origin);
     order.push(...order.splice(0, pivot));
   }
+  return order;
+}
+
+/**
+ * Pure function. Reverses traversal while preserving geometry and physical sides.
+ * @param {object} feature - Stored nodes/stops and optional visibility companions.
+ * @returns {object} Reversed feature; left/right colours and handle roles swapped.
+ * @example reverseFeature(multipointFeature("line", "#f00")).nodes[0][0] // 0.75
+ */
+export function reverseFeature(feature) {
+  const order = reversedNodeOrder(feature);
   const nodes = order.map((i) => {
     const [x, y, ix, iy, ox, oy] = feature.nodes[i];
     return [x, y, ox, oy, ix, iy];
