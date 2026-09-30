@@ -26,6 +26,50 @@ const EXPECTED_IDS = [
   "fortress-agate", "malachite-bands", "rhodochrosite-fan", "peacock-eye", "prismatic-spring", "venus-belt", "noctilucent-night", "pool-caustics", "aurora-corona", "jewel-beetle", "bismuth-hopper", "glowing-eddy", "tiger-eye", "fire-opal", "amethyst-geode", "golden-hour", "glowing-surf",
   // Retro & eras
   "whiplash-silk", "rajah-steam", "etoile-rails", "fillmore-vortex", "neon-rose", "flower-power", "rainbow-bend", "supergraphic-serpentine", "airbrush-waves", "city-pop", "aqua-arcs", "aero-streaks", "bloom-petals", "red-fuji", "seigaiha-waves", "record-swirl", "screensaver-trails", "bondi-blobs",
+  // Ukiyo-e & shin-hanga
+  "edo-dawn", "ohashi-shower", "kanbara-snow", "kameido-snow", "kajikazawa-blues", "sailing-morning", "sailing-evening", "sailing-night",
+  // Marbling
+  "ebru-lale", "ebru-battal", "ebru-stone-teal", "marble-curl-stone", "marble-stroom", "marble-peacock-eye",
+  // Impressionism
+  "sunrise-harbour-haze", "haystack-sunset-snow", "haystacks-end-of-day", "parliament-fog", "rouen-cathedral-sunset", "rouen-cathedral-blue-gold", "lilies-sunset-pond", "lilies-green-pond", "temeraire-sunset", "boulevard-night", "orchard-blossom", "pearl-and-blush",
+  // Post-Impressionism
+  "starry-night-rhone", "sunflowers-turquoise", "wheatfield-cypresses", "almond-blossom", "saint-tropez-harbour", "venice-salute-sails", "vision-vermilion", "yellow-christ-field", "vuillard-lamplit-room",
+  // Art Nouveau & Symbolism
+  "mucha-spring-bough", "mucha-zodiac-halo", "mucha-autumn-grapes", "mucha-job-whorl", "klimt-tree-of-life", "klimt-water-serpents", "klimt-birch-forest",
+  // Fauvism & Expressionism
+  "derain-thames", "kirchner-street", "marc-blue-horses", "munch-scream-sky", "munch-the-sun", "nolde-sea-sunset", "nolde-flower-garden", "jawlensky-head",
+  // Suprematism & Constructivism
+  "malevich-red-square", "malevich-airplane-flying", "lissitzky-red-wedge", "lissitzky-proun-rings", "lissitzky-proun-prism", "malevich-eight-rectangles", "malevich-supremus-bars", "malevich-trapezium-square", "malevich-yellow-quadrilateral", "rodchenko-pure-colours",
+  // Hard-edge & De Stijl
+  "mondrian-large-blue-plane", "mondrian-yellow-plane", "mondrian-pastel-lattice", "doesburg-counter-composition", "kelly-spectrum", "kelly-curved-fields", "albers-yellow-climate", "albers-glow", "albers-apparition",
+  // Surrealism
+  "dali-desert-dusk", "dali-amber-storm", "magritte-fair-weather", "tanguy-grey-plain", "tanguy-rose-ochre", "tanguy-sea-floor", "miro-constellation", "miro-blue-field", "miro-carnival", "dechirico-empty-piazza",
+  // Pop & contemporary
+  "hockney-pool-ripples", "warhol-flowers", "lichtenstein-ben-day-dots", "lichtenstein-comic-waves", "kusama-dot-field", "haring-radiant-rays", "murakami-smile-flower", "petermax-cosmic-rings", "petermax-rainbow-flow",
+  // World textiles
+  "parang-rusak", "teal-chevron-ikat", "kumo-shibori", "adras-ikat", "arashi-shibori", "kente-zigzag", "selbu-rose",
+  // Mid-century to Memphis
+  "cutout-figure", "beethoven-arcs", "carlton-shelves", "prism-beam",
+  // Cinema grades
+  "teal-orange-blockbuster", "neon-noir-rain", "pastel-symmetry", "day-for-night-blue", "magic-hour-glow", "sodium-vapour-night", "step-printed-smear", "one-point-corridor", "desert-orange-teal", "desert-planet-haze", "venetian-noir", "anamorphic-flare", "two-strip-sunset", "amber-gloom",
+  // Film & print processes
+  "tungsten-halation", "instant-film-fade", "cyanotype-fern", "sepia-toned-portrait", "selenium-toned-ridges", "riso-overprint-blue-pink",
+  // Light art
+  "weather-project", "ganzfeld-blue", "peachblow-tubes", "solid-light-cone", "wedgework-light", "crater-oculus", "mist-rainbow", "rainbow-panorama", "resonating-lamps", "particle-waterfall", "neon-coil", "neon-scrawl", "coloured-shadows", "gold-diagonal",
+  // Generative art
+  "fidenza-ink", "fidenza-tangerine", "molnar-nested-squares", "schotter-grid", "mohr-cube",
+  // 3D gradients & renders
+  "chrome-blob", "inflated-heart", "iridescent-torus", "clay-sphere", "glass-orb", "lime-jelly", "holo-blob", "water-drop", "gummy-star", "puffy-cloud", "clay-trio",
+  // Architecture & light
+  "barragan-pink-wall", "barragan-gilardi",
+  // Skies & atmospheres
+  "clear-sunset", "blue-hour", "cirrus-dawn", "krakatoa-afterglow", "fog-bank", "double-rainbow", "sun-dog-halo", "crepuscular-rays", "anticrepuscular-rays", "mammatus-dusk", "polar-twilight", "desert-heat-haze", "aurora-crimson-crown", "steve-ribbon", "aurora-mirror-lake", "lenticular-dusk",
+  // Landscape painting
+  "monk-by-the-sea",
+  // Botanical art
+  "strawberry-thief-indigo",
+  // Deep sky
+  "cosmic-cliffs", "horsehead-dark", "catseye-shells", "helix-eye", "southern-ring", "elliptical-glow", "callisto-craters", "ocean-exoplanet", "twin-suns", "red-dwarf-sky",
   // Nature
   "hillside-dawn", "sunlit-shafts", "coral-atoll", "sunlit-grove", "dune-crests", "glacier-facets", "lavender-rows", "misty-ridges", "lightning-strike", "autumn-leaves", "sakura-bloom", "frost-star", "mossy-stones", "ember-volcano", "moonlit-sea",
   // Geometric

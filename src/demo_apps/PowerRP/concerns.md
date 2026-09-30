@@ -1923,3 +1923,42 @@ it so slow?" Measured in Metal Chrome (M4 Max, ANGLE Metal) with
 - VERIFIED: .scratchpad/radial_controls/sheet.mjs renders 24 combos through Skia; every render matches radialRampT within 1/255 (p99), defaults unchanged.
 - NOT DONE: manifest (claude_instructions.md) radial section not updated; SVG/PDF output not rasterized/inspected; paint_handles_test may still expect a single radial bead; PowerRP build not run.
 - CORRECTION/STATUS at wrap-up: CLAUDE.md spread paragraph rewrite applied in the second wrap-up call (the first regex missed). Quick checks: paint_gradient, gradient_spread, gradient_phase, pdf_vector PASS; tests/paint_handles_test.js FAILS one case "a radial gradient yields the centre bead alone" (expected: the new radial direction bead — update that test); doctest 1 failure:   core/derive.js:1658      nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}}, plugin: {inspector: [{key: "fill", kin      want ["fill-grad-center"]      got  ["fill-grad-center","fill-grad-dir"] 
+
+## 2026-09-30 — Round-3 preset merge (Sonnet research frenzy, 15 partial folders)
+- 219 presets authored across `.scratchpad/frenzy/r3_agent_{1..10,12..16}` (the agents were stopped early by a
+  usage limit, so several families are short). The lead looked at every one at 224 px and CULLED 40: muddy or
+  spotty (galette-dapple, cafe-terrace-night, bonnard-mosaic-bath, cross-processed-green, storm-break,
+  chapel-dusk), crude/clip-art (matisse-dance-ring, matisse-goldfish, kandinsky-murnau, tahitian-women-beach,
+  sunflowers-chrome, umbrellas-blue, mucha-gismonda-arch, zojoji-snow, summit-storm, dali-soft-watch,
+  hockney-bigger-splash, hockney-lawn-spray, kusama-pumpkin, thiebaud-cake-slice, twilight-epiphany,
+  memphis-rug, ruysch-dark-bouquet, redoute-china-rose, willow-bough-sage), dull near-flat single shapes
+  (malevich-black-square, malevich-white-on-white, lissitzky-proun-slab, rouen-cathedral-grey), redundant
+  variants (haystack-snow-morning, haystack-high-summer, ebru-cicekli, aguayo-bands), and the ones their own
+  authors flagged (popova-architectonic-diamonds, doesburg-arithmetic, rain-steam-speed, grande-jatte-afternoon,
+  matisse-red-studio, derain-collioure, dali-mirror-lake). 179 kept.
+- De-branded: anatomy-murder → cutout-figure "Cut-paper figure" (film title), arrakis-haze → desert-planet-haze
+  (fictional-franchise place name), prism-beam label "Dark side prism" → "Prism beam" and its description no
+  longer names the album-art studio. No id/label/geometry collisions existed across folders or with the catalog.
+- Folding: "Mid-century & atomic" (2) + "Psychedelic to Memphis" (3 minus memphis-rug) → "Mid-century to
+  Memphis"; the two Barragán presets authored as "Murals & street colour" moved to "Architecture & light"
+  (they are architecture, and round 4 is authoring murals without Barragán). "Landscape painting" (1) and
+  "Botanical art" (1) are kept as families because round-4 agents are extending them.
+- MERGE METHOD: `.scratchpad/frenzy/r3_merge/merge.mjs` (acorn) finds each kept id's defining unit (array
+  element, push/tag argument, `add(FAMILY, "id", …)` statement, or a top-level `{ … }` block → IIFE), rewrites
+  it to a plain `preset(…)` expression, keeps only top-level declarations the kept units reference (fixpoint),
+  resolves helper re-exports to their true origin, and tree-shakes each folder's helpers.js into
+  `core/multipoint_presets/<topic>_helpers.js`. INVARIANTS PROVEN: all 179 merged paints JSON-identical to the
+  agent originals (`r3_merge/check.mjs`), all 248 HEAD presets byte-identical (`r3_merge/existing_check.mjs`
+  against a `git archive HEAD` extract), no -0 in stored paint. Mistake caught on the way: the reference regex
+  first treated `...NAME` (spread) as a member access and silently dropped `SAILS`; fixed with lookbehinds.
+- Three agent doc examples were wrong about their own helpers (clipPolygon diamond count, clockwise/cwPolygon
+  orientation of a screen-counter-clockwise square); corrected to what the code returns.
+- Sources per preset: each `.scratchpad/frenzy/r3_agent_*/NOTES.md` where the agent wrote one (agents 2, 7, 9,
+  10, 14; the rest recorded sources in their final reports, preserved in the lead's session transcript) and the
+  downloaded references in each folder's `refs/`.
+- NEW SOLVER LESSONS from this round: a spectrum fan of shared two-sided rays needs each ray to supply the bands
+  on both sides; overlapping `glow` rim rings leave dark creases — use trimmed open arcs for two overlapping discs;
+  a 4-stop closed ramp `[mid, dark, light, mid]` on a two-sided ellipse shades like a lit sphere (grapes, pearls,
+  3D renders); stacked open two-sided edge-to-edge lines beat closed silhouettes for crisp landscape layers;
+  full-width single-sided sky rows matching the ramp at their height stop the grey mid-sky of rail-only skies;
+  a closed shape's two palettes must be the same length.
