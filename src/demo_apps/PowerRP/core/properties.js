@@ -774,6 +774,23 @@ export const MULTIPOINT_FEATURES_LIST = {
   ] },
 };
 
+/** MULTIPOINT RENDER RESOLUTION — the paint-level `multipointResolution` leaf: the
+ * side N of the N×N field the diffusion solver computes over its square solve
+ * domain. PAINT-LEVEL (beside `type` and the dither leaves), so applying a preset,
+ * which replaces the `multipoint` sub-state, keeps it. STRINGS, because a numeric
+ * leaf would tween 512 → 2048 through 1280, which is no grid; strings switch
+ * discretely. "auto" = the smallest power of two covering the field's device-pixel
+ * span in THIS draw, clamped to 128..2048 (render_gpu/skia/multipoint.js). Absent and
+ * "512" parse identically (render_gpu/ir.js omits the default leaf). */
+export const MULTIPOINT_RESOLUTION_AUTO = "auto";
+export const MULTIPOINT_DEFAULT_RESOLUTION = "512";
+export const MULTIPOINT_RESOLUTIONS = ["128", "256", "512", "1024", "2048", MULTIPOINT_RESOLUTION_AUTO];
+export const MULTIPOINT_RESOLUTION_LABELS = {
+  128: "128² (draft)", 256: "256²", 512: "512² (default)", 1024: "1024²", 2048: "2048² (slow)",
+  [MULTIPOINT_RESOLUTION_AUTO]: "Auto (match output pixels)",
+};
+export const MULTIPOINT_RESOLUTION_HELP = "Grid the colour field is solved on. Higher removes the stair-stepping along two-sided paths when you zoom in or export large, at a cost: one solve takes about 0.02 / 0.05 / 0.2 / 0.7 / 3 s at 128² / 256² / 512² / 1024² / 2048² (2048² also needs ~1.5 GB while solving). Auto picks the grid from how many screen or export pixels the fill covers, up to 2048². The editor shows a quick preview and refines when you pause; exports always use the full setting.";
+
 export const GRADIENT_STOPS_LIST = {
   kind: LIST_ROW_KIND,
   label: "Stops",

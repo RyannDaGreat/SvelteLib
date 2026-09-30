@@ -125,6 +125,7 @@ export class SkiaSurface {
     this._multipointCompleted = new Set();
     this._multipointFailed = new Set();
     this._multipointBusy = false;
+    this._multipointJob = null; // the request the worker is solving now
     this._multipointReady = false;
     this._lastRender = null;
   }
@@ -201,14 +202,20 @@ export class SkiaSurface {
   }
 
   /**
-   * Command. Replaces pending work with this frame's sources; never queues every
-   * intermediate drag frame. Already-running work may finish into the bounded cache.
-   * @param {object[]} requests - All visible fields, with final-cache ready flags.
+   * Command. Replaces pending work with this frame's fields; never queues every
+   * intermediate drag frame. A running solve whose field LEFT the scene is cancelled
+   * (worker terminated, respawned on demand): at 2048² it would otherwise hold the
+   * only worker for seconds on a result nobody will see.
+   * @param {object[]} requests - All visible field keys, with final-cache ready flags.
    * @returns {undefined}
    */
   _queueMultipoint(requests) {
     clearTimeout(this._multipointTimer);
     this._multipointActive = new Set(requests.map((r) => r.key));
+    if (this._multipointBusy && !this._multipointActive.has(this._multipointJob.key)) {
+      this._multipointWorker.terminate(); this._multipointWorker = null;
+      this._multipointBusy = false; this._multipointJob = null;
+    }
     this._multipointFailed = new Set([...this._multipointFailed].filter((key) => this._multipointActive.has(key)));
     this._multipointCompleted = new Set([...this._multipointCompleted].filter((key) => this._multipointActive.has(key)));
     for (const {key,ready} of requests) {
@@ -229,36 +236,44 @@ export class SkiaSurface {
     this._multipointPending = this._multipointPending.filter((r) => !this._multipointCompleted.has(r.key) && !this._multipointFailed.has(r.key));
     if (this._multipointBusy || !this._multipointReady || !this._multipointPending.length) return;
     if (!this._multipointWorker) {
-      this._multipointWorker = new Worker(new URL("./multipoint_worker.js", import.meta.url), {type:"module"});
-      this._multipointWorker.onmessage = ({data:{key,result,error}}) => {
-        this._multipointBusy = false;
+      const worker = new Worker(new URL("./multipoint_worker.js", import.meta.url), {type:"module"});
+      this._multipointWorker = worker;
+      worker.onmessage = ({data:{key,field,error}}) => {
+        // A cancelled (terminated) worker's late message answers a field that left
+        // the scene; cancellation is the defined outcome, so it is dropped.
+        if (worker !== this._multipointWorker) return;
+        const job = this._multipointJob;
+        if (job?.key !== key) throw new Error(`Multipoint worker answered ${key} while solving ${job?.key}.`);
+        this._multipointBusy = false; this._multipointJob = null;
         if (error) {
           this._multipointFailed.add(key);
           reportOnce(`multipoint-refinement:${key}`, `Multipoint final-quality refinement failed; the viewport still shows its lower-resolution preview. ${error}`);
         } else {
-          rememberMultipointField(key,result);
+          rememberMultipointField(job.contentKey,field);
           if (this._multipointActive.has(key)) this._multipointCompleted.add(key);
           if (this._lastRender && this._multipointActive.has(key)) this.render(...this._lastRender);
         }
         this._pumpMultipoint();
       };
-      this._multipointWorker.onerror = (event) => {
-        this._multipointBusy = false;
+      worker.onerror = (event) => {
+        if (worker !== this._multipointWorker) return; // cancelled worker, as above
+        this._multipointBusy = false; this._multipointJob = null;
         this._multipointFailed = new Set(this._multipointActive);
         this._multipointPending = [];
         reportOnce("multipoint-worker", `Multipoint refinement worker failed: ${event.message} (${event.filename}:${event.lineno}). The viewport remains at preview resolution.`);
-        this._multipointWorker.terminate(); this._multipointWorker = null;
+        worker.terminate(); this._multipointWorker = null;
       };
     }
     const request = this._multipointPending.shift();
-    this._multipointBusy = true;
-    this._multipointWorker.postMessage(request);
+    this._multipointBusy = true; this._multipointJob = request;
+    this._multipointWorker.postMessage({key:request.key, features:request.features, size:request.size});
   }
 
   /** Command. Frees WASM/GPU resources and cancels this surface's pending refinement. */
   dispose() {
     clearTimeout(this._multipointTimer);
     this._multipointWorker?.terminate(); this._multipointWorker = null;
+    this._multipointBusy = false; this._multipointJob = null;
     this._multipointPending = []; this._lastRender = null;
     // Free this context's reused video textures BEFORE the GrContext dies — a
     // later eviction .delete() on a torn-down context would fault the wasm heap.

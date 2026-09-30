@@ -255,6 +255,7 @@
   import { makeHoverPreview } from "./hoverPreview.js";
   import { resolveScrub } from "../../../lib/numberStep.js";
   import { GRADIENT_STOPS_LIST, GRADIENT_SPREAD_MODES, GRADIENT_SPREAD_LABELS, GRADIENT_DEFAULT_SPREAD, bundle, bundleDefaults, selectRowItems } from "../core/properties.js";
+  import { MULTIPOINT_RESOLUTIONS, MULTIPOINT_RESOLUTION_LABELS, MULTIPOINT_DEFAULT_RESOLUTION, MULTIPOINT_RESOLUTION_HELP } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
   import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults, visibleKnobRows } from "../render_gpu/skia/materials.js";
   import { getStrokeMaterial, strokeMaterialIds as strokeIds } from "../render_gpu/skia/stroke_materials.js";
@@ -1120,6 +1121,25 @@
            renders 8 or 1 — a control contradicting the picture beside it. It
            replaced a workaround that WROTE the default on mode change; displaying
            it stores nothing, so an untouched paint stays byte-identical. -->
+      <!-- RESOLUTION — the paint-level `multipointResolution` leaf (declared in
+           core/properties.js). Paint-level, so picking a preset keeps it. `value`
+           shows the default when absent and STORES nothing until changed, so an
+           untouched paint stays byte-identical. One Dropdown commit = one undo unit. -->
+      {#if mode === "multipointGradient"}
+        <div class="paint-sub-row">
+          <Tooltip text={MULTIPOINT_RESOLUTION_HELP}>
+            <span class="paint-sub-label">Resolution</span>
+          </Tooltip>
+          <span class="paint-sub-control">
+            <Dropdown
+              items={MULTIPOINT_RESOLUTIONS.map((r) => ({ value: r, label: MULTIPOINT_RESOLUTION_LABELS[r] }))}
+              value={String(raw?.multipointResolution ?? MULTIPOINT_DEFAULT_RESOLUTION)}
+              {disabled}
+              onchange={(v) => commitAt(["multipointResolution"], v)}
+            />
+          </span>
+        </div>
+      {/if}
       {#each ditherRows as row (row.key)}
         <div class="paint-sub-row">
           <span class="paint-sub-label">{row.label}</span>

@@ -57,9 +57,11 @@ export function skTileMode(CanvasKit, tile) {
  *
  * `ctm` is `canvas.getTotalMatrix()` — the local→device mapping in force for this
  * draw, which the dither needs because its threshold must land on the DEVICE pixel
- * grid rather than on the shape's local one (see dither_shader.js's header). It is
- * ignored entirely when the paint is not dithered, which is why every existing
- * caller may keep passing nothing.
+ * grid rather than on the shape's local one (see dither_shader.js's header). The
+ * only other reader is a Multipoint paint whose resolution is "auto", which sizes
+ * its field to this draw's device pixels (null = identity, i.e. local units are
+ * device pixels). Every other paint ignores it, which is why a caller drawing
+ * neither may pass nothing.
  *
  * Args:
  *   CanvasKit: the CanvasKit module
@@ -72,7 +74,7 @@ export function skTileMode(CanvasKit, tile) {
  *   Shader
  */
 export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1, ctm = null) {
-  return depthShader(CanvasKit, unditheredShaderForPaint(CanvasKit, paint, bounds, opacity), paintDepth(paint), ctm);
+  return depthShader(CanvasKit, unditheredShaderForPaint(CanvasKit, paint, bounds, opacity, ctm), paintDepth(paint), ctm);
 }
 
 /**
@@ -81,9 +83,10 @@ export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1, ctm = nu
  * dither: split out so the dither wrap is one unconditional line at a single exit
  * instead of three returns each remembering to wrap.
  */
-function unditheredShaderForPaint(CanvasKit, paint, bounds, opacity = 1) {
+function unditheredShaderForPaint(CanvasKit, paint, bounds, opacity = 1, ctm = null) {
   if (!isGradientPaint(paint)) throw new Error("skShaderForPaint: expected a gradient Paint (solid paints use setColor, not a shader)");
-  if (paint.type === "multipointGradient") return multipointShader(CanvasKit, paint, bounds, opacity);
+  // The matrix also sizes an "auto"-resolution Multipoint field to this draw's device pixels.
+  if (paint.type === "multipointGradient") return multipointShader(CanvasKit, paint, bounds, opacity, ctm);
   const colors = paint.stops.map((s) => CanvasKit.Color4f(s.color[0], s.color[1], s.color[2], s.color[3] * opacity));
   const positions = paint.stops.map((s) => s.offset);
   // Unit-space (objectBoundingBox) → local: translate to the bbox origin, scale by

@@ -28,7 +28,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/@fs${artifacts}/index.html`);
   const result = await page.evaluate(async (root) => {
     const {SkiaSurface} = await import(`${root}/render_gpu/skia/browser_surface.js`);
-    const {withMultipointPreview,multipointShader,disposeMultipointImages,MULTIPOINT_FINAL_SIZE} = await import(`${root}/render_gpu/skia/multipoint.js`);
+    const {withMultipointPreview,multipointShader,disposeMultipointImages} = await import(`${root}/render_gpu/skia/multipoint.js`);
     const originalWorker = window.Worker, started = [];
     let worker, requests;
     window.Worker = class {
@@ -38,7 +38,8 @@ try {
       postMessage(job) { this.job=job; started.push(job.key); }
     };
     const CK = {ColorType:{RGBA_F16:1},AlphaType:{Premul:1},ColorSpace:{SRGB:1},TileMode:{Clamp:1},FilterMode:{Linear:1},MipmapMode:{None:0},MakeImage:()=>({delete(){},makeShaderOptions:()=>({delete(){}})})};
-    const paints = Array.from({length:10},(_,i)=>({features:[{nodes:[[0.5,0.5,0,0,0,0]],stops:[{offset:0,color:[i/10,0.5,0.5,1],rightColor:[i/10,0.5,0.5,1]}],weight:1,twoSided:false,closed:false}]}));
+    // 1024² F16 fields are 8 MiB each: ten exceed the 64 MiB field budget.
+    const paints = Array.from({length:10},(_,i)=>({resolution:1024,features:[{nodes:[[0.5,0.5,0,0,0,0]],stops:[{offset:0,color:[i/10,0.5,0.5,1],rightColor:[i/10,0.5,0.5,1]}],weight:1,twoSided:false,closed:false}]}));
     const surface = Object.assign(Object.create(SkiaSurface.prototype), {_multipointWorker:null,_multipointTimer:null,_multipointPending:[],_multipointActive:new Set(),_multipointCompleted:new Set(),_multipointFailed:new Set(),_multipointBusy:false,_multipointReady:false,_lastRender:[]});
     /** Command. Runs the actual field cache and scheduling paths, without a GL context. */
     surface.render = () => {
@@ -52,7 +53,7 @@ try {
         clearTimeout(surface._multipointTimer);
         surface._multipointReady=true; surface._pumpMultipoint();
         if(!surface._multipointBusy) return true;
-        worker.onmessage({data:{key:worker.job.key,result:{size:MULTIPOINT_FINAL_SIZE,pixels:new Float32Array(MULTIPOINT_FINAL_SIZE**2*4),domain:{x:0,y:0,w:1,h:1},converged:true,relativeResidual:0}}});
+        worker.onmessage({data:{key:worker.job.key,field:{size:worker.job.size,half:new Uint16Array(worker.job.size**2*4),domain:{x:0,y:0,w:1,h:1}}}});
       }
       return false;
     }

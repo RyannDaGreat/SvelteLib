@@ -72,7 +72,7 @@ import { DEFAULT_FONT } from "./fonts.js";
 import { DITHER_MODES, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS, PAINT_DEFAULT_BIT_DEPTH, PAINT_MIN_BIT_DEPTH, PAINT_MAX_BIT_DEPTH, DITHER_BAYER_SIZES, PAINT_DITHER_DEFAULT_BAYER_SIZE, angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_SPREAD, GRADIENT_SPREAD_MODES, GRADIENT_COLLAPSE_WAVELENGTH, spreadPeriodHalves, rampAverageColor, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
 import { MULTIPOINT_TYPE } from "../core/multipoint.js";
-import { MULTIPOINT_FEATURES_LIST, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST } from "../core/properties.js";
+import { MULTIPOINT_FEATURES_LIST, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST, MULTIPOINT_RESOLUTIONS, MULTIPOINT_DEFAULT_RESOLUTION, MULTIPOINT_RESOLUTION_AUTO } from "../core/properties.js";
 import { reportOnce } from "../core/report.js";
 import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 
@@ -664,7 +664,7 @@ export function parsePaint(paint) {
   // gradient shader's type switch throws on the unknown type (never a silent
   // gray fill).
   if (type === "material") return paint;
-  if (type === MULTIPOINT_TYPE) return { type, ...parseMultipoint(paint.multipoint ?? paint), ...paintDepthFields(paint) };
+  if (type === MULTIPOINT_TYPE) return { type, ...parseMultipoint(paint.multipoint ?? paint), ...paintDepthFields(paint), ...multipointResolutionField(paint) };
   // A CROSSFADE paint (the `blend` interp mode's mid-transition value —
   // core/interp_modes.js): two paints and a mix factor, drawn as two passes at
   // complementary alpha. It PASSES THROUGH like a material does, but with both
@@ -699,6 +699,30 @@ export function parsePaint(paint) {
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
   return { type, stops, center, r: g.r, ...dither };
+}
+
+/**
+ * Pure function. The paint-level Multipoint render resolution (`multipointResolution`,
+ * core/properties.js), validated, in the spreadable form parsePaint folds into a
+ * parsed Multipoint paint: `{}` for the default 512² — absent OR "512" — else
+ * `{resolution}`, a grid side N or "auto". OMITTING THE DEFAULT is what keeps every
+ * pre-feature document's parsed object, field cache key and pixels byte-identical.
+ * An equation may yield the equal number; anything outside the list is refused.
+ * @param {object} paint - Stored paint; only `multipointResolution` is read.
+ * @returns {{resolution?: number|string}} Spreadable resolution field.
+ * @example multipointResolutionField({}) // {}
+ * @example multipointResolutionField({multipointResolution: "512"}) // {}
+ * @example multipointResolutionField({multipointResolution: "2048"}) // {resolution: 2048}
+ * @example multipointResolutionField({multipointResolution: 1024}) // {resolution: 1024} (an equation's number)
+ * @example multipointResolutionField({multipointResolution: "auto"}) // {resolution: "auto"}
+ */
+export function multipointResolutionField(paint) {
+  const raw = paint.multipointResolution ?? MULTIPOINT_DEFAULT_RESOLUTION;
+  const text = typeof raw === "number" ? String(raw) : raw;
+  if (!MULTIPOINT_RESOLUTIONS.includes(text))
+    throw new Error(`parsePaint: multipointResolution must be one of ${MULTIPOINT_RESOLUTIONS.join(", ")}, got ${JSON.stringify(raw)}`);
+  if (text === MULTIPOINT_DEFAULT_RESOLUTION) return {};
+  return { resolution: text === MULTIPOINT_RESOLUTION_AUTO ? text : Number(text) };
 }
 
 /**

@@ -11,6 +11,12 @@
  * singularities require resolution; algebraic convergence is not geometric accuracy.
  * Positive curves cut edges even at weak weight; exactly zero removes them entirely.
  * No clipping/quantization: bounded numerical undershoot survives in float output.
+ *
+ * The kernels (apply / jacobiSweep / restrict / prolong / vcycle / PCG) are written for
+ * speed but perform the SAME floating-point operations in the SAME order as the
+ * original straightforward loops, so output is bit-identical to them
+ * (verified per texel on 17 fixtures at 128²..2048², 2026-09-30). Reordering a sum,
+ * fusing across cells or changing precision changes every existing picture.
  */
 import { featurePolyline, MULTIPOINT_CURVE_TOLERANCE } from './multipoint.js';
 
@@ -26,6 +32,7 @@ const JACOBI_DAMPING = .8; // Prototype's measured symmetric smoother.
 const SMOOTH_STEPS = 2;
 const BOTTOM_SIZE = 4;
 const OUTPUT_SLACK = .01; // Larger violations are not credible premultiplied colors.
+const CENTRE_SNAP = 1e-9; // Texels. Far above float noise (~1e-13 at 2048²), far below any authored offset.
 
 /**
  * Pure function. Validate parsed features, then flatten using canonical geometry.
@@ -166,6 +173,28 @@ function addPoint(g, f, width) {
 }
 
 /**
+ * Pure function. Grid cell and in-cell fraction of one curve crossing, measured in
+ * texels from cell centres along the crossing axis. A crossing ON a cell centre
+ * (or within float noise of one) is resolved by one consistent symbolic
+ * perturbation — the curve is treated as lying an infinitesimal step to the +x
+ * side — so the horizontal and vertical passes agree on which side owns the
+ * centre cell. Without it a sloped path through centres gave that cell BOTH side
+ * colours and two uncut edges bridging the sides: a visible leak across the cut.
+ * @param {number} crossing Crossing coordinate in texel units (cell centre = integer).
+ * @param {boolean} northOfCentre True for a vertical-grid-line crossing of a segment
+ *   with dx·dy > 0: the +x-perturbed curve passes just NORTH of the centre there.
+ * @returns {number[]} [cell, fraction]: the crossing lies between cell and cell+1.
+ * @example crossingCell(3.25, false) // [3, 0.25]
+ * @example crossingCell(46.99999999999999, false) // [47, 0]
+ * @example crossingCell(47, true) // [46, 1]
+ */
+function crossingCell(crossing, northOfCentre) {
+  const centre = Math.round(crossing);
+  if (Math.abs(crossing - centre) > CENTRE_SNAP) { const cell = Math.floor(crossing); return [cell, crossing - cell]; }
+  return northOfCentre ? [centre - 1, 1] : [centre, 0];
+}
+
+/**
  * Command. Add finite two-sided cuts; unresolved curves get finite-length sources.
  * Screen-left is cross(tangent, offset)<0 (y points down); no endpoint rays.
  * @param {object} g Private graph to mutate, RHS (N,N,4), e.g. (128,128,4).
@@ -191,9 +220,9 @@ function addCurve(g, f, width) {
         const t = ((line + .5) / n - a[along]) / delta;
         // Own shared vertices once, but BOTH finite open endpoints are included.
         if (t < 0 || t > 1 || (t === 1 && (f.closed || k < lengths.length - 1))) continue;
-        const crossing = (a[across] + t * (b[across] - a[across])) * n - .5, cell = Math.floor(crossing);
+        const [cell, fraction] = crossingCell((a[across] + t * (b[across] - a[across])) * n - .5, axis === 1 && dx * dy > 0);
         if (cell < 0 || cell >= n - 1) continue;
-        const fraction = crossing - cell, s = (traveled + t * length) / total;
+        const s = (traveled + t * length) / total;
         const lc = sampleStops(f.stops, s, 'color'), rc = sampleStops(f.stops, s, right);
         const firstIsLeft = axis === 0 ? dy < 0 : dx > 0, i = axis === 0 ? line * n + cell : cell * n + line;
         const resistance = (n / CURVE_GAIN / width) / f.weight;
@@ -282,73 +311,135 @@ function hierarchy(fine) {
 }
 
 /**
- * Command. Apply four-channel graph Laplacian plus source diagonal.
+ * Command. Apply the four-channel graph Laplacian plus source diagonal:
+ * out = A x, or out = b − A x when `b` is given (the fused residual).
+ * Row/column loops replace per-cell `i % n` / `i >= n` tests; the arithmetic and
+ * its order are unchanged (diag term, then left, right, up, down).
  * @param {object} g Graph.
  * @param {Float64Array} x (H,W,4) RGBA, e.g. (128,128,4).
  * @param {Float64Array} out Same shape, overwritten; must not alias x.
+ * @param {Float64Array|null} b Optional right-hand side (H,W,4) for out = b − A x.
  * @returns {undefined}
  * @example apply(level(4),new Float64Array(64),new Float64Array(64)) // undefined
  */
-function apply(g, x, out) {
+function apply(g, x, out, b = null) {
   const {n, diag, right, down} = g, stride = CHANNELS * n;
-  for (let i = 0; i < diag.length; i++) {
-    const j = CHANNELS * i, left = i % n ? right[i - 1] : 0, up = i >= n ? down[i - n] : 0;
-    // Four fixed channels: test each neighbor once, not once per channel.
-    let r = diag[i] * x[j], g = diag[i] * x[j + 1], b = diag[i] * x[j + 2], a = diag[i] * x[j + 3];
-    if (left) { const k = j - CHANNELS; r -= left*x[k]; g -= left*x[k+1]; b -= left*x[k+2]; a -= left*x[k+3]; }
-    if (right[i]) { const k = j + CHANNELS, w = right[i]; r -= w*x[k]; g -= w*x[k+1]; b -= w*x[k+2]; a -= w*x[k+3]; }
-    if (up) { const k = j - stride; r -= up*x[k]; g -= up*x[k+1]; b -= up*x[k+2]; a -= up*x[k+3]; }
-    if (down[i]) { const k = j + stride, w = down[i]; r -= w*x[k]; g -= w*x[k+1]; b -= w*x[k+2]; a -= w*x[k+3]; }
-    out[j] = r; out[j+1] = g; out[j+2] = b; out[j+3] = a;
-  }
-}
-
-/**
- * Command. Symmetric weighted-Jacobi smoothing of level.u.
- * @param {object} g Level with b and u (H,W,4), e.g. (128,128,4).
- * @returns {undefined}
- * @example (() => { const g = level(4); g.diag.fill(1); smooth(g); return g.u[0]; })() // 0
- */
-function smooth(g) {
-  for (let step = 0; step < SMOOTH_STEPS; step++) {
-    apply(g, g.u, g.temp);
-    for (let i = 0; i < g.diag.length; i++) {
-      const scale = JACOBI_DAMPING / g.diag[i], j = i * CHANNELS;
-      for (let c = 0; c < CHANNELS; c++) g.u[j + c] += scale * (g.b[j + c] - g.temp[j + c]);
+  for (let y = 0, i = 0; y < n; y++) {
+    for (let col = 0; col < n; col++, i++) {
+      const j = CHANNELS * i, d = diag[i], left = col ? right[i - 1] : 0, up = y ? down[i - n] : 0, east = right[i], south = down[i];
+      // Four fixed channels: test each neighbor once, not once per channel.
+      let r0 = d * x[j], r1 = d * x[j + 1], r2 = d * x[j + 2], r3 = d * x[j + 3];
+      if (left) { const k = j - CHANNELS; r0 -= left*x[k]; r1 -= left*x[k+1]; r2 -= left*x[k+2]; r3 -= left*x[k+3]; }
+      if (east) { const k = j + CHANNELS; r0 -= east*x[k]; r1 -= east*x[k+1]; r2 -= east*x[k+2]; r3 -= east*x[k+3]; }
+      if (up) { const k = j - stride; r0 -= up*x[k]; r1 -= up*x[k+1]; r2 -= up*x[k+2]; r3 -= up*x[k+3]; }
+      if (south) { const k = j + stride; r0 -= south*x[k]; r1 -= south*x[k+1]; r2 -= south*x[k+2]; r3 -= south*x[k+3]; }
+      if (b) { out[j] = b[j] - r0; out[j+1] = b[j+1] - r1; out[j+2] = b[j+2] - r2; out[j+3] = b[j+3] - r3; }
+      else { out[j] = r0; out[j+1] = r1; out[j+2] = r2; out[j+3] = r3; }
     }
   }
 }
 
 /**
- * Command. Bilinear prolongation or its exact adjoint restriction, clamped edges.
+ * Command. Symmetric weighted-Jacobi smoothing of level.u, starting from u = 0.
+ * Each sweep writes u + ω D⁻¹(b − A u) into level.temp and swaps the two arrays,
+ * so level.u is replaced (not mutated in place). The first sweep from zero needs
+ * no operator application: A·0 = 0 exactly, so it is ω D⁻¹ b.
+ * @param {object} g Level with b (H,W,4), e.g. (128,128,4); u is overwritten.
+ * @returns {undefined}
+ * @example (() => { const g = level(4); g.diag.fill(1); smoothFromZero(g); return g.u[0]; })() // 0
+ */
+function smoothFromZero(g) {
+  const {diag, b} = g, u = g.u;
+  for (let i = 0; i < diag.length; i++) {
+    const scale = JACOBI_DAMPING / diag[i], j = i * CHANNELS;
+    u[j] = 0 + scale * b[j]; u[j+1] = 0 + scale * b[j+1]; u[j+2] = 0 + scale * b[j+2]; u[j+3] = 0 + scale * b[j+3];
+  }
+  for (let step = 1; step < SMOOTH_STEPS; step++) jacobiSweep(g);
+}
+
+/**
+ * Command. SMOOTH_STEPS weighted-Jacobi sweeps from the current level.u.
+ * @param {object} g Level with b and u (H,W,4), e.g. (128,128,4).
+ * @returns {undefined}
+ * @example (() => { const g = level(4); g.diag.fill(1); smooth(g); return g.u[0]; })() // 0
+ */
+function smooth(g) {
+  for (let step = 0; step < SMOOTH_STEPS; step++) jacobiSweep(g);
+}
+
+/**
+ * Command. One weighted-Jacobi sweep u ← u + ω D⁻¹(b − A u), fused into one pass
+ * that writes level.temp and then swaps it with level.u.
+ * @param {object} g Level with b and u (H,W,4), e.g. (128,128,4).
+ * @returns {undefined}
+ * @example (() => { const g = level(4); g.diag.fill(1); jacobiSweep(g); return g.u[0]; })() // 0
+ */
+function jacobiSweep(g) {
+  const {n, diag, right, down, b} = g, x = g.u, out = g.temp, stride = CHANNELS * n;
+  for (let y = 0, i = 0; y < n; y++) {
+    for (let col = 0; col < n; col++, i++) {
+      const j = CHANNELS * i, d = diag[i], left = col ? right[i - 1] : 0, up = y ? down[i - n] : 0, east = right[i], south = down[i];
+      let r0 = d * x[j], r1 = d * x[j + 1], r2 = d * x[j + 2], r3 = d * x[j + 3];
+      if (left) { const k = j - CHANNELS; r0 -= left*x[k]; r1 -= left*x[k+1]; r2 -= left*x[k+2]; r3 -= left*x[k+3]; }
+      if (east) { const k = j + CHANNELS; r0 -= east*x[k]; r1 -= east*x[k+1]; r2 -= east*x[k+2]; r3 -= east*x[k+3]; }
+      if (up) { const k = j - stride; r0 -= up*x[k]; r1 -= up*x[k+1]; r2 -= up*x[k+2]; r3 -= up*x[k+3]; }
+      if (south) { const k = j + stride; r0 -= south*x[k]; r1 -= south*x[k+1]; r2 -= south*x[k+2]; r3 -= south*x[k+3]; }
+      const scale = JACOBI_DAMPING / d;
+      out[j] = x[j] + scale * (b[j] - r0); out[j+1] = x[j+1] + scale * (b[j+1] - r1);
+      out[j+2] = x[j+2] + scale * (b[j+2] - r2); out[j+3] = x[j+3] + scale * (b[j+3] - r3);
+    }
+  }
+  g.u = out; g.temp = x;
+}
+
+/**
+ * Command. Restrict fine.residual into coarse.b: the exact adjoint of `prolong`.
+ * Cell-center weights (.75², .75·.25, .25·.75, .25²), clamped at the border.
  * @param {object} fine Fine level (H,W,4).
  * @param {object} coarse Half-size level (H/2,W/2,4), e.g. 128² -> 64².
- * @param {boolean} restrict true: residual -> coarse.b; false: coarse.u -> fine.u (add).
  * @returns {undefined}
- * @example transfer(level(8),level(4),true) // undefined, zero residual restricts to zero
+ * @example restrict(level(8),level(4)) // undefined, zero residual restricts to zero
  */
-function transfer(fine, coarse, restrict) {
-  const n = fine.n, m = coarse.n;
-  if (restrict) coarse.b.fill(0);
+function restrict(fine, coarse) {
+  const n = fine.n, m = coarse.n, v = fine.residual, cb = coarse.b;
+  cb.fill(0);
   for (let y = 0; y < n; y++) {
-    const cy = y >> 1, ny = Math.max(0, Math.min(m - 1, cy + (y % 2 ? 1 : -1)));
+    const cy = y >> 1, ny = y % 2 ? Math.min(m - 1, cy + 1) : Math.max(0, cy - 1);
     for (let x = 0; x < n; x++) {
-      const cx = x >> 1, nx = Math.max(0, Math.min(m - 1, cx + (x % 2 ? 1 : -1)));
+      const cx = x >> 1, nx = x % 2 ? Math.min(m - 1, cx + 1) : Math.max(0, cx - 1);
       const i = CHANNELS * (y * n + x), a = CHANNELS * (cy * m + cx), b = CHANNELS * (cy * m + nx), c = CHANNELS * (ny * m + cx), d = CHANNELS * (ny * m + nx);
       for (let ch = 0; ch < CHANNELS; ch++) {
-        if (restrict) {
-          // Cell-center interpolation: (.75², .75*.25, .25*.75, .25²).
-          const v = fine.residual[i + ch];
-          coarse.b[a + ch] += .5625 * v; coarse.b[b + ch] += .1875 * v;
-          coarse.b[c + ch] += .1875 * v; coarse.b[d + ch] += .0625 * v;
-        } else fine.u[i + ch] += .5625 * coarse.u[a + ch] + .1875 * coarse.u[b + ch] + .1875 * coarse.u[c + ch] + .0625 * coarse.u[d + ch];
+        const r = v[i + ch];
+        cb[a + ch] += .5625 * r; cb[b + ch] += .1875 * r;
+        cb[c + ch] += .1875 * r; cb[d + ch] += .0625 * r;
       }
     }
   }
 }
 
 /**
- * Command. One symmetric multigrid V-cycle; mutates hierarchy work vectors.
+ * Command. Add the bilinear (cell-center) interpolation of coarse.u into fine.u.
+ * @param {object} fine Fine level (H,W,4).
+ * @param {object} coarse Half-size level (H/2,W/2,4), e.g. 128² -> 64².
+ * @returns {undefined}
+ * @example prolong(level(8),level(4)) // undefined, zero correction adds zero
+ */
+function prolong(fine, coarse) {
+  const n = fine.n, m = coarse.n, u = fine.u, cu = coarse.u;
+  for (let y = 0; y < n; y++) {
+    const cy = y >> 1, ny = y % 2 ? Math.min(m - 1, cy + 1) : Math.max(0, cy - 1);
+    for (let x = 0; x < n; x++) {
+      const cx = x >> 1, nx = x % 2 ? Math.min(m - 1, cx + 1) : Math.max(0, cx - 1);
+      const i = CHANNELS * (y * n + x), a = CHANNELS * (cy * m + cx), b = CHANNELS * (cy * m + nx), c = CHANNELS * (ny * m + cx), d = CHANNELS * (ny * m + nx);
+      for (let ch = 0; ch < CHANNELS; ch++)
+        u[i + ch] += .5625 * cu[a + ch] + .1875 * cu[b + ch] + .1875 * cu[c + ch] + .0625 * cu[d + ch];
+    }
+  }
+}
+
+/**
+ * Command. One symmetric multigrid V-cycle: level.u ← approximately A⁻¹ level.b.
+ * Mutates hierarchy work vectors; level.u/temp may swap identity (read them fresh).
  * @param {object[]} levels Coarse hierarchy.
  * @param {number} index Current level.
  * @returns {undefined}
@@ -356,27 +447,25 @@ function transfer(fine, coarse, restrict) {
  */
 function vcycle(levels, index) {
   const g = levels[index];
-  g.u.fill(0);
   if (index === levels.length - 1) {
-    const l = g.cholesky, count = g.diag.length;
+    const l = g.cholesky, count = g.diag.length, u = g.u, b = g.b;
     for (let i = 0; i < count; i++) for (let ch = 0; ch < CHANNELS; ch++) {
-      let v = g.b[CHANNELS * i + ch];
-      for (let j = 0; j < i; j++) v -= l[i * count + j] * g.u[CHANNELS * j + ch];
-      g.u[CHANNELS * i + ch] = v / l[i * count + i];
+      let v = b[CHANNELS * i + ch];
+      for (let j = 0; j < i; j++) v -= l[i * count + j] * u[CHANNELS * j + ch];
+      u[CHANNELS * i + ch] = v / l[i * count + i];
     }
     for (let i = count - 1; i >= 0; i--) for (let ch = 0; ch < CHANNELS; ch++) {
-      let v = g.u[CHANNELS * i + ch];
-      for (let j = i + 1; j < count; j++) v -= l[j * count + i] * g.u[CHANNELS * j + ch];
-      g.u[CHANNELS * i + ch] = v / l[i * count + i];
+      let v = u[CHANNELS * i + ch];
+      for (let j = i + 1; j < count; j++) v -= l[j * count + i] * u[CHANNELS * j + ch];
+      u[CHANNELS * i + ch] = v / l[i * count + i];
     }
     return;
   }
-  smooth(g);
-  apply(g, g.u, g.temp);
-  for (let i = 0; i < g.b.length; i++) g.residual[i] = g.b[i] - g.temp[i];
-  transfer(g, levels[index + 1], true);
+  smoothFromZero(g);
+  apply(g, g.u, g.residual, g.b);
+  restrict(g, levels[index + 1]);
   vcycle(levels, index + 1);
-  transfer(g, levels[index + 1], false);
+  prolong(g, levels[index + 1]);
   smooth(g);
 }
 
@@ -388,6 +477,26 @@ function vcycle(levels, index) {
  * @example dot([1,2],[3,4]) // 11
  */
 function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+
+/**
+ * Pure function. True iff every element is finite.
+ * @param {ArrayLike<number>} values Numeric vector.
+ * @returns {boolean}
+ * @example allFinite([1, 2]) // true
+ * @example allFinite([1, Infinity]) // false
+ */
+function allFinite(values) { for (let i = 0; i < values.length; i++) if (!Number.isFinite(values[i])) return false; return true; }
+
+/**
+ * Pure function. The square solve domain solveMultipoint uses for these features:
+ * the bounding square of the unit paint box and every active source, in paint-box
+ * units. Lets a caller size the grid from the domain's device span before solving.
+ * @param {object[]} features Same parsed features solveMultipoint accepts (validated).
+ * @returns {{x:number,y:number,w:number,h:number}} Square domain, w === h >= 1.
+ * @example multipointDomain([]) // {x:0,y:0,w:1,h:1}
+ * @example multipointDomain([{nodes:[[1.5,.5,0,0,0,0]],stops:[{offset:0,color:[1,0,0,1]}]}]).w // 1.5 (off-box point widens the square)
+ */
+export function multipointDomain(features) { return prepare(features).domain; }
 
 /**
  * Pure function. Solve parsed Multipoint features without DOM, cache or input mutation.
@@ -410,43 +519,45 @@ export function solveMultipoint(features, {size = 128, tolerance = 1e-5, maxIter
   for (let i = 0; i < size * size; i++) { g.right[i] = i % size < size - 1 ? 1 : 0; g.down[i] = i + size < size * size ? 1 : 0; }
   for (const f of sources) addCurve(g, f, domain.w);
   finishDiagonal(g);
-  if (!g.diag.every(Number.isFinite) || !g.b.every(Number.isFinite)) throw new Error('Multipoint source strength overflowed numerical system');
-  const mass = g.mass.reduce((a, b) => a + b, 0);
+  if (!allFinite(g.diag) || !allFinite(g.b)) throw new Error('Multipoint source strength overflowed numerical system');
+  let mass = 0;
+  for (let i = 0; i < g.mass.length; i++) mass += g.mass[i];
   if (!Number.isFinite(mass) || (sources.length && !mass)) throw new Error('Multipoint source mass overflow/underflow');
   if (!mass) return {pixels:new Float32Array(length),size,domain,iterations:0,relativeResidual:0,converged:true};
-  const rhs = g.b.slice(), x = new Float64Array(length), r = new Float64Array(length), p = new Float64Array(length), ap = new Float64Array(length);
+  const rhs = g.b, x = new Float64Array(length), r = new Float64Array(length), p = new Float64Array(length), ap = new Float64Array(length);
   const average = [0,0,0,0];
   for (let i = 0; i < length; i++) average[i % CHANNELS] += rhs[i] / mass;
   for (let i = 0; i < length; i++) x[i] = average[i % CHANNELS];
-  apply(g, x, ap);
-  for (let i = 0; i < length; i++) r[i] = rhs[i] - ap[i];
+  apply(g, x, r, rhs);
   const norm = Math.sqrt(dot(rhs, rhs)) || 1;
   if (!Number.isFinite(norm)) throw new Error('Multipoint RHS norm overflow');
   let relativeResidual = Math.sqrt(dot(r, r)) / norm, iterations = 0;
   if (relativeResidual > tolerance) {
     const levels = hierarchy(g);
-    g.b.set(r); vcycle(levels, 0); p.set(g.u);
+    // The fine level's right-hand side IS the PCG residual: vcycle only reads it.
+    g.b = r; vcycle(levels, 0); p.set(g.u);
     let rz = dot(r, g.u);
     while (relativeResidual > tolerance && iterations < maxIterations) {
       apply(g, p, ap);
       const denominator = dot(p, ap);
       if (!(denominator > 0) || !(rz > 0) || !Number.isFinite(denominator + rz)) throw new Error('PCG lost positive definiteness');
       const alpha = rz / denominator;
+      let rr = 0;
       for (let i = 0; i < length; i++) { x[i] += alpha * p[i]; r[i] -= alpha * ap[i]; }
+      for (let i = 0; i < length; i++) rr += r[i] * r[i];
       iterations++;
-      relativeResidual = Math.sqrt(dot(r, r)) / norm;
+      relativeResidual = Math.sqrt(rr) / norm;
       if (relativeResidual <= tolerance) break;
-      g.b.set(r); vcycle(levels, 0);
-      const next = dot(r, g.u), beta = next / rz;
-      for (let i = 0; i < length; i++) p[i] = g.u[i] + beta * p[i];
+      vcycle(levels, 0);
+      const z = g.u, next = dot(r, z), beta = next / rz;
+      for (let i = 0; i < length; i++) p[i] = z[i] + beta * p[i];
       rz = next;
     }
   }
-  apply(g, x, ap);
-  for (let i = 0; i < length; i++) r[i] = rhs[i] - ap[i];
+  apply(g, x, r, rhs);
   relativeResidual = Math.sqrt(dot(r, r)) / norm;
   if (!Number.isFinite(relativeResidual)) throw new Error('Multipoint non-finite residual');
-  const converged = relativeResidual <= tolerance, pixels = Float32Array.from(x);
+  const converged = relativeResidual <= tolerance, pixels = new Float32Array(x);
   for (let i = 0; i < pixels.length; i++) {
     if (!Number.isFinite(pixels[i])) throw new Error('Multipoint non-finite output');
     const upper = i % CHANNELS === 3 ? 1 : pixels[i - i % CHANNELS + 3];
