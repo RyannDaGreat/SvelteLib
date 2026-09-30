@@ -40,7 +40,7 @@ try {
     const CK = {ColorType:{RGBA_F16:1},AlphaType:{Premul:1},ColorSpace:{SRGB:1},TileMode:{Clamp:1},FilterMode:{Linear:1},MipmapMode:{None:0},MakeImage:()=>({delete(){},makeShaderOptions:()=>({delete(){}})})};
     // 1024² F16 fields are 8 MiB each: ten exceed the 64 MiB field budget.
     const paints = Array.from({length:10},(_,i)=>({resolution:1024,features:[{nodes:[[0.5,0.5,0,0,0,0]],stops:[{offset:0,color:[i/10,0.5,0.5,1],rightColor:[i/10,0.5,0.5,1]}],weight:1,twoSided:false,closed:false}]}));
-    const surface = Object.assign(Object.create(SkiaSurface.prototype), {_multipointWorker:null,_multipointTimer:null,_multipointPending:[],_multipointActive:new Set(),_multipointCompleted:new Set(),_multipointFailed:new Set(),_multipointBusy:false,_multipointReady:false,_lastRender:[]});
+    const surface = Object.assign(Object.create(SkiaSurface.prototype), {_multipointWorker:null,_multipointTimer:null,_multipointPending:[],_multipointWanted:new Set(),_multipointJob:null,_multipointActive:new Set(),_multipointCompleted:new Set(),_multipointFailed:new Set(),_multipointBusy:false,_multipointReady:false,_lastRender:[]});
     /** Command. Runs the actual field cache and scheduling paths, without a GL context. */
     surface.render = () => {
       requests=withMultipointPreview(()=>{for(const paint of paints)multipointShader(CK,paint,{x:0,y:0,w:100,h:100},1).delete();});

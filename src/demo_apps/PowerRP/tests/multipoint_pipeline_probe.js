@@ -198,15 +198,24 @@ try {
     window.Worker = class extends NativeWorker {
       constructor(...args) {
         super(...args);
+        this._inflight = 0; // jobs this worker owes a reply for
         this.addEventListener("message", ({data}) => {
-          if (!data?.key || !("result" in data || "error" in data)) return;
-          window.__mpProbe.pending--;
-          window.__mpProbe.results.push({key:data.key,size:data.result?.size,converged:data.result?.converged,error:data.error});
+          // The worker answers {key, field} or {key, error}; a returned field is converged
+          // (render_gpu/skia/multipoint.js solvedField refuses nonconvergence).
+          if (!data?.key || !("field" in data || "error" in data)) return;
+          window.__mpProbe.pending--; this._inflight--;
+          window.__mpProbe.results.push({key:data.key,size:data.field?.size,converged:!!data.field,solver:data.field?.solver,error:data.error});
         });
       }
       postMessage(data,...args) {
-        if (data?.key && data.features) window.__mpProbe.pending++;
+        if (data?.key && data.features) { window.__mpProbe.pending++; this._inflight++; }
         return super.postMessage(data,...args);
+      }
+      // A stale job is CANCELLED by terminating its worker (browser_surface.js), and a
+      // terminated worker never replies — so its owed replies stop counting as pending.
+      terminate() {
+        window.__mpProbe.pending -= this._inflight; this._inflight = 0;
+        return super.terminate();
       }
     };
   });
@@ -234,6 +243,8 @@ try {
   assert.equal(await page.$$eval('.multipoint-presets .gradient-swatch',els=>els.length),MULTIPOINT_PRESETS.length,"real catalog: every preset has a swatch");
   for (const label of ["Neon spiral","Warm bokeh"]) {
     stage = `gallery ${label}`;
+    // An undo/redo round trip can re-mount the field, which closes the library; reopen it then.
+    if (!(await page.$(".multipoint-presets .gradient-swatch"))) await click(".multipoint-presets .gradient-presets-toggle");
     await oneUndo(() => click(`.multipoint-presets [aria-label="${label}"]`));
     const name=label.toLowerCase().replaceAll(' ','-');
     pictures.push(await shot(name));
