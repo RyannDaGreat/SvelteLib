@@ -133,7 +133,7 @@ export function roseRadius(k) {
  * Pure function. The Mandelbrot set's main cardioid c(t) = e^(it)/2 − e^(2it)/4, cusp at t = 0.
  * @param {number} t - Parameter in [0, 2π).
  * @returns {number[]} [x, y, dx/dt, dy/dt].
- * @example mandelbrotCardioid(Math.PI).slice(0, 2) // [-0.75,~0]
+ * @example mandelbrotCardioid(0).slice(0, 2) // [0.25,0] (the cusp)
  */
 export function mandelbrotCardioid(t) {
   return [Math.cos(t) / 2 - Math.cos(2 * t) / 4, Math.sin(t) / 2 - Math.sin(2 * t) / 4,

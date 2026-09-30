@@ -231,7 +231,7 @@ export function disc({ cx, cy, radius }, limb, space = SPACE) {
  * @param {string} limb - Limb colour.
  * @param {number} exponent - limbShade exponent.
  * @returns {object} Open feature with LATITUDE_STOPS.
- * @example latitudeBand({cx:.5,cy:.5,radius:.4}, 0, "#ffffff", null, "#000000", 1).stops[0].color // "#000000"
+ * @example latitudeBand({cx:.5,cy:.5,radius:.4}, 0, "#ffffff", null, "#000000", 1).stops[0].color // "#242424"
  */
 export function latitudeBand(globe, latitude, north, south, limb, exponent = 1) {
   const shade = (x, y, c) => limbShade(globe, x, y, c, limb, exponent);
