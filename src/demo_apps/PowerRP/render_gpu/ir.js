@@ -1059,8 +1059,16 @@ export function reportTwistedRadialRaster(backend, cmd) {
  * @example multipointResolutionField({multipointResolution: "2048"}) // {resolution: 2048}
  * @example multipointResolutionField({multipointResolution: 1024}) // {resolution: 1024} (an equation's number)
  * @example multipointResolutionField({multipointResolution: "auto"}) // {resolution: "auto"}
+ * @example multipointResolutionField({resolution: 2048}) // {resolution: 2048} (an already-PARSED paint)
  */
 export function multipointResolutionField(paint) {
+  // RE-ENTRANT: a parsed paint spells the setting `resolution`, and parsePaint runs
+  // again on parsed paints (ir.rect re-parses its fill; the camera background arrives
+  // there already parsed by resolvedBackgroundFill). Reading only the stored spelling
+  // silently reset every camera-background field to 512² — the user's "I change the
+  // resolution and nothing changes on the screen" (2026-09-30).
+  if (paint.multipointResolution === undefined && paint.resolution !== undefined)
+    return multipointResolutionField({ multipointResolution: paint.resolution });
   const raw = paint.multipointResolution ?? MULTIPOINT_DEFAULT_RESOLUTION;
   const text = typeof raw === "number" ? String(raw) : raw;
   if (!MULTIPOINT_RESOLUTIONS.includes(text))

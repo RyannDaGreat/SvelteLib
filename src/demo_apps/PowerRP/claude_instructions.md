@@ -441,7 +441,17 @@ Benchmarks/repros: `.scratchpad/multipoint_resolution/`.
 only in Multipoint mode, directly above the dither rows (paint-level leaves together).
 It displays the default when the leaf is absent and writes only on change, so an
 untouched paint stays byte-identical; its label tooltip is `MULTIPOINT_RESOLUTION_HELP`.
-**NOT YET LANDED (2026-09-30):** `tests/multipoint_resolution_test.js` (parse, size rule, discrete
+**PARSE IS RE-ENTRANT FOR THIS LEAF (bug fixed 2026-09-30).** User: "The resolution
+doesn't seem to make any difference. I change the resolution and nothing changes on the
+screen." Measured: on an ordinary widget the setting worked; on the CAMERA BACKGROUND it
+did nothing (128² vs 2048² differed in 0.4% of pixels). Cause: the stored spelling is
+`multipointResolution` but the parsed spelling is `resolution`, and the background is
+parsed twice (`resolvedBackgroundFill`, then `ir.rect` re-parses its fill), so the second
+parse silently reset it to 512². `multipointResolutionField` now accepts the parsed
+spelling; `tests/multipoint_resolution_test.js` pins re-entrancy for every value and the
+background seam. Rule: any paint leaf whose parsed name differs from its stored name must
+be read in BOTH spellings.
+**NOT YET LANDED (2026-09-30):** the rest of `tests/multipoint_resolution_test.js` (size rule, discrete
 tween, bit-identity hash from `.scratchpad/multipoint_resolution/pin_hashes_baseline.txt`,
 `halfTexels`, node renders); a cache-probe case for stale-job cancellation; the
 browser probes were not re-run after this change.

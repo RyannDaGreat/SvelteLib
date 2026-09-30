@@ -2040,3 +2040,10 @@ NEW solver lessons from the round-4 reports worth keeping (not in earlier entrie
 - TAPERING ENDS: fade an open line's first/last stop to the local ground colour and the end tapers instead of
   specking; nested closed curves stay clean at gaps ≥ 0.008.
 - The 12-feature cap, not the 40-node cap, is usually what binds radial designs (diatom ribs, mosaics, fans).
+
+## 2026-09-30 — Resolution setting ignored on the camera background (fixed)
+User: "The resolution doesn't seem to make any difference. I change the resolution and nothing changes on the screen."
+- Reproduced in real Chrome (`.scratchpad/multipoint_resolution/repro_ui.mjs`, `repro_bg.mjs`): on a rect the dropdown worked (128² vs 2048²: 37% of pixels differ, max 166); on the CAMERA BACKGROUND it did nothing (0.4% differ).
+- Root cause: `parsePaint` was not re-entrant for `multipointResolution` — the parsed spelling is `resolution`, and the background is parsed twice (`resolvedBackgroundFill` then `ir.rect`), so the second parse reset it to 512².
+- Fix: `multipointResolutionField` reads both spellings; new `tests/multipoint_resolution_test.js` (4 tests). After the fix the background responds (36% differ, max 185). A scratch re-entrancy sweep over linear/radial/dither leaves found no other leaf with this bug.
+- Lesson: the "parsed IR is reentrant" test only covered presets WITHOUT the new leaf, so it could not catch this. A new paint leaf needs its own re-entrancy assertion.
