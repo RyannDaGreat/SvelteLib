@@ -1962,3 +1962,81 @@ it so slow?" Measured in Metal Chrome (M4 Max, ANGLE Metal) with
   3D renders); stacked open two-sided edge-to-edge lines beat closed silhouettes for crisp landscape layers;
   full-width single-sided sky rows matching the ramp at their height stop the grey mid-sky of rail-only skies;
   a closed shape's two palettes must be the same length.
+
+## 2026-09-30 — Round-4 preset merge (Sonnet research frenzy, 19 agents + 2 salvaged round-3 folders)
+
+438 candidates → 280 kept, 158 culled; catalog 427 → 707 presets in 54 families.
+Sources: r4_agent_1..19 (brief: .scratchpad/frenzy/BRIEF_R4.md), plus r3_agent_11 (Old masters / Romantic, died
+on a rate limit; its presets.js failed the harness on three presets — lapis-and-lemon closed-ramp seam,
+hadleigh-storm 7 stops, temeraire-sunset id already shipped — so those three were excluded and the other 30
+validated and were curated) and r3_agent_17 (animation, died early; 4 valid presets). Every kept preset's
+description names the artwork, artist, photograph or manual it was authored from; the agents' per-preset URLs
+lived in their scratch NOTES.md files. Several agents (album art, animation, picture books, some colour-field
+and glass entries) got no reference images because Wikimedia rate-limited the parallel fleet; they worked from
+text descriptions and were judged on the render alone.
+
+Curation (the lead looked at every render at 224 px, against "make sure that every single one is beautiful"):
+the dominant cull reason was CLIP-ART — literal objects drawn as flat blobs (watermelons, faces, bubble
+letters, butterflies, gumdrops, haystack cones, lily pads) read as stickers, not as gradients; next came
+near-duplicates of a stronger sibling (e.g. r3_agent_11's rembrandt-glow/candle-flame/lorrain-haze/delft-sky vs
+r4_agent_13's; r4_agent_8 sagrada-nave vs r4_agent_17's, which kept the id; r4_agent_8 sainte-chapelle vs
+r4_agent_5's lancets), then muddy/spotty fields and the authors' own flagged weak ones.
+- **Marbling** — kept 22, culled 5. Culled: marble-italian-stone, marble-lapis-drops, acrylic-rose-gold, acrylic-midnight, marble-whirl-four.
+- **Op art & spirals** — kept 16, culled 5. Culled: achaean-stripes, rose-stripes, blaze-star, chromosaturation-rooms, bolt-stripes.
+- **Colour field** — kept 19, culled 3. Culled: mountains-sea, mitchell-strokes, francis-margins.
+- **Ink, lacquer & gold** — kept 15, culled 7. Culled: early-spring-mist, monumental-peak, azurite-irises, wind-god-screen, tarashikomi-lotus, kintsugi-ivory, celadon-sanggam.
+- **Ornament & tile** — kept 13, culled 7. Culled: prayer-rug-mihrab, iznik-tulip-leaves, azulejo-blue-cartouche, azulejo-quatrefoil-tile, kells-carpet-page, persian-garden-carpet, isfahan-dusk-dome.
+- **Microscopy & natural science** — kept 15, culled 6. Culled: schlieren-plume, schlieren-shock, he-gland-crypt, haeckel-jellyfish-plate, haeckel-siphonophore-rosette, paramecium-phase-halo.
+- **Landscape painting** — kept 12, culled 8. Culled: sierra-glow, sea-of-fog, oxbow-storm, north-shore-rays, jack-pine-sunset, wolds-patchwork, violet-lane, marsh-thunder.
+- **Glass & windows** — kept 13, culled 7. Culled: sainte-chapelle, vence-tree, millefiori-weight, sea-glass-shore, seaform-shell, sagrada-nave, sea-glass-foam.
+- **Botanical art** — kept 10, culled 10. Culled: red-canna-fire, black-iris-veil, huysum-golden-garden, morris-indigo-mirror, kacho-iris-blades, peony-crest-indigo, merian-butterfly-blossom, kacho-morning-glory, morris-trellis-diamond, blossfeldt-tendril-coils.
+- **Gardens & petals** — kept 14, culled 7. Culled: iris-falls, hydrangea-mophead, maple-spring, pressed-violets, herbarium-page, clos-normand-beds, maple-summer.
+- **World modernism** — kept 12, culled 8. Culled: tarsila-abaporu, kahlo-casa-azul, tamayo-sandias, siqueiros-polyforum, orozco-prometheus, shergil-three-girls, elsalahi-ink-arcs, raza-saurashtra.
+- **Murals & street colour** — kept 9, culled 12. Culled: maser-bubble-letters, chrome-bubble-letter, pantone-chroma-blade, pantone-horizon-burst, okuda-pyramid-hills, osgemeos-yellow-face, remed-totem-bird, stencil-sunset-drips, chefchaouen-blue-lane, jaipur-amber-ramparts, burano-canal-row, burano-peach-cerulean.
+- **Old masters light** — kept 19, culled 14. Culled: caravaggio-shaft, pearl-ground, delft-window, ultramarine-folds, ariadne-lapis, zurbaran-table, tonal-sphere, zurbaran-habit, calling-beam, rembrandt-glow, candle-flame, frari-glory, lorrain-haze, delft-sky.
+- **Romantic & sublime** — kept 21, culled 14. Culled: crimson-tempest, polar-wreck, shalott-river, circe-pool, crag-dawn, pebble-shore, cloud-study, abbey-oakwood, hylas-pond, beata-haze, ophelia-river, jewel-cabochons, meadow-rainbow, steam-and-speed.
+- **Animation backgrounds** — kept 14, culled 7. Culled: pink-forest-sky, mesa-colour-key, ochre-wood-glow, highway-dusk-vanish, lens-flare-dusk, summer-meadow-horizon, mesa-colour-key.
+- **Picture-book illustration** — kept 11, culled 9. Culled: collage-caterpillar, tissue-butterfly, wild-night, burrow-bank, crayon-lamplight, paper-sea, hat-hill, rust-creature, gouache-pebbles.
+- **Architecture & light** — kept 11, culled 7. Culled: muralla-roja, deco-lobby, riad-court, saucer-museum, trencadis-shards, zaha-swoop, zellige-rosette.
+- **Prints & patterns** — kept 13, culled 7. Culled: calyx-atomic, aloha-hibiscus, frank-garden, rhodes-squiggle, ikat-patola, palm-barkcloth, pebble-print.
+- **Album art** — kept 12, culled 10. Culled: bop-cobalt-tint, bop-vermilion-disc, bop-ochre-pink, prog-floating-isles, prog-crystal-spire, synth-chrome-sweep, lofi-window-sunset, candy-pop-melt, bop-teal-tint, candy-gumdrops.
+- **Stage & club light** — kept 9, culled 5. Culled: club-uv-rings, festival-sunset-stage, gel-red-spot, gel-straw-sky, equalizer-glow.
+
+Renames (identity/text only, paint untouched): titian-crimson (r3_agent_11) → titian-drapery (its r4 namesake
+kept the id); no trademarks — Pantone (a colour-system trademark AND the muralist's surname) → chroma-glitch-bands /
+chroma-speed-stripes / chroma-chevron-ramp; ECM (a record label) ids → jazz-fjord-mist / jazz-pale-horizon /
+jazz-dusk-moor; Favrile (Tiffany's mark) → iridescent-lustre; a "Rosco 80" gel reference removed from
+gel-primary-blue-cyc's description. Six agent @example lines disagreed with their (correct) code and were
+corrected by .scratchpad/frenzy/r4_merge/docfix.mjs (comments only).
+
+Merge tool lessons (r4_merge/merge4.mjs): the r3 tool assumed one authoring style; round-4 folders used seven
+(array literals, PRESETS.push, add(...), add(FAMILY, ...), top-level { } blocks, const x = preset(...), and one
+file per preset with `export default`). The general rule that works: from the preset(...) call climb through
+enclosing IIFEs to the container slot, and lift file- or block-local declarations into an IIFE around the entry.
+A namespace helper import (`import * as H`) must be rewritten to named imports before tree-shaking, and a
+helper file that re-exports from a sibling (`./r3_helpers.js`) must resolve through the same origin map as the
+family modules. Reference scanning must ignore prose comments (a word like "point" kept dead imports alive) but
+must keep @example lines, which the doctest runner executes in module scope.
+
+NEW solver lessons from the round-4 reports worth keeping (not in earlier entries):
+- GRADED BANDS: a band between two two-sided curves takes the lower curve's "below" colour at one edge and the
+  next curve's "above" colour at the other — differing colours give a smooth gradient per band with crisp edges,
+  equal colours a flat band (the O'Keeffe, Carmichael and Hockney landscapes).
+- SPIRAL-ARM CHANNELS: an N-arm spiral separates N colour channels; arm k's outer side borders one channel and its
+  inner side the next, negative turns swap which side is outer; arms ending on the box edge at multiples of
+  360°/N keep the corners clean.
+- ARCHES ON THE FLOOR: open arches with feet exactly on y = 1 cost 3 nodes each and never touch each other;
+  stacking outermost-first gives marbled plumes and fans.
+- NESTED-ARC PETALS: open two-sided elliptical arcs around an off-box centre, each clipped and snapped exactly
+  onto the box edge, with the outside colour = the next petal's deep shade and the inside = this petal's lit lip,
+  give silk petal overlaps (tulip, orchid).
+- RAMPED FACETS: stops are capped at 4, so a richer gradient on a shape needs a facet whose stops are pinned to
+  chosen vertices (`rampedFacet`); a vertical two-colour gradient on a closed shape is [A,B,A] with node 0 at the top.
+- STONE-CELL CORNERS: marbled stone cells need corners no sharper than ~80° (sharper ones speck) and veins at
+  least ~0.03 wide (thinner ones leak vein colour into the cells); a 3-stop inside ramp starting at each cell's
+  rightmost vertex lights every cell from the upper left with no point sources.
+- MORTAR / LEAD LINES for free: a closed two-sided shape whose OUTSIDE ramp is the joint colour paints the gaps
+  between neighbouring shapes; a single-colour closed rectNodes(0,0,1,1) is a 4-node frame (vs 8 for four edges).
+- TAPERING ENDS: fade an open line's first/last stop to the local ground colour and the end tapers instead of
+  specking; nested closed curves stay clean at gaps ≥ 0.008.
+- The 12-feature cap, not the 40-node cap, is usually what binds radial designs (diatom ribs, mosaics, fans).

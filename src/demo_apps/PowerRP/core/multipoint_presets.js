@@ -37,6 +37,29 @@ import { PRESETS as SKIES } from "./multipoint_presets/skies.js";
 import { PRESETS as LANDSCAPE_PAINTING } from "./multipoint_presets/landscape_painting.js";
 import { PRESETS as BOTANICAL_ART } from "./multipoint_presets/botanical_art.js";
 import { PRESETS as DEEP_SKY } from "./multipoint_presets/deep_sky.js";
+import { PRESETS as MARBLING_COMBS } from "./multipoint_presets/marbling_combs.js";
+import { PRESETS as OP_ART } from "./multipoint_presets/op_art.js";
+import { PRESETS as COLOUR_FIELD } from "./multipoint_presets/colour_field.js";
+import { PRESETS as INK_LACQUER } from "./multipoint_presets/ink_lacquer.js";
+import { PRESETS as ORNAMENT_TILE } from "./multipoint_presets/ornament_tile.js";
+import { PRESETS as MICROSCOPY } from "./multipoint_presets/microscopy.js";
+import { PRESETS as LANDSCAPE_MASTERS } from "./multipoint_presets/landscape_masters.js";
+import { PRESETS as GLASS_WINDOWS } from "./multipoint_presets/glass_windows.js";
+import { PRESETS as BOTANICAL_PAINTERS } from "./multipoint_presets/botanical_painters.js";
+import { PRESETS as GARDENS_PETALS } from "./multipoint_presets/gardens_petals.js";
+import { PRESETS as WORLD_MODERNISM } from "./multipoint_presets/world_modernism.js";
+import { PRESETS as MURALS } from "./multipoint_presets/murals.js";
+import { PRESETS as OLD_MASTERS } from "./multipoint_presets/old_masters.js";
+import { PRESETS as OLD_MASTERS_VENICE } from "./multipoint_presets/old_masters_venice.js";
+import { PRESETS as ROMANTIC_SUBLIME } from "./multipoint_presets/romantic_sublime.js";
+import { PRESETS as ROMANTIC_TURNER } from "./multipoint_presets/romantic_turner.js";
+import { PRESETS as ANIMATION_BACKGROUNDS } from "./multipoint_presets/animation_backgrounds.js";
+import { PRESETS as PAINTED_CUMULUS } from "./multipoint_presets/painted_cumulus.js";
+import { PRESETS as PICTURE_BOOKS } from "./multipoint_presets/picture_books.js";
+import { PRESETS as ARCHITECTURE_MODERN } from "./multipoint_presets/architecture_modern.js";
+import { PRESETS as PRINTS_PATTERNS } from "./multipoint_presets/prints_patterns.js";
+import { PRESETS as ALBUM_ART } from "./multipoint_presets/album_art.js";
+import { PRESETS as STAGE_LIGHT } from "./multipoint_presets/stage_light.js";
 import { PRESETS as NATURE } from "./multipoint_presets/nature.js";
 import { PRESETS as GEOMETRIC } from "./multipoint_presets/geometric.js";
 import { PRESETS as FLUID_MATERIALS } from "./multipoint_presets/fluid_materials.js";
@@ -67,27 +90,43 @@ export const MULTIPOINT_PRESET_FAMILIES = freezeCatalog([
   { id: "wallpapers-ui", title: "Wallpapers & UI", presets: WALLPAPERS_UI },
   { id: "minerals-phenomena", title: "Minerals & phenomena", presets: MINERALS_PHENOMENA },
   { id: "retro-eras", title: "Retro & eras", presets: RETRO_ERAS },
+  { id: "ornament-tile", title: "Ornament & tile", presets: ORNAMENT_TILE },
+  { id: "ink-lacquer", title: "Ink, lacquer & gold", presets: INK_LACQUER },
   { id: "ukiyo-e", title: "Ukiyo-e & shin-hanga", presets: UKIYO_E },
-  { id: "marbling", title: "Marbling", presets: MARBLING },
+  { id: "old-masters", title: "Old masters light", presets: [...OLD_MASTERS, ...OLD_MASTERS_VENICE] },
+  { id: "romantic-sublime", title: "Romantic & sublime", presets: [...ROMANTIC_SUBLIME, ...ROMANTIC_TURNER] },
+  { id: "marbling", title: "Marbling", presets: [...MARBLING, ...MARBLING_COMBS] },
   { id: "impressionism", title: "Impressionism", presets: IMPRESSIONISM },
   { id: "post-impressionism", title: "Post-Impressionism", presets: POST_IMPRESSIONISM },
   { id: "art-nouveau", title: "Art Nouveau & Symbolism", presets: ART_NOUVEAU },
   { id: "fauvism", title: "Fauvism & Expressionism", presets: FAUVISM },
   { id: "suprematism", title: "Suprematism & Constructivism", presets: SUPREMATISM },
   { id: "hard-edge", title: "Hard-edge & De Stijl", presets: HARD_EDGE },
+  { id: "world-modernism", title: "World modernism", presets: WORLD_MODERNISM },
   { id: "surrealism", title: "Surrealism", presets: SURREALISM },
+  { id: "colour-field", title: "Colour field", presets: COLOUR_FIELD },
+  { id: "op-art", title: "Op art & spirals", presets: OP_ART },
   { id: "pop-contemporary", title: "Pop & contemporary", presets: POP_CONTEMPORARY },
+  { id: "murals", title: "Murals & street colour", presets: MURALS },
   { id: "world-textiles", title: "World textiles", presets: WORLD_TEXTILES },
+  { id: "prints-patterns", title: "Prints & patterns", presets: PRINTS_PATTERNS },
   { id: "midcentury-memphis", title: "Mid-century to Memphis", presets: MIDCENTURY_MEMPHIS },
+  { id: "album-art", title: "Album art", presets: ALBUM_ART },
+  { id: "stage-light", title: "Stage & club light", presets: STAGE_LIGHT },
+  { id: "picture-books", title: "Picture-book illustration", presets: PICTURE_BOOKS },
+  { id: "animation", title: "Animation backgrounds", presets: [...ANIMATION_BACKGROUNDS, ...PAINTED_CUMULUS] },
   { id: "cinema-grades", title: "Cinema grades", presets: CINEMA_GRADES },
   { id: "film-processes", title: "Film & print processes", presets: FILM_PROCESSES },
   { id: "light-art", title: "Light art", presets: LIGHT_ART },
+  { id: "glass-windows", title: "Glass & windows", presets: GLASS_WINDOWS },
   { id: "generative-art", title: "Generative art", presets: GENERATIVE_ART },
   { id: "renders-3d", title: "3D gradients & renders", presets: RENDERS_3D },
-  { id: "architecture-light", title: "Architecture & light", presets: ARCHITECTURE_LIGHT },
+  { id: "architecture-light", title: "Architecture & light", presets: [...ARCHITECTURE_LIGHT, ...ARCHITECTURE_MODERN] },
   { id: "skies", title: "Skies & atmospheres", presets: SKIES },
-  { id: "landscape-painting", title: "Landscape painting", presets: LANDSCAPE_PAINTING },
-  { id: "botanical-art", title: "Botanical art", presets: BOTANICAL_ART },
+  { id: "landscape-painting", title: "Landscape painting", presets: [...LANDSCAPE_PAINTING, ...LANDSCAPE_MASTERS] },
+  { id: "gardens-petals", title: "Gardens & petals", presets: GARDENS_PETALS },
+  { id: "botanical-art", title: "Botanical art", presets: [...BOTANICAL_ART, ...BOTANICAL_PAINTERS] },
+  { id: "microscopy", title: "Microscopy & natural science", presets: MICROSCOPY },
   { id: "deep-sky", title: "Deep sky", presets: DEEP_SKY },
   { id: "nature", title: "Nature", presets: NATURE },
   { id: "geometric", title: "Geometric", presets: GEOMETRIC },
