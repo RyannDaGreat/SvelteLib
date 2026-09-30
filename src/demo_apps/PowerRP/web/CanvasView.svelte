@@ -414,10 +414,14 @@
   // reason muscle memory survives a widget adopting a new look. It is SCREEN px
   // (constant chrome, view-scale independent, like every other handle glyph).
   const HANDLE_R = 4;
-  // The triangle is drawn 1px taller than the square's half-height and dropped 1px
-  // low, which is the exact geometry paint_path's bezier handles have always had —
-  // preserved to the pixel so the bank's arrival is invisible on existing widgets.
-  const HANDLE_TRI_UP = 5, HANDLE_TRI_DOWN = 4, HANDLE_TRI_HALF_W = 5;
+  // The triangle (every bezier CONTROL point) is drawn at TWO THIRDS of its former
+  // 5/4/5 px geometry (user ruling 2026-09-30: "The triangles can be two-thirds of
+  // their size"). Only the PICTURE shrank: an invisible hit circle of the former
+  // half-width (HANDLE_TRI_HIT_R, .modifier-hit) keeps the grab target where muscle
+  // memory expects it.
+  const HANDLE_TRI_SCALE = 2 / 3;
+  const HANDLE_TRI_UP = 5 * HANDLE_TRI_SCALE, HANDLE_TRI_DOWN = 4 * HANDLE_TRI_SCALE, HANDLE_TRI_HALF_W = 5 * HANDLE_TRI_SCALE;
+  const HANDLE_TRI_HIT_R = 5;
 
   /**
    * Pure function. The SVG outline points/attrs for one bank look at a screen
@@ -436,7 +440,7 @@
    * Examples:
    *   >>> glyphOutline({shape: "square"}, 100, 50)   // {kind: "rect", x: 96, y: 46, w: 8, h: 8}
    *   >>> glyphOutline({shape: "diamond"}, 0, 0)     // {kind: "poly", points: "0,-4 4,0 0,4 -4,0"}
-   *   >>> glyphOutline({shape: "triangle"}, 0, 0)    // {kind: "poly", points: "0,-5 5,4 -5,4"}
+   *   >>> glyphOutline({shape: "triangle"}, 0, 0)    // {kind: "poly", points: "0,-3.333… 3.333…,2.666… -3.333…,2.666…"}
    *   >>> glyphOutline({shape: "circle"}, 10, 10)    // {kind: "circle", cx: 10, cy: 10, r: 4}
    */
   function glyphOutline(look, x, y) {
@@ -6344,6 +6348,9 @@
             oncontextmenu={(e) => openPointMenu(m, e)}
           >
             {#if m.lockNote}<title>{m.lockNote}</title>{/if}
+            {#if m.look.shape === "triangle"}
+              <circle class="modifier-hit" cx={m.x} cy={m.y} r={HANDLE_TRI_HIT_R} />
+            {/if}
             {#if g.kind === "rect"}
               <rect class="modifier" class:selected={m.selected} class:hidden-element={m.hidden} x={g.x} y={g.y} width={g.w} height={g.h} style={gstyle} />
             {:else if g.kind === "circle"}

@@ -5874,6 +5874,13 @@ textarea {
 .overlay .modifier-glyph {
   pointer-events: auto;
 }
+/* An invisible grab target behind a glyph whose PICTURE is smaller than its grab
+   footprint (the 2/3-size bezier triangle). Painted nothing, hit everywhere. */
+.overlay .modifier-hit {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
+}
 
 /* THE INNER MARK (the O in a boxed-O, an X, a centre dot). Drawn in the RIM
    colour so it reads as ENGRAVING on the glyph rather than a second object
