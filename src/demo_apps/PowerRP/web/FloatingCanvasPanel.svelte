@@ -22,10 +22,12 @@
   ── THE FIVE DECISIONS IT OWNS ───────────────────────────────────────────────
   1. PLACEMENT in the render-area screen frame: horizontally centred on `x`, with
      its bottom edge on `topY` so it hangs ABOVE the thing it belongs to.
-  2. THE FLIP. Near the top of the viewport the panel would be clipped, so it
-     re-pins to `bottomY` and hangs DOWN instead. The threshold is read from the
-     --a-canvas-toolbar-max-h CSS token, so the flip decision and the CSS height cap
-     have ONE source of truth and no magic px lives here.
+  2. THE FLIP AND THE CLAMP (panelPlacement). Above is the default; the panel hangs
+     DOWN from `bottomY` only when above lacks room for its MEASURED height and below
+     has more. When neither side fits (a large widget), the anchor is clamped so the
+     panel overlaps the widget instead of leaving the render area — it used to flip
+     below unconditionally and hang off-screen under tall widgets once a library
+     opened (found 2026-09-30 by the Multipoint ramp-library work).
   3. IT MUST NOT STEAL THE CANVAS GESTURE UNDERNEATH IT. The root is a zero-footprint
      `pointer-events: none` anchor; only the panel itself takes pointer events. A
      full-size transparent wrapper would swallow drags on the widget it is describing.
@@ -67,9 +69,26 @@
     return { x: top.x, topY: top.y, bottomY: bottom.y };
   }
 
-  /** Fallback for --a-canvas-toolbar-max-h when there is no computed style to read
-   *  (a non-DOM render path). Matches the token's committed value. */
-  const MAX_H_FALLBACK = 296;
+  /**
+   * Pure function. Which side the panel hangs on and where its anchor sits, keeping
+   * the panel inside the render area. Above is preferred; below is used when above
+   * lacks room and below has more; if neither fits, the anchor is clamped so the
+   * panel overlaps the widget rather than leaving the area.
+   * @param {number} topY - Widget box top, render-area px.
+   * @param {number} bottomY - Widget box bottom, render-area px.
+   * @param {number} height - Panel height including its gap, px.
+   * @param {number} areaH - Render-area height, px.
+   * @returns {{below: boolean, y: number}} y = the root's top: the panel's bottom edge when above, its top edge when below.
+   * @example panelPlacement(400, 600, 200, 900) // {below: false, y: 400} (fits above)
+   * @example panelPlacement(100, 300, 200, 900) // {below: true, y: 300} (no room above, room below)
+   * @example panelPlacement(120, 760, 300, 930) // {below: true, y: 630} (fits neither: more room below, clamped up)
+   */
+  export function panelPlacement(topY, bottomY, height, areaH) {
+    const roomAbove = topY, roomBelow = areaH - bottomY;
+    const below = roomAbove < height && roomBelow > roomAbove;
+    const y = below ? Math.max(0, Math.min(bottomY, areaH - height)) : Math.min(areaH, Math.max(topY, height));
+    return { below, y };
+  }
 
   /** Query. A CSS custom-property length (px) resolved off :root, or a fallback.
    * @example cssPx("--a-canvas-toolbar-max-h", 296) // 296 (when unset)
@@ -120,12 +139,13 @@
   // is the content snippet — this component has no opinion about it.
   let { x, topY, bottomY, label, children } = $props();
 
-  // Would the above-hanging panel be clipped by the top of the render area? Then
-  // hang it below instead. Read from the token that caps the panel's height, so the
-  // decision cannot drift from the CSS.
-  let below = $derived(topY < cssPx("--a-canvas-toolbar-max-h", MAX_H_FALLBACK));
-
   let panelEl = $state(null); // the panel box — the upper bound of the wheel walk
+  let rootEl = $state(null); // the zero-size anchor; its offsetParent IS the render area
+  let panelH = $state(0); // the panel's measured border-box height (0 before first layout)
+  // Re-derived whenever the anchor moves or the panel resizes. (A render-area resize
+  // with nothing else changing is picked up at the next pan/zoom/selection change.)
+  let place = $derived(panelPlacement(topY, bottomY, panelH + cssPx("--a-canvas-toolbar-gap", 0),
+    rootEl?.offsetParent?.clientHeight ?? Infinity));
 
   /**
    * Command. THE WHEEL OVER A FLOATING PANEL BELONGS TO THE PANEL.
@@ -195,12 +215,13 @@
 
 <div
   class="canvas-toolbar-root"
-  class:canvas-toolbar-below={below}
+  class:canvas-toolbar-below={place.below}
   style:left="{x}px"
-  style:top="{below ? bottomY : topY}px"
+  style:top="{place.y}px"
+  bind:this={rootEl}
 >
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="canvas-toolbar" role="toolbar" aria-label={label} tabindex="-1" bind:this={panelEl} onwheel={onWheel}>
+  <div class="canvas-toolbar" role="toolbar" aria-label={label} tabindex="-1" bind:this={panelEl} bind:offsetHeight={panelH} onwheel={onWheel}>
     {@render children()}
   </div>
 </div>
