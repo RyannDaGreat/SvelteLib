@@ -290,6 +290,33 @@ function pathsEditable(app, op) {
 }
 
 /**
+ * Query. What the island's RAMP LIBRARY acts on: the document path of the target's
+ * {features, …} sub-state (gradient map) and, when exactly ONE path source is selected,
+ * that source's path and Two sides flag (ramp along path). Nulls where unavailable.
+ * @param {object} app - The app store.
+ * @returns {{fill: Array|null, path: {featurePath: Array, twoSided: boolean}|null}}
+ */
+export function islandRampTargets(app) {
+  const target = multipointTarget(app);
+  if (!target || sourceListRefusal(target)) return { fill: null, path: null };
+  const featuresPath = multipointFeaturesPath(target.raw[target.key], target.key);
+  const paths = selectedPathFeatures(target.raw, app.handleSelection);
+  const one = paths.length === 1 && !featureEditRefusal(paths[0].feature, "ramp") ? paths[0] : null;
+  return {
+    fill: ["items", target.itemId, ...featuresPath.slice(0, -1)],
+    path: one ? { featurePath: ["items", target.itemId, ...one.featurePath], twoSided: one.feature.twoSided === true } : null,
+  };
+}
+
+/** Query. The ramp-along-path gate's clause: the most specific unmet condition. */
+function rampRequires(app) {
+  const paths = selectedPaths(app);
+  if (paths.length === 1 && featureEditRefusal(paths[0].feature, "ramp"))
+    return `a path source whose colours are stored data — source ${paths[0].index + 1}: ${featureEditRefusal(paths[0].feature, "ramp")}`;
+  return "exactly one selected Multipoint LINE or CURVE source — click one of its nodes or colour beads";
+}
+
+/**
  * Query. The Multipoint command-registry entries (web/App.svelte registers them with
  * the core commands). The island, the palette and the `C` key are surfacings of
  * THESE — no second action path exists.
@@ -357,6 +384,26 @@ export function multipointCommands() {
       requires: (a) => pathRequires(a, "reverse"),
       help: "Reverses each selected path's direction and colour order while keeping every colour on the same physical side, so the picture does not change.",
       run: (a) => reverseMultipointPaths(a),
+    },
+    {
+      id: "multipoint-gradient-map",
+      title: "Recolour Multipoint Fill from a Gradient",
+      icon: "mdi:palette-swatch-variant",
+      aliases: ["gradient map", "recolor multipoint", "brainstorm colours", "palette swap", "try colours"],
+      when: (a) => { const t = multipointTarget(a); return !!t && !sourceListRefusal(t); },
+      requires: addRequires,
+      help: "Opens the gradient library on the canvas: hover a gradient to see the WHOLE fill recoloured by lightness (dark colours take its start, light ones its end) with every shape where it was; click to keep it. Press again (or Shift+G) to close.",
+      run: (a) => { a.multipointRampOpen = a.multipointRampOpen === "fill" ? null : "fill"; },
+    },
+    {
+      id: "multipoint-apply-ramp",
+      title: "Lay a Gradient Along the Multipoint Path",
+      icon: "mdi:gradient-horizontal",
+      aliases: ["ramp along path", "path gradient", "apply ramp", "gradient on curve"],
+      when: (a) => { const p = selectedPaths(a); return p.length === 1 && !featureEditRefusal(p[0].feature, "ramp"); },
+      requires: rampRequires,
+      help: "Opens the gradient library for the selected path: hover a gradient to lay it along the path (Both / Left / Right side on a two-sided path); click to keep it. Replaces that path's colour stops only.",
+      run: (a) => { a.multipointRampOpen = a.multipointRampOpen === "path" ? null : "path"; },
     },
   ];
 }

@@ -466,6 +466,9 @@
   --a-multipoint-grid-rows: 3;
   --a-multipoint-grid-max-h: calc(var(--a-multipoint-grid-rows) * var(--a-multipoint-swatch-h) + (var(--a-multipoint-grid-rows) - 1) * var(--a-sp-2) + 2 * var(--a-sp-1));
   --a-gradient-swatch-min-w: 46px;
+  /* The canvas island's ramp grid: this many ramp-swatch rows visible (it scrolls). */
+  --a-multipoint-island-grid-rows: 4;
+  --a-multipoint-island-grid-max-h: calc(var(--a-multipoint-island-grid-rows) * var(--a-gradient-swatch-h) + (var(--a-multipoint-island-grid-rows) - 1) * var(--a-sp-2) + 2 * var(--a-sp-1));
   /* VISUAL STOP BAR (web/GradientStopBar.svelte): the ramp track, one draggable
      bead, and the gap between the two rows. Neither size is a taste call — both
      are LINKED to the size the same idea already has elsewhere, so the bar reads
@@ -5879,6 +5882,29 @@ textarea {
 }
 .multipoint-island-note {
   max-width: var(--a-handle-color-field-w);
+}
+/* THE RAMP LIBRARY (web/MultipointRampLibrary.svelte): its options row (side tabs +
+   Reverse) heads the open body, above the search, so it stays in view however far
+   the grid scrolls. In the island the panel takes the colour field's width, so the
+   floating bar does not grow across the canvas. */
+.multipoint-ramp-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--a-sp-1);
+}
+/* The side tabs take a whole row, so three labels never ellipsize beside Reverse. */
+.multipoint-ramp-options .paint-type-tabs {
+  flex: 1 1 100%;
+}
+.multipoint-ramp-reverse {
+  flex: 1;
+}
+.multipoint-island-ramps {
+  width: var(--a-handle-color-field-w);
+}
+/* The island hangs under the widget, so its grid is shorter than the Inspector's. */
+.multipoint-island-ramps .gradient-presets-grid {
+  max-height: var(--a-multipoint-island-grid-max-h);
 }
 
 /* The <g> that wraps ONE handle's outline + inner mark. It carries the pointer

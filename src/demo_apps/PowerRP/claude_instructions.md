@@ -550,6 +550,62 @@ shortcut context), `core/shortcut_entries.js`. Tests: `tests/multipoint_edit_tes
 add, recolour a multi-selection, undo; screenshots in
 `.scratchpad/multipoint_ui/canvas/`).
 
+### Colour brainstorming from the ramp library (2026-09-30)
+
+User, verbatim: "It should also be possible to apply our regular gradient library to
+a multipoint or line or curve surface ... We already have gradients, a whole list of
+one-dimensional gradients. Why not reuse them?" and, on why: "sometimes I want to be
+able to keep the same shape and position of all the dots, but quickly brainstorm
+different ideas for the colors should be." So the 1-D ramp library (the same
+`RAMP_PRESET_FAMILIES` the linear/radial stop list offers) now drives Multipoint
+COLOUR ONLY — geometry is never touched — in two ways:
+
+- **Gradient map (whole fill)** — the brainstorming tool. Hovering a ramp previews
+  EVERY colour of the fill (points, path stops, both sides) replaced by the ramp
+  colour at that colour's LIGHTNESS; clicking commits one undo unit. WHY lightness
+  (Photoshop "Gradient Map" semantics): it keeps the design's light/dark structure —
+  the thing that makes a preset read as a spiral or a planet — while the palette
+  changes, so sweeping the cursor across ramps shows the SAME picture in new colours.
+  Lightness is OKLab L (perceptual, unlike luma), NORMALISED over the fill's own
+  effective colours (visible sources, visible stops, the right side only when
+  two-sided, a point's first visible colour), so every ramp's full range is used even
+  on an all-dark design. A fill whose colours share one lightness maps to the ramp's
+  middle. Alpha is kept (times the ramp's). A looping ramp is read from its first to
+  its last stop, because its wrap segment would make the darkest and lightest colours
+  identical. "Reverse" flips the mapping (dark ↔ light end). Equation-driven colours
+  are left alone and counted in a note; hidden colours are recoloured too (so
+  unhiding stays consistent) but do not set the lightness range.
+- **Ramp along a path (one source)** — applies a ramp along a line/curve source's
+  arc length, replacing its stop list (Both / Left / Right side on a two-sided path;
+  the untouched side is re-sampled at the union of offsets so its picture does not
+  change). Mapping: an sRGB clamped ramp's stops are used VERBATIM (Multipoint also
+  blends encoded sRGB, so the path shows exactly the ramp); a looping sRGB ramp gets
+  its wrap colour stated at 0 and 1; an OKLab ramp is RESAMPLED (Multipoint cannot
+  blend in OKLab) at every authored stop plus `MULTIPOINT_RAMP_SUBDIVISIONS` − 1
+  points inside each segment — NOT evenly spaced, because even samples straddle the
+  ramp's corners at its stops (measured: 12 even samples ΔE 0.10, stops + 1 midpoint
+  ΔE 0.035 over all 12 shipped OKLab ramps; concerns.md). A CLOSED path must not show a seam: a clamped
+  ramp is read as a loop whose stops are compressed by (n−1)/n, so the last colour
+  blends back to the first over one average segment. "Reverse" runs it the other way.
+  Point sources (one colour) get no path ramp.
+- **Surfacing.** Inspector: a "Recolour from gradient" library beside the preset
+  library at the top of the Multipoint editor, and a "Ramp along path" library above
+  each path source's Colours list. Canvas island: `multipoint-gradient-map` (always,
+  no selection needed) and `multipoint-apply-ramp` (one selected path source) open
+  the same component inside the island. Both are command-registry entries; Shift+G
+  toggles the gradient map while a Multipoint widget is edited (plain G is Grab). Hover
+  preview uses app.setPreview/cancelPreview; every write is built from the COMMITTED
+  fold, so sweeping across ramps never compounds one recolour onto the previous.
+- Files: `core/multipoint_recolor.js` (pure: `rampPathStops`, `rampAppliedStops`,
+  `colorLightness`, `gradientMapWrites`), `core/multipoint_edit.js`
+  (`featureEditRefusal` op "ramp"), `web/multipointRecolor.js` (setPreview pairs from
+  the committed fold, shared by Inspector and island), `web/MultipointRampLibrary.svelte`,
+  `web/GradientPresetPicker.svelte` (bindable `open`, `toggleLabel` / `toggleIcon` /
+  `toggleHelp`, `showToggle`, `bodyHeader`, `revealOnOpen` — off in the floating island,
+  where scrolling the body into view would pan the canvas), `web/MultipointField.svelte`,
+  `web/MultipointIsland.svelte`, `web/multipointCanvas.js`, `core/shortcut_entries.js`.
+  Test: `tests/multipoint_recolor_test.js`.
+
 ## Inspector indentation law (2026-09-30)
 
 User report, verbatim: "I guess one of the big problems inside the UI is the lack

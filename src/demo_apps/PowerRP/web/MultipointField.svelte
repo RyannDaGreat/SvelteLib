@@ -3,6 +3,8 @@
 <script>
   import ListField from "./ListField.svelte";
   import GradientPresetPicker from "./GradientPresetPicker.svelte";
+  import MultipointRampLibrary from "./MultipointRampLibrary.svelte";
+  import { pathRampRefusal } from "./multipointRecolor.js";
   import { MULTIPOINT_PRESET_FAMILIES, getMultipointPreset } from "../core/multipoint_presets.js";
   import NumericField from "./NumericField.svelte";
   import BooleanField from "./BooleanField.svelte";
@@ -30,6 +32,9 @@
   }));
   const thumbnails = import.meta.glob("./multipoint_thumbnails/*.png", { eager: true, import: "default", query: "?url" });
   let presetsOpen = $state(false);
+  // The gradient-map library rewrites every colour on hover, so the source rows fold
+  // while it is open, for the same no-flicker reason the preset library folds them.
+  let recolorOpen = $state(false);
   let previewingPreset = false;
   let sourceListBound = $derived(!Array.isArray(getPath(app.rawState(), [...path, "features"]))
     || typeof getPath(app.rawState(), [...path, "featuresActive"]) === "string");
@@ -171,6 +176,14 @@
       fieldVisible={(_, f) => !point || f.name === "x" || f.name === "y"}
       oninsert={(at) => insertNode(featurePath, at)}
       insertHelp="Insert a shaping node: split the Bézier segment, or extend an open end. Colours stay independent." />
+    {#if !point}
+      {@const rampRefusal = pathRampRefusal(app, featurePath)}
+      {#if rampRefusal}
+        <p class="paint-stops-multi-note">Ramp along path unavailable: {rampRefusal}.</p>
+      {:else}
+        <MultipointRampLibrary {app} mode="path" path={featurePath} {disabled} twoSided={feature.twoSided === true} />
+      {/if}
+    {/if}
     <ListField {app} decl={MULTIPOINT_STOPS_LIST} path={[...featurePath, "stops"]} label={`${sourceLabel} colour`} disabled={disabled || stopsBound}
       keepExpandedDuringPreview={true} preserveStoredElements={true} allowInsert={!point}
       fieldVisible={(_, f, i) => point ? i === firstColour && f.name === "color" : f.name !== "rightColor" || feature.twoSided}
@@ -187,10 +200,13 @@
       onpick={pickPreset} onpreview={previewPreset} oncancelpreview={cancelPresetPreview}
       onopenchange={(open) => { presetsOpen = open; if (!open) cancelPresetPreview(); }} />
   </div>
+  <div class="multipoint-recolor">
+    <MultipointRampLibrary {app} mode="fill" {path} disabled={disabled || sourceListBound} onopenchange={(open) => { recolorOpen = open; }} />
+  </div>
   <div class="multipoint-actions">
     {#each SOURCE_KINDS as kind}
-      <Tooltip text={presetsOpen ? "Close the preset library to edit individual sources." : `Add a ${kind} colour source`}>
-        <button type="button" class="btn" disabled={disabled || presetsOpen || sourceListBound} aria-label={`${label}: add ${kind} source`} onclick={() => addSource(kind)}>+{kind[0].toUpperCase() + kind.slice(1)}</button>
+      <Tooltip text={presetsOpen || recolorOpen ? "Close the library to edit individual sources." : `Add a ${kind} colour source`}>
+        <button type="button" class="btn" disabled={disabled || presetsOpen || recolorOpen || sourceListBound} aria-label={`${label}: add ${kind} source`} onclick={() => addSource(kind)}>+{kind[0].toUpperCase() + kind.slice(1)}</button>
       </Tooltip>
     {/each}
   </div>
@@ -199,5 +215,5 @@
   {/if}
   <ListField {app} decl={MULTIPOINT_FEATURES_LIST} path={[...path, "features"]} label="Source" disabled={disabled || sourceListBound}
     allowInsert={false} keepExpandedDuringPreview={true} preserveStoredElements={true}
-    forceCollapsed={presetsOpen} elementContent={sourceContent} />
+    forceCollapsed={presetsOpen || recolorOpen} elementContent={sourceContent} />
 </div>

@@ -128,9 +128,21 @@
     families = RAMP_PRESET_FAMILIES, disabled = false,
     // Native Multipoint paints reuse the same picker with real rendered swatches.
     copyPreset = freshRamp, swatchStyle = cssRampSwatch,
+    // BINDABLE so a command can open the library from outside (the Multipoint island's
+    // ramp buttons); unbound mounts keep it as their own local state, as before.
+    open = $bindable(false),
+    // The toggle's wording/icon, so one picker can offer different libraries side by
+    // side (Multipoint: "Preset library" vs "Recolour from gradient"); `showToggle`
+    // false when an outside control (a command button) is the toggle.
+    toggleLabel = "Preset library", toggleIcon = "mdi:gradient-horizontal", showToggle = true, toggleHelp = null,
+    // Optional options row rendered at the TOP of the open body (above the search),
+    // where it stays in view however far the grid scrolls.
+    bodyHeader = null,
+    // Scroll the opened body into view (and let the search focus scroll). Right in the
+    // Inspector's scrolling pane; WRONG in a floating canvas panel, where the nearest
+    // scroll container is the canvas and "revealing" pans the user's view.
+    revealOnOpen = true,
   } = $props();
-
-  let open = $state(false);
   let query = $state("");
   let searchEl = $state(null);
   let bodyEl = $state(null);
@@ -216,8 +228,8 @@
   // minimum needed (the EquationSuggest / CommandPalette scrollIntoView idiom).
   $effect(() => {
     if (!open || !searchEl || !bodyEl) return;
-    searchEl.focus();
-    bodyEl.scrollIntoView({ block: "nearest" });
+    searchEl.focus({ preventScroll: !revealOnOpen });
+    if (revealOnOpen) bodyEl.scrollIntoView({ block: "nearest" });
   });
 
   // THIS WHOLE FIELD can unmount while the library is open (the paint switches to
@@ -232,25 +244,33 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="gradient-presets" data-hint-popover={open ? "menu" : null} onkeydown={onKeydown}>
-  <button
-    type="button"
-    class="gradient-presets-toggle"
-    {disabled}
-    aria-expanded={open}
-    onclick={toggle}
-  >
-    <iconify-icon icon="mdi:gradient-horizontal" width="14" height="14"></iconify-icon>
-    <span>Preset library</span>
-    <iconify-icon class="gradient-presets-caret" icon="mdi:menu-down" width="14" height="14"></iconify-icon>
-  </button>
+  {#snippet toggleButton()}
+    <button
+      type="button"
+      class="gradient-presets-toggle"
+      {disabled}
+      aria-expanded={open}
+      onclick={toggle}
+    >
+      <iconify-icon icon={toggleIcon} width="14" height="14"></iconify-icon>
+      <span>{toggleLabel}</span>
+      <iconify-icon class="gradient-presets-caret" icon="mdi:menu-down" width="14" height="14"></iconify-icon>
+    </button>
+  {/snippet}
+  {#if showToggle && toggleHelp}
+    <Tooltip text={toggleHelp}>{@render toggleButton()}</Tooltip>
+  {:else if showToggle}
+    {@render toggleButton()}
+  {/if}
 
   {#if open}
     <div class="gradient-presets-body" bind:this={bodyEl}>
+      {#if bodyHeader}{@render bodyHeader()}{/if}
       <input
         class="gradient-presets-search"
         type="text"
         placeholder="Search presets…"
-        aria-label="Search gradient presets"
+        aria-label={`Search: ${toggleLabel}`}
         bind:this={searchEl}
         bind:value={query}
       />

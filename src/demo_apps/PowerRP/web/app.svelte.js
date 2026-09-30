@@ -763,7 +763,7 @@ export class PowerRPApp {
     // The handle colour picker closes only when the ITEM changes: undo/redo re-write
     // the same selection (applySnapshot), and undoing a colour pick must not slam
     // the picker shut on the colour being fixed.
-    if (id !== this.#selection) this.handleColorOpen = false;
+    if (id !== this.#selection) { this.handleColorOpen = false; this.multipointRampOpen = null; }
     this.#selection = id;
     this.selectionSet = []; // single-select write drops the multi override
     // The OUTER scope owns the INNER one: handle ids belong to whichever item was
@@ -810,6 +810,11 @@ export class PowerRPApp {
   // every write that empties that scope closes it: switching between points keeps
   // it open (recolouring several points in a row), deselecting does not.
   handleColorOpen = $state(false);
+  // Which RAMP LIBRARY the Multipoint island shows: "fill" (gradient map of the whole
+  // fill), "path" (ramp along the one selected path source) or null. Closed when the
+  // ITEM changes, like handleColorOpen; "path" also hides itself while no single path
+  // source is selected (web/MultipointIsland.svelte derives that).
+  multipointRampOpen = $state(null);
   // TRANSITION selection — the INCOMING slide's slideId whose between-rows
   // transition slice is selected, or null (manifest Round 12: transitions are
   // first-class SELECTABLE things whose properties show in the Property Panel).
@@ -1688,6 +1693,7 @@ export class PowerRPApp {
     this.selectionSet = [...filtered];
     this.handleSelection = []; // the outer scope owns the inner one (see handleSelection)
     this.handleColorOpen = false;
+    this.multipointRampOpen = null;
     this.selectedTransition = null; // selecting items clears a transition selection
     this.transitionSelection = []; // …and its multi-selection with it (see the field)
   }

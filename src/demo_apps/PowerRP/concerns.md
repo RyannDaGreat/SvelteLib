@@ -1739,3 +1739,36 @@ be outward spokes and at others would be a spiral."
   a seam there (authored seam, stated in the tooltip). Not done: a CSS swatch preview of
   a twisted radial anywhere a ramp swatch is drawn as CSS still shows rings, if such a
   surface shows radial geometry at all (not audited).
+
+## 2026-09-30 — Colour brainstorming from the ramp library (gradient map + ramp along path)
+
+- Built per the saved design, plus the whole-fill GRADIENT MAP the user's reason asks
+  for ("keep the same shape and position of all the dots, but quickly brainstorm
+  different ideas for the colors"). Manifest: "Colour brainstorming from the ramp library".
+- MEASURED, and it changed the design: resampling an OKLab ramp at N EVENLY spaced
+  points converges badly because the samples straddle the ramp's corners at its
+  authored stops — worst OKLab ΔE over the 12 shipped OKLab ramps: N=8 0.136, N=12
+  0.102, N=16 0.069, N=24 0.035. Sampling AT every authored stop plus k−1 interior
+  points: k=1 0.058, k=2 0.035 (longest list 25 stops), k=3 0.030 (37), k=4 0.027 (49).
+  Chose k=2 (MULTIPOINT_RAMP_SUBDIVISIONS). The residual is where a channel nears 0 and
+  encoded sRGB is steep (Ultra Fractal's amber, blue channel), so a max-channel metric
+  overstates it (23/255 there); ΔE is the honest measure. Scripts:
+  .scratchpad/multipoint_ramps/deltae_error.mjs, subdiv_error.mjs.
+- MISTAKE CAUGHT BY THE SHORTCUT SUITE: plain G was already Grab; the collision test
+  (tests/shortcut_registry_test.js) refused two chips on one key. Rebound to Shift+G.
+- MISTAKE CAUGHT BY LOOKING: GradientPresetPicker's open-time scrollIntoView/focus is
+  right in the Inspector's scrolling pane and wrong in a floating canvas panel (the
+  nearest scroll container is the canvas). Added revealOnOpen (off in the island) and
+  a no-pan assertion to the visual script.
+- KNOWN, NOT FIXED (outside this change): FloatingCanvasPanel flips below a widget
+  based only on the room ABOVE it, so under a large widget near the window bottom the
+  island (now taller with a ramp library open) hangs past the window edge. Its CSS
+  height cap + internal scroll keep it usable only if the canvas is panned. The flip
+  rule should weigh both sides and clamp to the viewport; it is shared by every
+  floating bar, so it was left for a deliberate change.
+- Verified: tests/multipoint_recolor_test.js (5 groups, incl. no closed-path seam for
+  all 300+ library ramps and gradient-map geometry invariance over all 165 presets),
+  multipoint_edit_test (11), shortcut_registry (29), keybindings (20), doctests (0
+  failed), PowerRP build green, and a puppeteer run (.scratchpad/multipoint_ramps/
+  visual.mjs; screenshots 01–05 read): hover previews without touching the document,
+  sweeping back reproduces the same recolour (no compounding), click = one undo unit.

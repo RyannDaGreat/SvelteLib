@@ -693,6 +693,10 @@ export const KEYBINDING_DEFAULTS = [
   // combo), and the scope requires a selected colour handle, so it can never fire
   // on an ordinary selection.
   { command: "multipoint-edit-color", keys: ["C"], when: "multipointColorSelection" },
+  // Shift+G = GRADIENT MAP, while a Multipoint widget is being edited: toggles the island's
+  // "recolour from gradient" library, where hovering a ramp previews the whole fill
+  // recoloured (the user's colour-brainstorming ask). Plain G is Grab; Shift+G is free.
+  { command: "multipoint-gradient-map", keys: ["Shift", "G"], when: "multipointEditing" },
 ];
 
 /** HintBar labels for the command-bound keys above (toShortcutEntries throws on
@@ -728,10 +732,11 @@ export const KEYBINDING_LABELS = {
   deselect: "Deselect",
   "hide-points": "Hide points", "purge-points": "Purge points",
   "multipoint-edit-color": "Colour",
+  "multipoint-gradient-map": "Gradient map",
 };
 
 /** The `when`-name → predicate map the keybinding bridge resolves against. */
-export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected, slideRailFocus, itemClipboardScope, itemClipboardSelection, multipointColorSelection };
+export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected, slideRailFocus, itemClipboardScope, itemClipboardSelection, multipointColorSelection, multipointEditing };
 
 /**
  * The HELD-MODIFIER verbs a drag kind can read, keyed by the semantic modifier id

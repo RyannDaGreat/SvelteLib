@@ -4,6 +4,10 @@
   paint is Multipoint. The manifest's "In-canvas Multipoint editing — the island"
   states the design and why.
 
+  The RAMP LIBRARY panel (gradient map / ramp along path) is the same
+  MultipointRampLibrary the Inspector mounts, opened by the `multipoint-gradient-map`
+  / `multipoint-apply-ramp` commands through app.multipointRampOpen.
+
   IT OWNS NO ACTIONS. Every button is a CommandButton on a command-registry entry
   (web/multipointCanvas.js multipointCommands), so the palette, the island and the
   `C` key are three surfacings of one action, and a dead button explains itself
@@ -19,7 +23,8 @@
 <script>
   import CommandButton from "./CommandButton.svelte";
   import ColorField from "./ColorField.svelte";
-  import { MULTIPOINT_SOURCE_KINDS, islandColorFields, multipointModeArmed, selectedPathFlags } from "./multipointCanvas.js";
+  import MultipointRampLibrary from "./MultipointRampLibrary.svelte";
+  import { MULTIPOINT_SOURCE_KINDS, islandColorFields, islandRampTargets, multipointModeArmed, selectedPathFlags } from "./multipointCanvas.js";
   import { parseMultipointHandleId } from "../core/paint_handles.js";
 
   let { app } = $props();
@@ -40,8 +45,16 @@
     app.doc; app.slideIndex; app.handleSelection;
     return selectedPathFlags(app);
   });
+  // The ramp library's targets (committed fold) — the gradient map needs only the
+  // widget; "ramp along path" needs exactly one selected path source.
+  let ramps = $derived.by(() => {
+    app.doc; app.slideIndex; app.handleSelection;
+    return islandRampTargets(app);
+  });
+  let rampMode = $derived(app.multipointRampOpen === "fill" && ramps.fill ? "fill"
+    : app.multipointRampOpen === "path" && ramps.path ? "path" : null);
   // The path group only means something once a Multipoint handle is selected;
-  // before that the row is just "add / split", which keeps the resting island small.
+  // before that the row is just "add / split / recolour", which keeps the resting island small.
   let handlesChosen = $derived(app.handleSelection.some((id) => parseMultipointHandleId(id) !== null));
 </script>
 
@@ -53,6 +66,11 @@
     {/each}
     <span class="text-format-sep"></span>
     <CommandButton {app} id="multipoint-split-path" size={ICON} pressed={multipointModeArmed(app, "multipoint-split-path")} />
+    <span class="text-format-sep"></span>
+    <CommandButton {app} id="multipoint-gradient-map" size={ICON} pressed={rampMode === "fill"} />
+    {#if handlesChosen}
+      <CommandButton {app} id="multipoint-apply-ramp" size={ICON} pressed={rampMode === "path"} />
+    {/if}
     {#if handlesChosen}
       <span class="text-format-sep"></span>
       <CommandButton {app} id="multipoint-toggle-two-sided" size={ICON} pressed={flags.twoSided} />
@@ -60,6 +78,18 @@
       <CommandButton {app} id="multipoint-reverse" size={ICON} />
     {/if}
   </div>
+  {#if rampMode}
+    <!-- Keyed on the mode AND target so switching fill ↔ path, or to another path,
+         remounts the library (its side/Reverse choices belong to one target). -->
+    {#key rampMode + JSON.stringify(rampMode === "fill" ? ramps.fill : ramps.path.featurePath)}
+      <div class="multipoint-island-ramps">
+        <MultipointRampLibrary {app} mode={rampMode} showToggle={false}
+          path={rampMode === "fill" ? ramps.fill : ramps.path.featurePath}
+          twoSided={rampMode === "path" && ramps.path.twoSided}
+          bind:open={() => true, (o) => { if (!o) app.multipointRampOpen = null; }} />
+      </div>
+    {/key}
+  {/if}
   {#each colour.fields as field, i (field.side)}
     <div class="handle-color-field">
       <span class="multipoint-island-label">{field.label}</span>

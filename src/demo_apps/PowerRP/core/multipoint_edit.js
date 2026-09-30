@@ -312,12 +312,13 @@ function rgbaHex([r, g, b, a]) {
  * stored feature, as a clause ("its … is equation-driven"), or null when it is safe.
  * Mirrors the Inspector's MultipointField gates.
  * @param {object} feature - RAW stored feature (equations are strings).
- * @param {"split"|"reverse"|"insertStop"|"twoSided"|"closed"} op - The edit.
+ * @param {"split"|"reverse"|"insertStop"|"twoSided"|"closed"|"ramp"} op - The edit.
  * @returns {string|null}
  * @example featureEditRefusal({nodes:[[0,0,0,0,0,0],[1,0,0,0,0,0]], stops:[{offset:0,color:"#f00"}]}, "split") // null
  * @example featureEditRefusal({nodes:"= a.nodes", stops:[]}, "split") // "its nodes, node visibility or Closed flag are equation-driven"
  * @example featureEditRefusal({nodes:[], stops:[{offset:"= t", color:"#f00"}]}, "insertStop") // "its colour list, offsets or colour visibility are equation-driven"
  * @example featureEditRefusal({nodes:[], stops:[], twoSided:"= true"}, "twoSided") // "its Two sides flag is an equation"
+ * @example featureEditRefusal({nodes:[], stops:[{offset:0, color:"= a.fill"}]}, "ramp") // "its colour list, offsets, visibility, colours or Closed flag are equation-driven"
  */
 export function featureEditRefusal(feature, op) {
   const companionEquation = (active) => typeof active === "string" || Object.values(active ?? {}).some((v) => typeof v === "string");
@@ -330,6 +331,9 @@ export function featureEditRefusal(feature, op) {
   if (op === "reverse") return nodesBound || stopsBound || typeof feature.twoSided === "string"
     ? "its geometry, colour offsets, visibility, Closed or Two sides are equation-driven" : null;
   if (op === "twoSided" || op === "closed") return typeof feature?.[op] === "string" ? `its ${op === "twoSided" ? "Two sides" : "Closed"} flag is an equation` : null;
+  // "ramp" REPLACES the whole stop list, so an equation anywhere in it would be lost.
+  if (op === "ramp") return stopsBound || feature.stops.some((s) => isEquationString(s?.color) || isEquationString(s?.rightColor))
+    || typeof feature.closed === "string" ? "its colour list, offsets, visibility, colours or Closed flag are equation-driven" : null;
   throw new Error(`featureEditRefusal: unknown operation "${op}"`);
 }
 
