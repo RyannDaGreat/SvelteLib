@@ -726,6 +726,46 @@ Enforced by `tests/inspector_indent_probe.js`: every label inside a nested regio
 right of the region's parent label, and each region's first column is exactly one step
 right of it.
 
+## Resizable preset grids (2026-09-30)
+
+User, verbatim: "It would also be good if preset menus for both gradients and... well,
+all of them were like vertically resizable, because right now there's a teeny tiny
+window that I gotta scroll through ... I wanna see all the pretty gradients at once but
+it won't let me. It only lets me see maybe two and a half rows at a time."
+
+THE RULE: every capped, scrolling PRESET GRID carries a `web/ResizeGrip.svelte` strip
+directly under it — ONE shared component, rules in `web/gridResize.js`, styles
+`.resize-grip` / `.resize-grip-bar` + `--a-resize-grip-*` tokens in `app.css`. The
+grid's CSS max-height cap is kept as the COMPACT size; the grip overrides it inline.
+- Drag: any height from about one row (`gridRowMinimum`: tallest of the first three
+  children + padding, so a family caption counts) up to the whole content. A press
+  that never moves stores nothing — otherwise a double-click's first click would store
+  a height and the toggle could never reach show-all.
+- Double-click: compact ⇄ SHOW ALL (no cap; keeps tracking the content as a search
+  filters). A drag that reaches the content also stores show-all. Keyboard: the grip
+  is focusable; ArrowUp/Down step one row, Home compact, End show all, Enter toggles.
+- PERSISTENCE is a per-viewer convenience, not document state: localStorage
+  `powerrp.gridHeight.<kind>` holding px, `"all"`, or absent (compact). Read/write
+  failures and corrupt values are REPORTED (`warnOnce`) and fall back to compact, so a
+  broken store never breaks the picker it decorates.
+- KINDS (one remembered height per library kind, not per mount): `gradient-presets`
+  (every linear/radial stop-list library AND the Inspector's Multipoint "Recolour
+  from gradient" / "Ramp along path" — the same ramp swatches at the same size),
+  `multipoint-presets`, `multipoint-island-ramps` (the canvas island's library),
+  `canvas-palette:<property>` (CanvasToolbar floating palettes, e.g. cursors, icons),
+  `brush-palette`.
+- FLOATING PANELS: `FloatingCanvasPanel` declares `data-resize-room` = render-area
+  height − gap on its panel; `gridRoom` caps any grid inside it at that room minus the
+  rest of the panel, so a dragged or shown-all grid can never push the panel off
+  screen, and `panelPlacement`'s clamp still has a panel that fits.
+Not covered, deliberately: the ToolsPane preset groups (already uncapped — they grow
+into the one panel-body scroller), dropdown/menu lists (FontPicker, SearchableDropdown,
+material preset dropdowns — menus, not grids), `.gallery-popup-grid` (sized by its
+popup), and the BentoTargetList widget list (not presets).
+Verified in real Chrome by `.scratchpad/resizable_menus/visual.mjs` (drag 204 → 624 px
+and stored; reopen restores; double-click compact/show-all; show-all survives reload;
+island show-all panel stays inside the render area).
+
 ## SVG uploads and reload safety (2026-09-28)
 
 The GitHub-hosted editor must create an **SVG widget** when a user drops an SVG,

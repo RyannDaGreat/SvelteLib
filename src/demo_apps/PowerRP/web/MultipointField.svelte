@@ -196,7 +196,7 @@
 
 <div class="multipoint-field">
   <div class="multipoint-presets">
-    <GradientPresetPicker {disabled} families={PRESET_FAMILIES} {copyPreset} {swatchStyle}
+    <GradientPresetPicker {disabled} families={PRESET_FAMILIES} {copyPreset} {swatchStyle} resizeKey="multipoint-presets"
       onpick={pickPreset} onpreview={previewPreset} oncancelpreview={cancelPresetPreview}
       onopenchange={(open) => { presetsOpen = open; if (!open) cancelPresetPreview(); }} />
   </div>

@@ -97,6 +97,7 @@
   import { untrack } from "svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import FloatingCanvasPanel, { widgetPanelAnchor } from "./FloatingCanvasPanel.svelte";
+  import ResizeGrip from "./ResizeGrip.svelte";
   import { equationBoundKeys } from "./canvas/equationBinding.js";
   import { onConnectivityChange } from "./connectivity.js";
 
@@ -107,6 +108,7 @@
 
   // The plugin's declarative toolbar spec for this widget's current state.
   let spec = $derived(node.plugin.floatingToolbar?.(node.state) ?? null);
+  let gridEl = $state(null); // the palette grid the ResizeGrip sizes
 
   // The panel anchor: the widget's top/bottom centre in render-area screen px.
   // FloatingCanvasPanel decides which edge to hang from.
@@ -354,6 +356,7 @@
           aria-label={spec.label ?? "Palette"}
           tabindex="-1"
           style={spec.grid.cols ? `--a-canvas-toolbar-cols: ${spec.grid.cols}` : null}
+          bind:this={gridEl}
           onpointerleave={revert}
         >
           {#each gridCells as cell (cell.value)}
@@ -392,6 +395,7 @@
             </Tooltip>
           {/each}
         </div>
+        <ResizeGrip target={gridEl} kind={`canvas-palette:${spec.grid.property}`} label={spec.label ?? "palette"} />
       {/if}
       {#if spec.toggles}
         <!-- One row per group (base style, each overlay, view mode, …). A group's

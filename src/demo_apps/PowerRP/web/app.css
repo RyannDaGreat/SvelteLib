@@ -466,6 +466,11 @@
   --a-multipoint-grid-rows: 3;
   --a-multipoint-grid-max-h: calc(var(--a-multipoint-grid-rows) * var(--a-multipoint-swatch-h) + (var(--a-multipoint-grid-rows) - 1) * var(--a-sp-2) + 2 * var(--a-sp-1));
   --a-gradient-swatch-min-w: 46px;
+  /* RESIZE GRIP under every preset grid (web/ResizeGrip.svelte): the strip's height
+     (a comfortable drag target) and the visible bar centred in it. */
+  --a-resize-grip-h: 10px;
+  --a-resize-grip-bar-w: 36px;
+  --a-resize-grip-bar-h: 3px;
   /* The canvas island's ramp grid: this many ramp-swatch rows visible (it scrolls). */
   --a-multipoint-island-grid-rows: 4;
   --a-multipoint-island-grid-max-h: calc(var(--a-multipoint-island-grid-rows) * var(--a-gradient-swatch-h) + (var(--a-multipoint-island-grid-rows) - 1) * var(--a-sp-2) + 2 * var(--a-sp-1));
@@ -4273,6 +4278,31 @@ textarea {
 
 .gradient-presets-search::placeholder {
   color: var(--fg-dim);
+}
+
+/* THE RESIZE GRIP (web/ResizeGrip.svelte) directly under a preset grid: a full-width
+   strip with a short centred bar, an ns-resize cursor, and the selection accent on
+   hover/focus/drag. The GRID keeps its CSS max-height cap as the COMPACT size; the
+   grip overrides it inline (height / max-height) once the user resizes. */
+.resize-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--a-resize-grip-h);
+  cursor: ns-resize;
+  touch-action: none;
+  outline: none;
+}
+.resize-grip-bar {
+  width: var(--a-resize-grip-bar-w);
+  height: var(--a-resize-grip-bar-h);
+  border-radius: var(--a-radius-control); /* app chrome is square */
+  background: var(--fg-dim);
+}
+.resize-grip:hover .resize-grip-bar,
+.resize-grip:focus-visible .resize-grip-bar,
+.resize-grip:active .resize-grip-bar {
+  background: var(--a-selection);
 }
 
 .gradient-presets-grid {

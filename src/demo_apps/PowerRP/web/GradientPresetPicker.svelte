@@ -21,7 +21,9 @@
   the same reason ColorField expands inline. The revealed grid lives in the
   panel's own flow (it can't be clipped or mispositioned) and simply pushes the
   rows below it down; the panel scrolls. The grid itself is height-capped and
-  scrolls internally so a 343-swatch library never runs off the panel.
+  scrolls internally so a 343-swatch library never runs off the panel — and the
+  cap is only the COMPACT size: the ResizeGrip under the grid lets the user drag it
+  taller (or double-click to show everything), remembered per `resizeKey`.
 
   HOVERING a swatch LIVE-PREVIEWS its gradient on the selected item, mirroring
   ToolsPane's preset card grid: each pointerenter overwrites the last preview, and
@@ -121,6 +123,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import ResizeGrip from "./ResizeGrip.svelte";
   import { RAMP_PRESET_FAMILIES, filterRampFamilies } from "./ramp_preset_families.js";
 
   let {
@@ -142,10 +145,14 @@
     // Inspector's scrolling pane; WRONG in a floating canvas panel, where the nearest
     // scroll container is the canvas and "revealing" pans the user's view.
     revealOnOpen = true,
+    // The library KIND its grid height is remembered under (web/gridResize.js), so
+    // e.g. every gradient stop list shares one height and Multipoint presets another.
+    resizeKey = "gradient-presets",
   } = $props();
   let query = $state("");
   let searchEl = $state(null);
   let bodyEl = $state(null);
+  let gridEl = $state(null); // the scrolling grid the ResizeGrip sizes
 
   let filtered = $derived(filterRampFamilies(families, query));
 
@@ -285,6 +292,7 @@
         role="listbox"
         aria-label="Gradient presets"
         tabindex="-1"
+        bind:this={gridEl}
         onpointerleave={cancelPreview}
       >
         {#each filtered as family (family.id)}
@@ -311,6 +319,7 @@
           <div class="gradient-presets-empty">No presets match</div>
         {/each}
       </div>
+      <ResizeGrip target={gridEl} kind={resizeKey} label={toggleLabel} />
     </div>
   {/if}
 </div>

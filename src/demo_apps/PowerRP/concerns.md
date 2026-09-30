@@ -1891,3 +1891,21 @@ it so slow?" Measured in Metal Chrome (M4 Max, ANGLE Metal) with
   (`gl.readPixels` of 1×1 dot-product targets, a pipeline stall per CG iteration), and at 512²
   it currently solves the FULL field synchronously per frame (renders 43–84 ms, a long task
   every drag frame) instead of the 128² preview.
+
+## 2026-09-30 — Resizable preset grids
+
+- Request: every preset menu vertically resizable ("I wanna see all the pretty gradients at
+  once"). Built as ONE shared `web/ResizeGrip.svelte` + `web/gridResize.js`, mounted under
+  GradientPresetPicker's grid (all ramp and Multipoint libraries), CanvasToolbar's palette
+  grid and BrushPalette's texture grid.
+- Mistake caught before it shipped: the first draft stored the current height on every
+  pointerup, so a double-click's first click always left a stored height and the toggle could
+  only ever go "stored → compact", never "compact → show all". Fixed with a click slop: a press
+  that never moves stores nothing.
+- First visual pass: at rest the grip bar was `--border` and nearly invisible in the compact
+  Inspector screenshot; raised to `--fg-dim` (accent on hover/focus/drag).
+- Measured in real Chrome (`.scratchpad/resizable_menus/visual.mjs`): Multipoint preset grid
+  compact 204 px of 4044 px content → dragged 624 px (stored "624"); close/reopen restores;
+  double-click → compact, again → show all (4044); show-all survives reload; the island ramp
+  library shown-all stays inside the render area via `data-resize-room`. No page errors, no
+  storage warnings. PowerRP build green; doctests 7128 agree.

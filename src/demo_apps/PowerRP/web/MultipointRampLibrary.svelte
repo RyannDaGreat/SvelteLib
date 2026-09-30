@@ -92,6 +92,7 @@
 
 <div class="multipoint-ramp-library" data-mode={mode}>
   <GradientPresetPicker {disabled} bind:open {showToggle} revealOnOpen={showToggle} toggleLabel={LABELS[mode]} toggleIcon={ICONS[mode]} toggleHelp={HELP[mode]}
+    resizeKey={showToggle ? "gradient-presets" : "multipoint-island-ramps"}
     bodyHeader={options} onpick={pick} onpreview={preview} oncancelpreview={cancelPreview}
     onopenchange={(o) => { if (!o) cancelPreview(); onopenchange?.(o); }} />
 </div>

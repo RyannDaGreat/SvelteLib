@@ -142,10 +142,20 @@
   let panelEl = $state(null); // the panel box — the upper bound of the wheel walk
   let rootEl = $state(null); // the zero-size anchor; its offsetParent IS the render area
   let panelH = $state(0); // the panel's measured border-box height (0 before first layout)
-  // Re-derived whenever the anchor moves or the panel resizes. (A render-area resize
-  // with nothing else changing is picked up at the next pan/zoom/selection change.)
-  let place = $derived(panelPlacement(topY, bottomY, panelH + cssPx("--a-canvas-toolbar-gap", 0),
-    rootEl?.offsetParent?.clientHeight ?? Infinity));
+  let gap = $derived(cssPx("--a-canvas-toolbar-gap", 0));
+  // The render area's height. A DOM read is not reactive, so it is re-read whenever
+  // the anchor moves or the panel resizes (the reads of topY/bottomY/panelH below
+  // are those triggers); a render-area resize with nothing else changing is picked
+  // up at the next pan/zoom/selection change.
+  let areaH = $derived.by(() => {
+    void topY; void bottomY; void panelH;
+    return rootEl?.offsetParent?.clientHeight ?? Infinity;
+  });
+  let place = $derived(panelPlacement(topY, bottomY, panelH + gap, areaH));
+  // THE ROOM a resizable grid inside may grow into (web/gridResize.js gridRoom):
+  // the whole render area less the gap, so a grid dragged taller (or "show all")
+  // stops where the clamp above can still keep the panel on screen.
+  let room = $derived(Number.isFinite(areaH) ? areaH - gap : undefined);
 
   /**
    * Command. THE WHEEL OVER A FLOATING PANEL BELONGS TO THE PANEL.
@@ -221,7 +231,7 @@
   bind:this={rootEl}
 >
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="canvas-toolbar" role="toolbar" aria-label={label} tabindex="-1" bind:this={panelEl} bind:offsetHeight={panelH} onwheel={onWheel}>
+  <div class="canvas-toolbar" role="toolbar" aria-label={label} tabindex="-1" bind:this={panelEl} bind:offsetHeight={panelH} data-resize-room={room} onwheel={onWheel}>
     {@render children()}
   </div>
 </div>

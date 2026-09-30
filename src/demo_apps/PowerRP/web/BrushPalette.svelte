@@ -30,6 +30,7 @@
 -->
 <script>
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import ResizeGrip from "./ResizeGrip.svelte";
   import { BRUSH_TEXTURES, textureUrl } from "../render_gpu/skia/brush_textures/manifest.js";
 
   let { value = null, onpick, onpreview = null, oncancelpreview = null } = $props();
@@ -37,6 +38,7 @@
   // The category filter chips: "all" plus each distinct category in palette order.
   const CATEGORIES = ["all", ...Array.from(new Set(BRUSH_TEXTURES.map((t) => t.category)))];
   let category = $state("all");
+  let gridEl = $state(null); // the texture grid the ResizeGrip sizes
 
   let shown = $derived(category === "all" ? BRUSH_TEXTURES : BRUSH_TEXTURES.filter((t) => t.category === category));
 
@@ -80,6 +82,7 @@
     role="listbox"
     aria-label="Brush textures"
     tabindex="-1"
+    bind:this={gridEl}
     onpointerleave={cancelPreview}
   >
     {#each shown as t (t.id)}
@@ -98,4 +101,5 @@
       </Tooltip>
     {/each}
   </div>
+  <ResizeGrip target={gridEl} kind="brush-palette" label="brush textures" />
 </div>
