@@ -171,7 +171,7 @@ export function fieldBoundary(nodes, offsets, field, { twoSided = false, closed 
   // Offsets 0 and 1 of a closed curve are the same spot; copy rather than re-sample, so
   // float noise in the closing cubic cannot round one channel differently and open a seam.
   if (closed && offsets[0] === 0 && offsets.at(-1) === 1) Object.assign(stops.at(-1), { color: stops[0].color, rightColor: stops[0].rightColor });
-  return { nodes: nodes.map((n) => [...n]), stops, twoSided, closed, weight: 1 };
+  return { nodes: nodes.map((n) => n.map((v) => v + 0)), stops, twoSided, closed, weight: 1 }; // v + 0: -0 → 0 (JSON-faithful, as builders.boundary)
 }
 
 /**

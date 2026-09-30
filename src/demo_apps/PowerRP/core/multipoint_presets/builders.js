@@ -21,9 +21,24 @@ const GLOW_SHOULDER_RATIO = 0.55;
 export function boundary(nodes, colors, rightColors = null, closed = false) {
   if (!colors.length || (rightColors && rightColors.length !== colors.length))
     throw new Error("Boundary palettes must be nonempty with matching lengths");
-  return { nodes: nodes.map((node) => [...node]), stops: colors.map((color, i) => ({
+  // `v + 0` canonicalises -0 (from trig/negated-zero handles) to 0: stored paint must
+  // survive a JSON round trip unchanged, and JSON cannot represent -0.
+  return { nodes: nodes.map((node) => node.map((v) => v + 0)), stops: colors.map((color, i) => ({
     offset: colors.length === 1 ? 0 : i / (colors.length - 1), color, rightColor: rightColors ? rightColors[i] : color,
   })), twoSided: rightColors !== null, closed, weight: 1 };
+}
+
+/**
+ * Pure function. Repeats a ramp's first colour at its end — the closed-curve seam
+ * rule (a closed multi-stop ramp must end where it starts, or the seam shows).
+ * Shared by several families, which each wrote an identical copy before merging.
+ * @param {string[]} colors - Nonempty open ramp.
+ * @returns {string[]} Seam-free closed ramp, one longer.
+ * @example closedRamp(["#ff0000", "#00ff00"]) // ["#ff0000","#00ff00","#ff0000"]
+ */
+export function closedRamp(colors) {
+  if (!colors.length) throw new Error("closedRamp needs at least one colour");
+  return [...colors, colors[0]];
 }
 
 /**
