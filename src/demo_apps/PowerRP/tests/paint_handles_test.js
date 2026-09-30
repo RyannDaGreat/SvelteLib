@@ -217,8 +217,10 @@ console.log("helpers and non-gradient paints");
   check("a solid paint yields no handles", paintModifierPoints({ w: 10, h: 10, fill: "#f00" }, "fill").length === 0);
   check("an absent paint yields no handles", paintModifierPoints({ w: 10, h: 10 }, "fill").length === 0);
   check("a material yields no handles", paintModifierPoints({ w: 10, h: 10, fill: { type: "material", material: { id: "comic" } } }, "fill").length === 0);
-  check("a radial gradient yields the centre bead alone",
-    paintModifierPoints({ w: 10, h: 10, fill: { type: "radialGradient", radial: { stops: [], center: { x: 0.5, y: 0.5 }, r: 0.5 } } }, "fill").length === 1);
+  // Since 2026-09-30 a radial also carries a DIRECTION bead on its seam line (heading =
+  // direction, distance = radius), so it yields the centre bead plus that one.
+  check("a radial gradient yields the centre and direction beads",
+    paintModifierPoints({ w: 10, h: 10, fill: { type: "radialGradient", radial: { stops: [], center: { x: 0.5, y: 0.5 }, r: 0.5 } } }, "fill").map((m) => m.id).join() === "fill-grad-center,fill-grad-dir");
 
   // A LEGACY INLINE gradient (fields on the object, no .linear wrapper) must get
   // the same beads and be patched in place.

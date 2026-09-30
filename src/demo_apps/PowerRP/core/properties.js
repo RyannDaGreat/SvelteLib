@@ -650,7 +650,33 @@ export const GRADIENT_DEFAULT_PHASE = 0;
 /** Default radial twist: concentric rings (today's radial gradient). */
 export const RADIAL_DEFAULT_TWIST = 90;
 /** The Twist row's tooltip. */
-export const RADIAL_TWIST_HELP = "How the colour runs around the centre. 90° = rings (the classic radial), 0° = spokes sweeping clockwise from 12 o'clock, in between = a spiral (60° winds about 1.7 turns, 45° one turn, 30° about half); negative or past 90° turns the other way or reverses. The sweep starts at 12 o'clock: make the first and last colours match to hide the seam there.";
+export const RADIAL_TWIST_HELP = "How the colour runs around the centre. 90° = rings (the classic radial), 0° = spokes sweeping clockwise, in between = a spiral (60° winds about 1.7 turns, 45° one turn, 30° about half); negative or past 90° turns the other way or reverses. The sweep starts at the Direction angle (12 o'clock by default): set Spread to Loop, or make the first and last colours match, to hide the seam there.";
+
+// THE RADIAL RAMP CONTROLS (user, 2026-09-30: "because now we have the twist option, I
+// think we now need the mirror, reflect, etc. options and phase and frequency options as
+// linear gradients have. Because linear gradients have spread, they have wavelength,
+// they have direction, they have phase"). A radial carries the SAME `wavelength`,
+// `phase` and `spread` leaves as a linear — same meanings, labels and period law
+// (spreadPeriodHalves) — applied to the radial's ramp coordinate t (ρ/r for rings, the
+// twisted coordinate otherwise; render_gpu/ir.js radialRampRender). Its DIRECTION is
+// `radial.angle`, degrees clockwise, rotating where the ANGULAR coordinate starts — i.e.
+// where a twisted radial's sweep/spiral seam sits (12 o'clock at 0; user: "right now a
+// radial gradient can only ever point upwards"). For rings (twist 90°) the angular
+// coordinate is unused, so Direction has no visible effect there and parsePaint drops it.
+//
+// ONE DEFAULT DIFFERS FROM LINEAR, AND THIS IS WHY: a radial's default spread is PAD,
+// not mirror. A linear at wavelength 1 fills its whole axis and has no outside to tile,
+// so its "mirror" default never showed; a radial at wavelength 1 still has the box
+// corners OUTSIDE its circle, and every radial authored before this feature painted them
+// with the end colour (Skia Clamp / SVG pad / PDF Extend). Absent must keep meaning
+// that, so for a radial absent spread = pad, and Mirror/Loop tile rings outward past r
+// even at wavelength 1.
+/** Default radial spread: pad (hold the end colours), what every pre-feature radial drew. */
+export const RADIAL_DEFAULT_SPREAD = "pad";
+/** Default radial direction: the angular coordinate starts at 12 o'clock. */
+export const RADIAL_DEFAULT_ANGLE = 0;
+/** The radial Direction row's tooltip. */
+export const RADIAL_DIRECTION_HELP = "Where the sweep starts, clockwise from 12 o'clock — it rotates a spiral or spoke pattern and moves its seam. Rings (Twist 90°) look the same at every direction. The on-canvas bead on the seam line sets this (heading) and the radius (distance).";
 
 /**
  * Pure function. THE AVERAGE COLOUR of a piecewise-linear colour ramp — the exact

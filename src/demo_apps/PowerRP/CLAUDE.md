@@ -307,15 +307,7 @@ Flip H/V exists and a stored w/h MAY BE NEGATIVE (see the contract below).
 `plugins/magnifier.js` still exists alongside `plugins/demo/magnify.js` — that
 migration is partial, not done.
 
-GRADIENT SPREAD MODES are LINEAR-ONLY, and that is a real boundary, not an
-oversight. A linear gradient carries `spread` — mirror (the default, so absent is
-byte-identical legacy), loop, pad — mapping to the backends' native tile modes
-(Skia TileMode, SVG spreadMethod). RADIAL HAS NO SPREAD ROW because it has no
-`wavelength` and no `phase`: its ramp spans 0..r with nothing outside to tile, so
-there is no second tile for a mode to describe. Skia's radial does take a
-TileMode, so the plumbing would be trivial — what is missing is the FEATURE it
-would modify. A radial wavelength is a separate piece of work, and until it
-exists a radial spread row would be a control with no picture behind it.
+GRADIENT SPREAD MODES apply to LINEAR AND RADIAL (radial since 2026-09-30, user: "we now need the mirror, reflect, etc. options and phase and frequency options as linear gradients have"). Both carry `spread` (mirror / loop / pad, the backends' native tile modes), `wavelength` and `phase`; a radial also carries a DIRECTION (`radial.angle`, where a twisted sweep's seam starts; its on-canvas bead maps heading to direction and distance to radius). THE DEFAULTS DIFFER ON PURPOSE: absent linear spread = mirror (a w=1 linear has nothing outside to tile), absent radial spread = PAD, because a w=1 radial still has the box corners outside its circle and every pre-feature radial clamped them there. render_gpu/ir.js radialRampRender / radialRampT define the radial math; radialVectorRamp folds phase into an equivalent plain radial, so untwisted radials stay NATIVE in Skia and VECTOR in SVG/PDF, and only a twisted radial rasterizes in the vector exporters.
 THE PHASE PERIOD IS PER MODE and this is the one thing spread changes about the
 existing math: mirror repeats only after a there-and-back pair (4·w·half), loop
 and pad after ONE ramp (2·w·half). Phase is a fraction of THAT MODE's period, so

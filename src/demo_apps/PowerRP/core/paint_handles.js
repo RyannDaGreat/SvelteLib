@@ -113,7 +113,7 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
-import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_WAVELENGTH, spreadPeriodHalves, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST } from "./properties.js";
+import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_WAVELENGTH, spreadPeriodHalves, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST, RADIAL_DEFAULT_ANGLE, FULL_TURN_DEG } from "./properties.js";
 import { elementActive } from "./lists.js";
 import { featurePolyline, pointAlongPolyline, nearestPolylineOffset, MULTIPOINT_TYPE } from "./multipoint.js";
 import { parseColor, rgbaToCss } from "../render_gpu/ir.js";
@@ -352,12 +352,52 @@ export function linearPolarInverse(ox, oy, W, H, fallbackAngle) {
 }
 
 /**
+ * Pure function. Where a RADIAL gradient's direction bead sits, in objectBoundingBox
+ * units from its centre: at the radius `r`, along the DIRECTION (`angle`, degrees
+ * clockwise from 12 o'clock, y down) — i.e. on the line the sweep/spiral seam starts
+ * from. objectBoundingBox (not local px) because the renderer measures the angular
+ * coordinate there too: on a non-square box the rings are ellipses and this point
+ * lies exactly on the outer one.
+ * @param {object} g - The radial sub-state ({r?, angle?}).
+ * @returns {{x: number, y: number}} Offset from the centre, objectBoundingBox units.
+ * @example radialBeadOffset({r: 0.5}) // {x: 0, y: -0.5} (default: straight up, 12 o'clock)
+ * @example Math.round(radialBeadOffset({r: 0.5, angle: 90}).x * 1e9) / 1e9 // 0.5 (3 o'clock)
+ */
+export function radialBeadOffset(g) {
+  const r = g.r ?? 0;
+  const rad = (Number.isFinite(g.angle) ? g.angle : RADIAL_DEFAULT_ANGLE) * Math.PI / 180;
+  return { x: r * Math.sin(rad), y: -r * Math.cos(rad) };
+}
+
+/**
+ * Pure function. The inverse of radialBeadOffset: an objectBoundingBox offset from the
+ * centre → {angle, r} — heading → the DIRECTION (clockwise degrees from 12 o'clock, in
+ * [0, 360)), distance → the RADIUS. A zero offset has no heading, so `fallbackAngle`
+ * (the stored direction) is kept rather than spinning to an arbitrary one — the
+ * linearPolarInverse rule.
+ * @param {number} bx - Offset x, objectBoundingBox units.
+ * @param {number} by - Offset y (down), objectBoundingBox units.
+ * @param {number} fallbackAngle - Direction to keep when there is no heading.
+ * @returns {{angle: number, r: number}}
+ * @example radialPolarInverse(0, -0.5, 0) // {angle: 0, r: 0.5}
+ * @example radialPolarInverse(0.5, 0, 0) // {angle: 90, r: 0.5}
+ * @example radialPolarInverse(0, 0, 45) // {angle: 45, r: 0}
+ */
+export function radialPolarInverse(bx, by, fallbackAngle) {
+  if (bx === 0 && by === 0) return { angle: fallbackAngle, r: 0 };
+  const deg = Math.atan2(bx, -by) * 180 / Math.PI;
+  return { angle: (deg + FULL_TURN_DEG) % FULL_TURN_DEG, r: Math.hypot(bx, by) };
+}
+
+/**
  * Pure function. THE gradient modifier points for ONE paint field — the per-key
  * unit `allPaintModifierPoints` (and therefore core/derive.js) calls; no plugin
  * calls it. Returns [] when `state[key]` is not a
  * gradient (a solid/material/equation/absent fill contributes NO handles, so a
  * non-gradient widget is byte-identical to before this feature). A RADIAL gradient
- * yields one center bead; a LINEAR gradient yields a center bead plus a FREE polar
+ * yields a center bead plus a FREE polar DIRECTION bead whose heading is the radial's
+ * direction (`angle`, where a twisted sweep's seam starts) and whose distance is its
+ * RADIUS; a LINEAR gradient yields a center bead plus a FREE polar
  * direction bead whose heading is the axis ANGLE and whose distance is the
  * WAVELENGTH (see the module docstring for the mapping and the phase placement).
  * Each point is {id, x, y, apply} in LOCAL px, the modifier-point contract —
@@ -374,7 +414,8 @@ export function linearPolarInverse(ox, oy, W, H, fallbackAngle) {
  * @example paintModifierPoints({w: 100, h: 100, fill: {type: "linearGradient", linear: {stops: [], angle: 0}}}, "fill")[0].y // 50 (center bead at box center)
  * @example paintModifierPoints({w: 100, h: 100, fill: {type: "linearGradient", linear: {stops: [], angle: 0}}}, "fill")[1].x // 100 (direction bead at the ramp end: center + 1·half)
  * @example paintModifierPoints({w: 100, h: 100, fill: {type: "linearGradient", linear: {stops: [], angle: 0, wavelength: 0.5}}}, "fill")[1].x // 75 (half-wavelength: center + 0.5·half)
- * @example paintModifierPoints({w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: [], center: {x: 0.5, y: 0.5}, r: 0.5}}}, "fill").map((m) => m.id) // ["fill-grad-center"]
+ * @example paintModifierPoints({w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: [], center: {x: 0.5, y: 0.5}, r: 0.5}}}, "fill").map((m) => m.id) // ["fill-grad-center", "fill-grad-dir"]
+ * @example paintModifierPoints({w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: [], center: {x: 0.5, y: 0.5}, r: 0.5}}}, "fill")[1].y // 0 (radial direction bead: the radius, straight up — where the seam starts)
  */
 /**
  * Pure function. The PAINT-CAPABLE property keys a plugin declares, in Inspector
@@ -421,7 +462,7 @@ export function paintCapableKeys(plugin) {
  *
  * @example allPaintModifierPoints({w: 100, h: 100, fill: "#f00"}, ["fill", "stroke"]) // [] (no gradients)
  * @example allPaintModifierPoints({w: 100, h: 100}, []) // [] (a widget with no paint rows at all)
- * @example allPaintModifierPoints({w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}, stroke: {type: "radialGradient", radial: {stops: []}}}, ["fill", "stroke"]).map((m) => m.id) // ["fill-grad-center", "stroke-grad-center"]
+ * @example allPaintModifierPoints({w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}, stroke: {type: "radialGradient", radial: {stops: []}}}, ["fill", "stroke"]).map((m) => m.id) // ["fill-grad-center", "fill-grad-dir", "stroke-grad-center", "stroke-grad-dir"]
  * @example allPaintModifierPoints({w: 100, h: 100, stroke: {type: "linearGradient", linear: {stops: [], angle: 0}}}, ["fill", "stroke"]).map((m) => m.id) // ["stroke-grad-center", "stroke-grad-dir"]
  */
 export function allPaintModifierPoints(state, keys) {
@@ -466,7 +507,40 @@ export function paintModifierPoints(state, key = "fill") {
       return { [key]: withGradientPatch(st[key], a, { center: { x: cw === 0 ? cur.x : sx / cw, y: ch === 0 ? cur.y : sy / ch } }) };
     },
   };
-  if (ag.type === "radialGradient") return [centerBead];
+  if (ag.type === "radialGradient") {
+    // DIRECTION bead (radial) — the linear direction bead's idiom carried over (user,
+    // 2026-09-30: "right now a radial gradient can only ever point upwards ... maybe even
+    // put a handle on it"): a FREE polar handle whose HEADING sets the direction and
+    // whose DISTANCE sets the radius, sitting on the seam line at the radius. Distance →
+    // RADIUS rather than wavelength because the radius is the radial's own extent (as the
+    // axis is the linear's) and until now had no on-canvas handle at all.
+    // ALWAYS DRAWN, not only when twisted: it is also the radius handle, which every
+    // radial needs; on a ring radial the heading simply has no visible effect (parsePaint
+    // drops the direction there), which the Direction row's tooltip says.
+    const off = radialBeadOffset(ag.g);
+    const directionBead = {
+      id: `${key}-grad-dir`,
+      x: (c.x + off.x) * W, y: (c.y + off.y) * H,
+      // The paint family's glyph, the same one the linear direction bead wears.
+      glyph: "boxedO",
+      label: `Radial direction + radius (${key})`,
+      // A STEM to the centre: the pivot this polar bead swings around.
+      stem: { x: c.x * W, y: c.y * H },
+      apply(st, allowed) {
+        const a = activeGradient(st[key]);
+        if (!a || a.type !== "radialGradient") return {};
+        const cw = st.w ?? 0, ch = st.h ?? 0;
+        // A zero-extent box has no objectBoundingBox fraction to derive (the
+        // lens_flare division guard the centre bead uses).
+        if (cw === 0 || ch === 0) return {};
+        const cur = a.g.center ?? GRADIENT_DEFAULT_CENTER;
+        const { angle, r } = radialPolarInverse(allowed.x / cw - cur.x, allowed.y / ch - cur.y,
+          Number.isFinite(a.g.angle) ? a.g.angle : RADIAL_DEFAULT_ANGLE);
+        return { [key]: withGradientPatch(st[key], a, { angle, r }) };
+      },
+    };
+    return [centerBead, directionBead];
+  }
 
   // DIRECTION bead (linear only) — a FREE polar handle: heading sets the axis
   // ANGLE, distance sets the WAVELENGTH. No `constrain`: every point is allowed,

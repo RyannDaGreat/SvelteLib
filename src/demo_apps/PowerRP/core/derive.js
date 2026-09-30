@@ -1655,7 +1655,7 @@ export function constraintPull(mp, state, desired) {
  * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined, constrain: UNCONSTRAINED, shape: null, glyph: null, label: null, stem: null}]
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "g", x: 0, y: 0, glyph: "boxedO", label: "Gradient centre"}]}})[0].glyph // "boxedO"
  * @example // AUTO-DERIVED gradient beads: the plugin declares a paint row and NO modifierPoints at all
- * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}).map((m) => m.id) // ["fill-grad-center"]
+ * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}).map((m) => m.id) // ["fill-grad-center","fill-grad-dir"]
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: "#f00"}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}) // [] (a solid fill earns no beads)
  */
 /**

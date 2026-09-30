@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, isMultipointPaint, opHasMultipointPaint, reportTwistedRadialRaster, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, reportVectorDitherOmission, reportReducedDepthRaster, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, isMultipointPaint, opHasMultipointPaint, reportTwistedRadialRaster, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, radialRampRender, radialVectorRamp, reportVectorDitherOmission, reportReducedDepthRaster, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
@@ -423,11 +423,12 @@ export function gradientDefSVG(paint, id, opacity = 1) {
   // the fields it names, so the dither leaves were already inert here and the
   // emitted def is byte-identical to an undithered gradient's.
   reportVectorDitherOmission("svg_backend", paint);
-  const stops = paint.stops.map((s) => {
+  const stopsSVG = (list) => list.map((s) => {
     const [r, g, b, a] = s.color;
     const byte = (v) => Math.round(v * 255);
     return `<stop offset="${fmt(s.offset)}" stop-color="rgb(${byte(r)},${byte(g)},${byte(b)})" stop-opacity="${fmt(a * opacity)}"/>`;
   }).join("");
+  const stops = stopsSVG(paint.stops);
   if (paint.type === "linearGradient") {
     // CENTER + WAVELENGTH + PHASE + SPREAD fold in via linearGradientRender: the axis
     // endpoints move to the centered (phase-shifted), wavelength-scaled ramp and the
@@ -446,7 +447,16 @@ export function gradientDefSVG(paint, id, opacity = 1) {
     const spread = tile === "pad" ? "" : ` spreadMethod="${tile === "mirror" ? "reflect" : "repeat"}"`;
     return `<linearGradient id="${id}" x1="${fmt(from.x)}" y1="${fmt(from.y)}" x2="${fmt(to.x)}" y2="${fmt(to.y)}"${spread}>${stops}</linearGradient>`;
   }
-  return `<radialGradient id="${id}" cx="${fmt(paint.center.x)}" cy="${fmt(paint.center.y)}" r="${fmt(paint.r)}">${stops}</radialGradient>`;
+  // RADIAL WAVELENGTH + PHASE + SPREAD, all VECTOR: ir.js radialVectorRamp folds the
+  // phase into an equivalent plain radial (rotated/remapped stops, a longer radius),
+  // leaving only a radius and a native spreadMethod. A twisted radial never gets here —
+  // it was routed to raster before dispatch (reportTwistedRadialRaster). At the
+  // defaults the radius, stops and (absent) spreadMethod are the pre-feature def.
+  const cxcy = `cx="${fmt(paint.center.x)}" cy="${fmt(paint.center.y)}"`;
+  if (radialRampRender(paint).collapsed) return `<radialGradient id="${id}" ${cxcy} r="${fmt(paint.r)}">${collapsedStopsSVG(paint, opacity)}</radialGradient>`;
+  const v = radialVectorRamp(paint);
+  const radialSpread = v.tile === "pad" ? "" : ` spreadMethod="${v.tile === "mirror" ? "reflect" : "repeat"}"`;
+  return `<radialGradient id="${id}" ${cxcy} r="${fmt(v.r)}"${radialSpread}>${v.stops === paint.stops ? stops : stopsSVG(v.stops)}</radialGradient>`;
 }
 
 /**

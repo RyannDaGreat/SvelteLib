@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMultipointPaint, reportTwistedRadialRaster, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opHasDitheredGradient, opHasReducedDepthGradient, reportVectorDitherOmission, reportReducedDepthRaster, undithered, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, pdfTileSpan, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMultipointPaint, reportTwistedRadialRaster, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opHasDitheredGradient, opHasReducedDepthGradient, reportVectorDitherOmission, reportReducedDepthRaster, undithered, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, pdfTileSpan, radialRampRender, radialVectorRamp, radialTileCount, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -2600,16 +2600,28 @@ class PdfAssembly {
     const tiled = paint.type === "linearGradient" && axis.tile !== "pad" && !axis.collapsed
       ? this._tiledGradientFn(paint, axis)
       : null;
+    // A RADIAL folds its wavelength + phase + spread into an equivalent plain radial
+    // (ir.js radialVectorRamp — the same one Skia and SVG draw): a radius, stops with
+    // the phase already applied, and a tile mode. Its mirror/loop tiles are laid down
+    // like the linear ones — a stitched function over Domain [0, K] with the outer
+    // circle K tiles out (radialTileCount) — so every untwisted radial stays a true
+    // vector shading. Defaults: r and stops untouched, pad, the pre-feature dict.
+    const radialRamp = paint.type === "radialGradient" ? radialRampRender(paint) : null;
+    const collapsed = axis?.collapsed || radialRamp?.collapsed;
+    const vRadial = radialRamp && !collapsed ? radialVectorRamp(paint) : null;
+    const radialTiles = vRadial && vRadial.tile !== "pad" && vRadial.r > 0 ? radialTileCount(paint.center, vRadial.r) : 0;
+    const radialTiled = radialTiles ? this._stitchedTilesFn(vRadial.stops, vRadial.tile, 0, radialTiles) : null;
     // WAVELENGTH 0: the ramp collapses to its average colour. Its two stops become
     // that ONE colour, so the shading paints a flat solid whatever its (degenerate)
     // axis says — the same picture Skia and SVG produce, through the same
     // collapsedGradientColor seam, with no extra branch at the call sites.
-    const stops = axis?.collapsed
+    const stops = collapsed
       ? [{ offset: 0, color: collapsedGradientColor(paint) }, { offset: 1, color: collapsedGradientColor(paint) }]
-      : paint.stops;
-    const fnRef = tiled ? tiled.ref : this._gradientColorFn(stops);
+      : vRadial ? vRadial.stops : paint.stops;
+    const fnRef = tiled ? tiled.ref : radialTiled ? radialTiled.ref : this._gradientColorFn(stops);
+    const outerR = radialTiled ? radialTiles * vRadial.r : vRadial ? vRadial.r : paint.r;
     const dict = paint.type === "radialGradient"
-      ? { ShadingType: 3, ColorSpace: "DeviceRGB", Coords: [paint.center.x, paint.center.y, 0, paint.center.x, paint.center.y, paint.r], Function: fnRef, Extend: [true, true] }
+      ? { ShadingType: 3, ColorSpace: "DeviceRGB", Coords: [paint.center.x, paint.center.y, 0, paint.center.x, paint.center.y, outerR], Function: fnRef, Extend: [true, true], ...(radialTiled ? { Domain: radialTiled.domain } : {}) }
       : { ShadingType: 2, ColorSpace: "DeviceRGB", Coords: collapsedSafeCoords(axis), Function: fnRef, Extend: [true, true], ...(tiled ? { Domain: tiled.domain } : {}) };
     const ref = ctx.register(ctx.obj(dict));
     const name = `Sh${this._shadings.size + 1}`;
@@ -2657,15 +2669,25 @@ class PdfAssembly {
    * must carry so the base ramp still lands on [0, 1].
    */
   _tiledGradientFn(paint, axis) {
-    const ctx = this.doc.context;
     const span = pdfTileSpan(paint.wavelength ?? 1);
-    const base = this._gradientColorFn(paint.stops);
-    const first = -span, last = span + 1; // tiles [first, last) — the base tile is [0,1]
+    return this._stitchedTilesFn(paint.stops, axis.tile, -span, span + 1); // the base tile is [0,1]
+  }
+
+  /**
+   * Command (registers Function objects). The tile stitching itself, shared by the
+   * linear axial case above and the radial case (shadingName): one sub-function per
+   * integer tile over [first, last), mirrored tiles `Encode`d backwards, parity
+   * anchored on tile 0.
+   * Returns: {ref, domain} — the stitching function and the Domain it covers.
+   */
+  _stitchedTilesFn(stops, tile, first, last) {
+    const ctx = this.doc.context;
+    const base = this._gradientColorFn(stops);
     const Functions = [], Encode = [], Bounds = [];
     for (let k = first; k < last; k++) {
       Functions.push(base);
       // A mirrored odd tile is the SAME function read backwards — PDF's Encode.
-      const reversed = axis.tile === "mirror" && ((k % 2) + 2) % 2 === 1;
+      const reversed = tile === "mirror" && ((k % 2) + 2) % 2 === 1;
       Encode.push(reversed ? 1 : 0, reversed ? 0 : 1);
       if (k > first) Bounds.push(k);
     }

@@ -89,7 +89,7 @@
   const DEFAULT_FILL_MATERIAL = fillCapableMaterialIds()[0] ?? "comic";
   const DEFAULT_STROKE_MATERIAL = strokeMaterialIds()[0] ?? "alongGradient";
   import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE } from "../core/properties.js";
-  import { RADIAL_DEFAULT_TWIST, RADIAL_TWIST_HELP } from "../core/properties.js";
+  import { RADIAL_DEFAULT_TWIST, RADIAL_TWIST_HELP, RADIAL_DEFAULT_SPREAD, RADIAL_DEFAULT_ANGLE, RADIAL_DIRECTION_HELP } from "../core/properties.js";
   import { freshMultipoint } from "../core/multipoint.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
@@ -1098,6 +1098,40 @@
           <NumericField {app} path={[...path, "radial", "r"]} paths={writePaths.map((p) => [...p, "radial", "r"])} label={`${label} radius`} min={0} scrub={FRACTION_SCRUB} />
         </span>
       </div>
+      <!-- WAVELENGTH / SPREAD / PHASE — the linear rows' controls on the radial's ramp
+           coordinate (user, 2026-09-30: "we now need the mirror, reflect, etc. options and
+           phase and frequency options as linear gradients have"; render_gpu/ir.js
+           radialRampRender). Wavelength = the fraction of the radius one ramp spans (0 =
+           the average colour, as linear); Spread = what the rings do past one ramp —
+           absent reads PAD for a radial (what every pre-feature radial drew past its
+           circle; core/properties.js RADIAL_DEFAULT_SPREAD says why it differs from
+           linear); Phase = degrees of the mode's own cycle, 360° = identity, growing
+           phase moves the rings outward. Each `value` is the sparse-slot fallback, so
+           displaying a default stores nothing and an untouched radial stays
+           byte-identical. -->
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Wavelength</span>
+        <span class="paint-sub-control">
+          <NumericField {app} path={[...path, "radial", "wavelength"]} paths={writePaths.map((p) => [...p, "radial", "wavelength"])} label={`${label} wavelength`} min={0} scrub={FRACTION_SCRUB} value={GRADIENT_DEFAULT_WAVELENGTH} />
+        </span>
+      </div>
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Spread</span>
+        <span class="paint-sub-control">
+          <Dropdown
+            items={GRADIENT_SPREAD_MODES.map((m) => ({ value: m, label: GRADIENT_SPREAD_LABELS[m] }))}
+            value={sub.radial?.spread ?? RADIAL_DEFAULT_SPREAD}
+            {disabled}
+            onchange={(v) => commitAt(["radial", "spread"], v)}
+          />
+        </span>
+      </div>
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Phase</span>
+        <span class="paint-sub-control">
+          <AngleField {app} path={[...path, "radial", "phase"]} paths={writePaths.map((p) => [...p, "radial", "phase"])} label={`${label} phase`} display="cycles" />
+        </span>
+      </div>
       <!-- TWIST — `radial.twist` in degrees: 90 rings (today; absent reads as 90 and
            parsePaint omits it, so an untouched radial stays byte-identical), 0 spokes,
            between = a spiral (render_gpu/ir.js radialTwistT). An AngleField like
@@ -1108,6 +1142,19 @@
         </Tooltip>
         <span class="paint-sub-control">
           <AngleField {app} path={[...path, "radial", "twist"]} paths={writePaths.map((p) => [...p, "radial", "twist"])} label={`${label} twist`} value={RADIAL_DEFAULT_TWIST} {disabled} />
+        </span>
+      </div>
+      <!-- DIRECTION — `radial.angle`, degrees clockwise from 12 o'clock: where the
+           angular coordinate starts, i.e. where a twisted sweep/spiral's seam sits (user:
+           "right now a radial gradient can only ever point upwards"). No visible effect on
+           rings (parsePaint drops it there); the tooltip says so. The on-canvas direction
+           bead (core/paint_handles.js) writes the same leaf. -->
+      <div class="paint-sub-row">
+        <Tooltip text={RADIAL_DIRECTION_HELP}>
+          <span class="paint-sub-label">Direction</span>
+        </Tooltip>
+        <span class="paint-sub-control">
+          <AngleField {app} path={[...path, "radial", "angle"]} paths={writePaths.map((p) => [...p, "radial", "angle"])} label={`${label} radial direction`} value={RADIAL_DEFAULT_ANGLE} {disabled} />
         </span>
       </div>
     {/if}
@@ -1134,8 +1181,8 @@
            OUTSIDE THE linear/radial BRANCH ON PURPOSE — the rows above are RAMP
            GEOMETRY and belong to one sub-state each; dither describes how this
            paint reaches PIXELS, and a radial ramp quantises into rings exactly as a
-           linear one quantises into bands. (Contrast SPREAD, deliberately
-           linear-only: radial has no wavelength or phase for it to modify.)
+           linear one quantises into bands. (Spread, wavelength and phase are ramp geometry too,
+           and live in both the linear and radial branches above.)
 
            `value` is NumericField's documented SPARSE-SLOT fallback: absent means
            the declared default, and without it a field renders 0 while the paint

@@ -15,7 +15,7 @@
  */
 
 export { isGradientPaint } from "../ir.js";
-import { isGradientPaint, linearGradientRender, collapsedGradientColor, paintDepth } from "../ir.js";
+import { isGradientPaint, linearGradientRender, collapsedGradientColor, paintDepth, radialRampRender, radialVectorRamp } from "../ir.js";
 import { depthShader } from "./dither_shader.js";
 import { multipointShader } from "./multipoint.js";
 import { twistedRadialShader } from "./radial_twist_shader.js";
@@ -114,13 +114,26 @@ function unditheredShaderForPaint(CanvasKit, paint, bounds, opacity = 1, ctm = n
       colors, positions, skTileMode(CanvasKit, tile), lm,
     );
   }
+  // RADIAL WAVELENGTH + PHASE + SPREAD (+ DIRECTION for a twist) — ir.js
+  // radialRampRender. Wavelength 0 is the same solid-average limit as a linear's.
+  const ramp = radialRampRender(paint);
+  if (ramp.collapsed) return solidAverageShader(CanvasKit, paint, opacity);
   // A TWIST (spiral/spokes) has no native Skia form: one runtime effect computes the
-  // ramp coordinate and samples these same stops (radial_twist_shader.js). A 90°
-  // twist is omitted by parsePaint, so every ring radial stays on the native path.
-  if (paint.twist !== undefined) return twistedRadialShader(CanvasKit, paint, colors, positions, lm);
+  // ramp coordinate and samples these same stops, tiled by the spread's own TileMode
+  // (radial_twist_shader.js). A 90° twist is omitted by parsePaint, so every ring
+  // radial stays on the native path below.
+  if (paint.twist !== undefined) return twistedRadialShader(CanvasKit, paint, colors, positions, lm, skTileMode(CanvasKit, ramp.tile));
+  // RINGS: the phase is folded into an equivalent plain radial (radialVectorRamp —
+  // the same one SVG and PDF draw), so every ring radial is a NATIVE radial gradient
+  // with a native TileMode. At the defaults it returns the paint's own stops and r
+  // with tile "pad", i.e. exactly the pre-feature Clamp shader.
+  const v = radialVectorRamp(paint);
+  const vColors = v.stops === paint.stops ? colors
+    : v.stops.map((s) => CanvasKit.Color4f(s.color[0], s.color[1], s.color[2], s.color[3] * opacity));
+  const vPositions = v.stops === paint.stops ? positions : v.stops.map((s) => s.offset);
   return CanvasKit.Shader.MakeRadialGradient(
-    [paint.center.x, paint.center.y], paint.r,
-    colors, positions, CanvasKit.TileMode.Clamp, lm,
+    [paint.center.x, paint.center.y], v.r,
+    vColors, vPositions, skTileMode(CanvasKit, v.tile), lm,
   );
 }
 

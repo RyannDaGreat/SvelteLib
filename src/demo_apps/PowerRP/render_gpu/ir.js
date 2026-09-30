@@ -73,7 +73,7 @@ import { DITHER_MODES, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS,
 import { visibleElements } from "../core/lists.js";
 import { MULTIPOINT_TYPE } from "../core/multipoint.js";
 import { MULTIPOINT_FEATURES_LIST, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST, MULTIPOINT_RESOLUTIONS, MULTIPOINT_DEFAULT_RESOLUTION, MULTIPOINT_RESOLUTION_AUTO } from "../core/properties.js";
-import { RADIAL_DEFAULT_TWIST, FULL_TURN_DEG } from "../core/properties.js";
+import { RADIAL_DEFAULT_TWIST, FULL_TURN_DEG, RADIAL_DEFAULT_SPREAD, RADIAL_DEFAULT_ANGLE } from "../core/properties.js";
 import { reportOnce } from "../core/report.js";
 import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 
@@ -699,7 +699,238 @@ export function parsePaint(paint) {
   }
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
-  return { type, stops, center, r: g.r, ...radialTwistField(g), ...dither };
+  const twist = radialTwistField(g);
+  // Every default is OMITTED by both field readers, so a pre-feature radial parses to
+  // the very object it always did (same keys, same order) and keeps the native path.
+  const radial = { type, stops, center, r: g.r, ...twist, ...radialRampField(g, twist.twist !== undefined), ...dither };
+  // LOOP BAKES ITS WRAP SEGMENT, once, exactly as the linear branch above does, so a
+  // looping radial is C0 across every tile edge — and a looping SPOKE sweep is C0
+  // across its 12 o'clock seam, since one turn is one tile there.
+  return radial.spread === "loop" ? { ...radial, stops: loopWrappedStops(stops) } : radial;
+}
+
+/**
+ * Pure function. The radial sub-state's WAVELENGTH, PHASE, SPREAD and DIRECTION
+ * (`angle`), validated exactly as the linear leaves are (linearCenterWavelength), in
+ * the spreadable form parsePaint folds into a parsed radial. EVERY DEFAULT IS OMITTED —
+ * wavelength 1, a phase that wraps to 0, spread "pad" (RADIAL_DEFAULT_SPREAD: what a
+ * pre-feature radial painted outside its circle), direction 0 — which is what keeps an
+ * untouched radial's parsed object, native Skia shader and vector exports
+ * byte-identical. Phase is stored WRAPPED into [0, 1) and direction into [0, 360), so
+ * a whole cycle or turn is the same picture AND the same parsed object. Direction is
+ * dropped for an untwisted radial: rings have no angular coordinate for it to rotate.
+ * @param {object} g - Radial sub-state (or a legacy inline radial paint).
+ * @param {boolean} twisted - Whether the radial carries a non-default twist.
+ * @returns {{wavelength?: number, phase?: number, spread?: string, angle?: number}}
+ * @example radialRampField({}, false) // {}
+ * @example radialRampField({wavelength: 1, phase: 2, spread: "pad", angle: 360}, true) // {} (every leaf at its default)
+ * @example radialRampField({wavelength: 0.25, phase: -0.25, spread: "loop"}, false) // {wavelength: 0.25, phase: 0.75, spread: "loop"}
+ * @example radialRampField({angle: 90}, false) // {} (rings: direction has nothing to rotate)
+ * @example radialRampField({angle: -90}, true) // {angle: 270}
+ */
+export function radialRampField(g, twisted) {
+  const out = {};
+  if (g.wavelength != null) {
+    if (typeof g.wavelength !== "number" || !Number.isFinite(g.wavelength) || g.wavelength < 0)
+      throw new Error(`parsePaint: radialGradient "wavelength" must be a non-negative finite number (0 collapses the ramp to its average colour), got ${JSON.stringify(g.wavelength)}`);
+    if (g.wavelength !== GRADIENT_DEFAULT_WAVELENGTH) out.wavelength = g.wavelength;
+  }
+  if (g.phase != null) {
+    if (typeof g.phase !== "number" || !Number.isFinite(g.phase))
+      throw new Error(`parsePaint: radialGradient "phase" must be a finite number, got ${JSON.stringify(g.phase)}`);
+    const phase = g.phase % 1 < 0 ? g.phase % 1 + 1 : g.phase % 1;
+    if (phase !== GRADIENT_DEFAULT_PHASE) out.phase = phase;
+  }
+  if (g.spread != null) {
+    if (!GRADIENT_SPREAD_MODES.includes(g.spread))
+      throw new Error(`parsePaint: radialGradient "spread" must be one of ${GRADIENT_SPREAD_MODES.join(", ")}, got ${JSON.stringify(g.spread)}`);
+    if (g.spread !== RADIAL_DEFAULT_SPREAD) out.spread = g.spread;
+  }
+  if (g.angle != null) {
+    if (typeof g.angle !== "number" || !Number.isFinite(g.angle))
+      throw new Error(`parsePaint: radialGradient "angle" (direction) must be a finite number of degrees, got ${JSON.stringify(g.angle)}`);
+    const angle = ((g.angle % FULL_TURN_DEG) + FULL_TURN_DEG) % FULL_TURN_DEG;
+    if (twisted && angle !== RADIAL_DEFAULT_ANGLE) out.angle = angle;
+  }
+  return out;
+}
+
+/**
+ * Pure function. THE radial counterpart of linearGradientRender: how a parsed radial's
+ * ramp coordinate t (ρ/r for rings, radialTwistT otherwise) becomes the TILED ramp
+ * position u that picks a colour. u = t / w − shift, then tiled by `tile`:
+ *   w      — the wavelength; one ramp spans w of t (so rings repeat every w·r).
+ *   shift  — the phase, in RAMPS: phase × the spread mode's own period (mirror's cycle
+ *            is a there-and-back pair = 2 ramps, loop's and pad's is 1 ramp — the same
+ *            spreadPeriodHalves law linear phase obeys), so phase 1 is identity in
+ *            every mode, and a growing phase moves the rings OUTWARD.
+ *   tile   — the spread mode itself. Unlike linear there is no "whole axis ⇒ pad"
+ *            rule: at w = 1 a radial still has the box corners outside its circle, so
+ *            Mirror/Loop mean something there too. Absent = pad (RADIAL_DEFAULT_SPREAD).
+ *   collapsed — w = 0: the limit of infinitely fine tiling, the ramp's average colour
+ *            painted as a solid (collapsedGradientColor), exactly as for linear.
+ * @param {object} paint - Parsed radial paint.
+ * @returns {{w: number, tile: string, shift: number, collapsed: boolean}}
+ * @example radialRampRender({}) // {w: 1, tile: "pad", shift: 0, collapsed: false}
+ * @example radialRampRender({wavelength: 0.25, spread: "mirror", phase: 0.25}) // {w: 0.25, tile: "mirror", shift: 0.5, collapsed: false} (a quarter of mirror's 2-ramp cycle)
+ * @example radialRampRender({spread: "loop", phase: 0.25}).shift // 0.25 (a quarter of loop's 1-ramp cycle)
+ * @example radialRampRender({wavelength: 0}).collapsed // true
+ */
+export function radialRampRender(paint) {
+  const w = paint.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH;
+  const tile = paint.spread ?? RADIAL_DEFAULT_SPREAD;
+  const raw = (paint.phase ?? GRADIENT_DEFAULT_PHASE) % 1, p = raw < 0 ? raw + 1 : raw;
+  return { w, tile, shift: p * spreadPeriodHalves(tile) / 2, collapsed: w === GRADIENT_COLLAPSE_WAVELENGTH };
+}
+
+/**
+ * Pure function. A tiled ramp position u → the position the ramp is actually read at,
+ * per spread mode — the same folding Skia's TileMode, SVG's spreadMethod and the PDF
+ * stitching functions perform: mirror reflects every other ramp, loop restarts, pad
+ * clamps.
+ * @param {number} u - Unbounded ramp position.
+ * @param {string} tile - "mirror" | "loop" | "pad".
+ * @returns {number} Position in [0, 1].
+ * @example tiledRampPosition(1.25, "mirror") // 0.75
+ * @example tiledRampPosition(1.25, "loop") // 0.25
+ * @example tiledRampPosition(1.25, "pad") // 1
+ * @example tiledRampPosition(-0.25, "mirror") // 0.25
+ */
+export function tiledRampPosition(u, tile) {
+  if (tile === "pad") return Math.min(1, Math.max(0, u));
+  if (tile === "loop") return u - Math.floor(u);
+  if (tile === "mirror") { const m = ((u % 2) + 2) % 2; return m <= 1 ? m : 2 - m; }
+  throw new Error(`tiledRampPosition: unknown spread ${JSON.stringify(tile)} (expected mirror, loop or pad)`);
+}
+
+/**
+ * Pure function. THE DEFINITION of the radial ramp position at one objectBoundingBox
+ * point, every control folded in: the twisted coordinate (radialTwistT, which carries
+ * the direction), then wavelength + phase (radialRampRender), then the spread's
+ * tiling. The Skia runtime shader mirrors it and radialVectorRamp reproduces it for
+ * untwisted radials; tests hold both to it.
+ * @param {object} paint - Parsed radial paint.
+ * @param {number} x - Unit-box x.
+ * @param {number} y - Unit-box y (down).
+ * @returns {number} Ramp position in [0, 1].
+ * @example radialRampT({center: {x: 0.5, y: 0.5}, r: 0.5}, 0.75, 0.5) // 0.5 (rings, defaults: t = ρ/r)
+ * @example radialRampT({center: {x: 0.5, y: 0.5}, r: 0.5, wavelength: 0.25, spread: "loop"}, 0.75, 0.5) // 0 (ρ/r = 0.5 = two whole ramps)
+ * @example radialRampT({center: {x: 0.5, y: 0.5}, r: 0.5, wavelength: 0.25, spread: "mirror"}, 0.875, 0.5) // 1 (u = 3: the fourth ramp is a reflected one, so it reads backwards from 1)
+ */
+export function radialRampT(paint, x, y) {
+  const { w, tile, shift } = radialRampRender(paint);
+  return tiledRampPosition(radialTwistT(paint, x, y) / w - shift, tile);
+}
+
+/**
+ * Pure function. A parsed ramp's colour at position x — the piecewise-linear, clamped
+ * reading every backend performs (before the first stop: the first colour; after the
+ * last: the last). At a hard seam (two stops at one offset) the later stop wins.
+ * @param {{offset: number, color: number[]}[]} stops - Parsed stops, in order.
+ * @param {number} x - Position.
+ * @returns {number[]} [r, g, b, a].
+ * @example stopsColorAt([{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}], 0.25) // [0.75, 0, 0.25, 1]
+ * @example stopsColorAt([{offset: 0.5, color: [1,1,1,1]}, {offset: 1, color: [0,0,0,1]}], 0.1) // [1, 1, 1, 1] (before the first stop: held)
+ */
+export function stopsColorAt(stops, x) {
+  if (x <= stops[0].offset) return [...stops[0].color];
+  for (let i = 1; i < stops.length; i++) {
+    const a = stops[i - 1], b = stops[i];
+    if (x > b.offset) continue;
+    const span = b.offset - a.offset;
+    const f = span > 0 ? (x - a.offset) / span : 1;
+    return a.color.map((c, k) => c + (b.color[k] - c) * f);
+  }
+  return [...stops[stops.length - 1].color];
+}
+
+/**
+ * Pure function. A MIRROR tile pair expressed as ONE loop tile: the ramp forward over
+ * [0, ½] and backward over [½, 1]. Mirror tiling of the ramp IS loop tiling of this
+ * pair (period two ramps), which is how a phase-shifted mirror becomes expressible.
+ * @param {{offset: number, color: number[]}[]} stops - Parsed stops.
+ * @returns {{offset: number, color: number[]}[]} Stops of the there-and-back tile.
+ * @example mirroredPairStops([{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}]).map((s) => s.offset) // [0, 0.5, 0.5, 1]
+ */
+export function mirroredPairStops(stops) {
+  const forward = stops.map((s) => ({ offset: s.offset / 2, color: s.color }));
+  const back = [...stops].reverse().map((s) => ({ offset: 1 - s.offset / 2, color: s.color }));
+  return [...forward, ...back];
+}
+
+/**
+ * Pure function. The stops of a LOOP tile read with its start moved forward by q (a
+ * fraction of the tile): colour(v) = L(frac(v − q)). Exact, not resampled — every
+ * authored stop keeps its colour and moves by q, the tile edge that lands inside is
+ * written as a (possibly hard) pair of stops at q, and the new ends carry L(1 − q) so
+ * the rotated tile is still C0 across its own edges whenever L was. Consecutive
+ * duplicates are dropped (PDF stitching wants strictly usable Bounds).
+ * @param {{offset: number, color: number[]}[]} stops - The loop tile's stops.
+ * @param {number} q - Rotation, in (0, 1).
+ * @returns {{offset: number, color: number[]}[]} Rotated stops spanning exactly [0, 1].
+ * @example rotatedLoopStops([{offset: 0, color: [0,0,0,1]}, {offset: 1, color: [1,1,1,1]}], 0.25).map((s) => s.offset) // [0, 0.25, 0.25, 1]
+ * @example rotatedLoopStops([{offset: 0, color: [0,0,0,1]}, {offset: 1, color: [1,1,1,1]}], 0.25)[0].color // [0.75, 0.75, 0.75, 1] (the colour three quarters up the old tile)
+ */
+export function rotatedLoopStops(stops, q) {
+  const at = (x) => stopsColorAt(stops, x);
+  const edge = at(1 - q);
+  const tail = stops.filter((s) => s.offset >= 1 - q).map((s) => ({ offset: s.offset + q - 1, color: s.color }));
+  const head = stops.filter((s) => s.offset < 1 - q).map((s) => ({ offset: s.offset + q, color: s.color }));
+  const out = [{ offset: 0, color: edge }, ...tail, { offset: q, color: at(1) }, { offset: q, color: at(0) }, ...head, { offset: 1, color: edge }];
+  const same = (a, b) => a.offset === b.offset && a.color.every((c, k) => c === b.color[k]);
+  return out.filter((s, i) => i === 0 || !same(s, out[i - 1]));
+}
+
+/**
+ * Pure function. An UNTWISTED radial with its wavelength, phase and spread folded into
+ * an equivalent PLAIN radial — {r, tile, stops} with no phase — which every backend can
+ * draw natively: Skia MakeRadialGradient + TileMode, SVG <radialGradient> +
+ * spreadMethod, PDF radial shading (+ a stitched function for the tiled modes).
+ *   phase 0 — r·w with the paint's own stops and tile; at the defaults this returns
+ *             `paint.stops` BY IDENTITY and r unchanged, the byte-identical path.
+ *   pad     — the ramp slid outward by `shift` ramps: r·w·(1+shift), stops remapped
+ *             onto the longer radius, the first colour held inside (pad's own clamp).
+ *   loop    — the tile's stops rotated by `shift` (rotatedLoopStops): exact.
+ *   mirror  — expressed as a loop of the there-and-back pair (mirroredPairStops,
+ *             twice the radius), then rotated by shift/2: exact.
+ * A collapsed (w = 0) paint must be handled by the caller first (a solid average).
+ * @param {object} paint - Parsed untwisted radial paint.
+ * @returns {{r: number, tile: string, stops: object[]}}
+ * @example radialVectorRamp({r: 0.5, stops: [{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}]}).r // 0.5 (defaults: untouched)
+ * @example radialVectorRamp({r: 0.5, wavelength: 0.5, spread: "mirror", stops: []}).tile // "mirror" (no phase: native reflect)
+ * @example radialVectorRamp({r: 0.5, wavelength: 0.5, spread: "mirror", phase: 0.25, stops: [{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}]}).tile // "loop" (a shifted mirror, as a rotated pair)
+ * @example radialVectorRamp({r: 0.5, phase: 0.5, stops: [{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}]}).r // 0.75 (pad: the ramp starts half a ramp out)
+ */
+export function radialVectorRamp(paint) {
+  const { w, tile, shift } = radialRampRender(paint);
+  const r = paint.r * w;
+  if (shift === 0) return { r, tile, stops: paint.stops };
+  if (tile === "pad") {
+    const scale = 1 / (1 + shift);
+    const moved = paint.stops.map((s) => ({ offset: (shift + s.offset) * scale, color: s.color }));
+    const last = moved[moved.length - 1];
+    // Stops must span [0, 1] for the PDF stitching function (which ignores the end
+    // offsets); the held colours are what pad's clamp would paint there anyway.
+    return { r: r * (1 + shift), tile, stops: [{ offset: 0, color: moved[0].color }, ...moved,
+      ...(last.offset < 1 ? [{ offset: 1, color: last.color }] : [])] };
+  }
+  const pair = tile === "mirror";
+  const period = pair ? 2 : 1; // ramps per loop tile
+  return { r: r * period, tile: "loop", stops: rotatedLoopStops(pair ? mirroredPairStops(paint.stops) : paint.stops, shift / period) };
+}
+
+/**
+ * Pure function. How many radial TILES (each `r` wide) a PDF radial shading must lay
+ * down so its rings cover the whole unit box from `center` — the radial counterpart of
+ * pdfTileSpan. The farthest box corner sets the need; one tile of margin is added.
+ * @param {{x: number, y: number}} center - Radial centre, objectBoundingBox.
+ * @param {number} r - One tile's radius (> 0).
+ * @returns {number} Tile count.
+ * @example radialTileCount({x: 0.5, y: 0.5}, 0.25) // 4 (the corner is 0.707 away: 3 tiles + 1 margin)
+ */
+export function radialTileCount(center, r) {
+  const far = Math.max(...[[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => Math.hypot(x - center.x, y - center.y)));
+  return Math.ceil(far / r) + 1;
 }
 
 /**
@@ -756,6 +987,7 @@ export function radialTwistCoefficients(twistDeg) {
  * @example radialTwistT({center: {x: 0.5, y: 0.5}, r: 0.5}, 0.75, 0.5) // 0.5 (no twist: t = ρ/r)
  * @example Math.round(radialTwistT({center: {x: 0.5, y: 0.5}, r: 0.5, twist: 0}, 0.9, 0.5) * 1e9) / 1e9 // 0.25 (spokes: 3 o'clock is a quarter turn)
  * @example Math.round(radialTwistT({center: {x: 0.5, y: 0.5}, r: 0.5, twist: 0}, 0.5, 0.9) * 1e9) / 1e9 // 0.5 (6 o'clock is half a turn)
+ * @example Math.round(radialTwistT({center: {x: 0.5, y: 0.5}, r: 0.5, twist: 0, angle: 90}, 0.9, 0.5) * 1e9) / 1e9 // 0 (Direction 90°: the sweep now STARTS at 3 o'clock)
  */
 export function radialTwistT(paint, x, y) {
   const { s, c, offset, scale } = radialTwistCoefficients(paint.twist ?? RADIAL_DEFAULT_TWIST);
@@ -763,7 +995,11 @@ export function radialTwistT(paint, x, y) {
   const a = Math.hypot(dx, dy) / paint.r;
   if (paint.twist === undefined) return a; // rings: exactly the plain radial's coordinate
   const turn = 2 * Math.PI;
-  const b = (((Math.atan2(dx, -dy) % turn) + turn) % turn) / turn; // clockwise turn fraction from 12 o'clock, y down
+  const fromNoon = (((Math.atan2(dx, -dy) % turn) + turn) % turn) / turn; // clockwise turn fraction from 12 o'clock, y down
+  // DIRECTION rotates where the turn fraction starts (radial.angle, clockwise degrees);
+  // written as a conditional +1 rather than a modulo so direction 0 is bit-exact.
+  const b0 = fromNoon - (paint.angle ?? RADIAL_DEFAULT_ANGLE) / FULL_TURN_DEG;
+  const b = b0 < 0 ? b0 + 1 : b0;
   return (s * a + c * b + offset) * scale;
 }
 

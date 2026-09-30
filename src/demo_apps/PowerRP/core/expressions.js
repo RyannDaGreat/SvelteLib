@@ -2345,7 +2345,7 @@ const PAINT_LEAF_KINDS = {
   // other leaf, and an equation MAY write it.
   type: "string",
   solid: "color",          // the solid sub-state's color
-  angle: "number",         // linear direction, DEGREES (properties.angleToLinearEndpoints)
+  angle: "number",         // direction, DEGREES — linear axis (properties.angleToLinearEndpoints), or where a radial's sweep starts (ir.js radialTwistT)
   r: "number",             // radial radius, objectBoundingBox units
   twist: "number",         // radial twist, DEGREES: 90 rings, 0 spokes, else a spiral (ir.js radialTwistT)
   "center.x": "number", "center.y": "number", // radial center, objectBoundingBox

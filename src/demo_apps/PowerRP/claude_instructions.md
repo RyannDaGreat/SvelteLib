@@ -524,6 +524,32 @@ degrees and at 0 would be outward spokes and at others would be a spiral."
   90° stays a vector shading. PPTX already downgrades every radial to nearest solid
   with a report, unchanged.
 
+### Radial spread, wavelength, phase and direction (2026-09-30)
+
+User, verbatim: "For the radial gradient, because now we have the twist option, I think
+we now need the mirror, reflect, etc. options and phase and frequency options as linear
+gradients have ... they have direction, they have phase" and, with a screenshot of a
+twisted radial whose seam always points up: "it would be nice to be able to change the
+angle that is pointing at to ... and maybe even put a handle on it".
+- Radial paints carry the linear `spread` (mirror / loop / pad), `wavelength` and `phase`
+  (cycles, shown in degrees, period per spread mode exactly as linear), plus `angle` —
+  the DIRECTION where a twisted sweep/spiral seam starts (no visible effect on plain
+  rings, which its tooltip says).
+- ABSENT RADIAL SPREAD IS PAD, not mirror: a w=1 radial still has the box corners outside
+  its circle, and every pre-feature radial held the end colour there. Every default is
+  omitted by `parsePaint`, so existing radials are byte-identical.
+- Math: `render_gpu/ir.js radialRampT` / `radialRampRender`; `radialVectorRamp` folds
+  phase into an equivalent plain radial so UNTWISTED radials stay native in Skia and
+  vector in SVG (spreadMethod) and PDF (tiled stitching function, shared with linear via
+  `_stitchedTilesFn`); only a twisted radial rasterizes in the vector exporters.
+- On canvas, a direction bead (`fill-grad-dir`) sits on the seam line: its heading sets
+  the direction and its distance from the centre sets the radius (the linear endpoint
+  idiom). It is always drawn because it is also the radius handle.
+- Verified: 24 spread × wavelength × phase × direction × twist combinations rendered in
+  Skia match the `radialRampT` reference within 1/255 at the 99th percentile
+  (`.scratchpad/radial_controls/sheet.mjs`). SVG/PDF output was not rasterized and
+  inspected yet.
+
 ### In-canvas Multipoint editing — the island (2026-09-30)
 
 User request, verbatim: "The thing is, the truth is, the UI makes it very difficult
