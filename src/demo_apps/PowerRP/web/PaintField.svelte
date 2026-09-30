@@ -89,6 +89,7 @@
   const DEFAULT_FILL_MATERIAL = fillCapableMaterialIds()[0] ?? "comic";
   const DEFAULT_STROKE_MATERIAL = strokeMaterialIds()[0] ?? "alongGradient";
   import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE } from "../core/properties.js";
+  import { RADIAL_DEFAULT_TWIST, RADIAL_TWIST_HELP } from "../core/properties.js";
   import { freshMultipoint } from "../core/multipoint.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
@@ -1095,6 +1096,18 @@
         <span class="paint-sub-label">Radius</span>
         <span class="paint-sub-control">
           <NumericField {app} path={[...path, "radial", "r"]} paths={writePaths.map((p) => [...p, "radial", "r"])} label={`${label} radius`} min={0} scrub={FRACTION_SCRUB} />
+        </span>
+      </div>
+      <!-- TWIST — `radial.twist` in degrees: 90 rings (today; absent reads as 90 and
+           parsePaint omits it, so an untouched radial stays byte-identical), 0 spokes,
+           between = a spiral (render_gpu/ir.js radialTwistT). An AngleField like
+           Direction, so it keyframes and binds to equations the same way. -->
+      <div class="paint-sub-row">
+        <Tooltip text={RADIAL_TWIST_HELP}>
+          <span class="paint-sub-label">Twist</span>
+        </Tooltip>
+        <span class="paint-sub-control">
+          <AngleField {app} path={[...path, "radial", "twist"]} paths={writePaths.map((p) => [...p, "radial", "twist"])} label={`${label} twist`} value={RADIAL_DEFAULT_TWIST} {disabled} />
         </span>
       </div>
     {/if}

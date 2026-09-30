@@ -640,6 +640,18 @@ export function spreadPeriodHalves(spread) {
 /** Default phase: no shift (today's behaviour). */
 export const GRADIENT_DEFAULT_PHASE = 0;
 
+// THE RADIAL TWIST (user, 2026-09-30: "Radial gradients should have an option to go
+// radially outward instead of what it is now, represented as an angle: which right
+// now would be 90 degrees and at 0 would be outward spokes and at others would be a
+// spiral"). `radial.twist`, in DEGREES, rotates the ramp's direction inside the
+// (radius, turn) square: 90 = along the radius (today's rings), 0 = around the turn
+// (spokes: a clockwise sweep from 12 o'clock), anything else = an Archimedean spiral. The math is render_gpu/ir.js
+// radialTwistT. 90 is OMITTED by parsePaint, so an absent twist is byte-identical.
+/** Default radial twist: concentric rings (today's radial gradient). */
+export const RADIAL_DEFAULT_TWIST = 90;
+/** The Twist row's tooltip. */
+export const RADIAL_TWIST_HELP = "How the colour runs around the centre. 90° = rings (the classic radial), 0° = spokes sweeping clockwise from 12 o'clock, in between = a spiral (60° winds about 1.7 turns, 45° one turn, 30° about half); negative or past 90° turns the other way or reverses. The sweep starts at 12 o'clock: make the first and last colours match to hide the seam there.";
+
 /**
  * Pure function. THE AVERAGE COLOUR of a piecewise-linear colour ramp — the exact
  * mean of the ramp read over its whole 0..1 domain, per channel.

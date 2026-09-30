@@ -2347,6 +2347,7 @@ const PAINT_LEAF_KINDS = {
   solid: "color",          // the solid sub-state's color
   angle: "number",         // linear direction, DEGREES (properties.angleToLinearEndpoints)
   r: "number",             // radial radius, objectBoundingBox units
+  twist: "number",         // radial twist, DEGREES: 90 rings, 0 spokes, else a spiral (ir.js radialTwistT)
   "center.x": "number", "center.y": "number", // radial center, objectBoundingBox
   // Legacy linear endpoints. Superseded by `angle` but still stored (the
   // migration keeps them so old documents render byte-identically).

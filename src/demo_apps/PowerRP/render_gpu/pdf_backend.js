@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMultipointPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opHasDitheredGradient, opHasReducedDepthGradient, reportVectorDitherOmission, reportReducedDepthRaster, undithered, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, pdfTileSpan, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMultipointPaint, reportTwistedRadialRaster, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opHasDitheredGradient, opHasReducedDepthGradient, reportVectorDitherOmission, reportReducedDepthRaster, undithered, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, pdfTileSpan, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -1097,6 +1097,10 @@ async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, 
     if (opHasMultipointPaint(cmd)) {
       // Before crop/lens dispatch: their own paint slots also need the real field.
       reportExportFailureOnce("pdf_backend:multipoint", "PowerRP PDF export: Multipoint paints have no native PDF representation — affected operations are embedded as rasters to preserve appearance and opacity.");
+      await emitRasterOp(cmd, world, commands, rawIndexOf[i], region, out, ctx);
+    } else if (reportTwistedRadialRaster("pdf_backend", cmd)) {
+      // A TWISTED radial (spiral/spokes) has no PDF shading; checked before the
+      // crop/lens/effect dispatch for the same reason as Multipoint just above.
       await emitRasterOp(cmd, world, commands, rawIndexOf[i], region, out, ctx);
     } else if (cmd.op === "magnifyBackdrop") {
       await emitLens(cmd, world, commands, rawIndexOf[i], region, out, ctx);

@@ -73,6 +73,7 @@ import { DITHER_MODES, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS,
 import { visibleElements } from "../core/lists.js";
 import { MULTIPOINT_TYPE } from "../core/multipoint.js";
 import { MULTIPOINT_FEATURES_LIST, MULTIPOINT_NODES_LIST, MULTIPOINT_STOPS_LIST, MULTIPOINT_RESOLUTIONS, MULTIPOINT_DEFAULT_RESOLUTION, MULTIPOINT_RESOLUTION_AUTO } from "../core/properties.js";
+import { RADIAL_DEFAULT_TWIST, FULL_TURN_DEG } from "../core/properties.js";
 import { reportOnce } from "../core/report.js";
 import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 
@@ -698,7 +699,114 @@ export function parsePaint(paint) {
   }
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
-  return { type, stops, center, r: g.r, ...dither };
+  return { type, stops, center, r: g.r, ...radialTwistField(g), ...dither };
+}
+
+/**
+ * Pure function. The radial sub-state's TWIST, validated, in the spreadable form
+ * parsePaint folds into a parsed radial: `{}` at the default 90° (rings) — absent,
+ * 90, 450 and −270 are one picture — else `{twist}` normalized into [0, 360).
+ * OMITTING THE DEFAULT is what keeps every pre-feature radial byte-identical: the
+ * same parsed object, the native Skia radial and the same vector PDF/SVG shading.
+ * @param {object} g - Radial sub-state (or a legacy inline radial paint).
+ * @returns {{twist?: number}} Spreadable twist field, degrees in [0, 360).
+ * @example radialTwistField({}) // {}
+ * @example radialTwistField({twist: 90}) // {}
+ * @example radialTwistField({twist: -270}) // {} (the same angle as 90)
+ * @example radialTwistField({twist: 0}) // {twist: 0} (spokes)
+ * @example radialTwistField({twist: -45}) // {twist: 315}
+ */
+export function radialTwistField(g) {
+  const raw = g.twist ?? RADIAL_DEFAULT_TWIST;
+  if (typeof raw !== "number" || !Number.isFinite(raw))
+    throw new Error(`parsePaint: radialGradient "twist" must be a finite number of degrees, got ${JSON.stringify(raw)}`);
+  const twist = ((raw % FULL_TURN_DEG) + FULL_TURN_DEG) % FULL_TURN_DEG;
+  return twist === RADIAL_DEFAULT_TWIST ? {} : { twist };
+}
+
+/**
+ * Pure function. The four numbers the twisted-radial ramp coordinate needs, from
+ * the twist ψ in degrees: with a = ρ/r and b = the clockwise TURN FRACTION from 12
+ * o'clock, t = (s·a + c·b + offset) · scale — the ramp's direction rotated by ψ inside
+ * the (radius, turn) unit square. `offset` and `scale` map that range over the disc
+ * (a, b ∈ [0,1]) onto exactly [0,1], so the WHOLE ramp lies inside the circle at
+ * every twist; at 90° they are 0 and 1 and t = a, today's rings.
+ * The manifest's "Radial gradient TWIST" section gives the WHY of each choice.
+ * @param {number} twistDeg - Twist ψ in degrees.
+ * @returns {{s:number, c:number, offset:number, scale:number}}
+ * @example radialTwistCoefficients(0).scale // 1 (spokes: t = b)
+ * @example radialTwistCoefficients(180).offset // 1 (a counter-clockwise sweep: t = 1 − b)
+ * @example radialTwistCoefficients(-90).offset // 1 (inverted rings: t = 1 − a)
+ */
+export function radialTwistCoefficients(twistDeg) {
+  const psi = twistDeg * Math.PI / 180;
+  const s = Math.sin(psi), c = Math.cos(psi);
+  return { s, c, offset: -Math.min(0, s) - Math.min(0, c), scale: 1 / (Math.abs(s) + Math.abs(c)) };
+}
+
+/**
+ * Pure function. THE DEFINITION of a twisted radial's ramp coordinate at one point
+ * of objectBoundingBox space — the reference the SkSL in
+ * render_gpu/skia/radial_twist_shader.js mirrors line for line. Values past 1
+ * (outside the circle) clamp to the end colour, like the plain radial.
+ * @param {object} paint - Parsed radial paint {center, r, twist?}.
+ * @param {number} x - Unit-box x.
+ * @param {number} y - Unit-box y (down).
+ * @returns {number} Unclamped ramp position t.
+ * @example radialTwistT({center: {x: 0.5, y: 0.5}, r: 0.5}, 0.75, 0.5) // 0.5 (no twist: t = ρ/r)
+ * @example Math.round(radialTwistT({center: {x: 0.5, y: 0.5}, r: 0.5, twist: 0}, 0.9, 0.5) * 1e9) / 1e9 // 0.25 (spokes: 3 o'clock is a quarter turn)
+ * @example Math.round(radialTwistT({center: {x: 0.5, y: 0.5}, r: 0.5, twist: 0}, 0.5, 0.9) * 1e9) / 1e9 // 0.5 (6 o'clock is half a turn)
+ */
+export function radialTwistT(paint, x, y) {
+  const { s, c, offset, scale } = radialTwistCoefficients(paint.twist ?? RADIAL_DEFAULT_TWIST);
+  const dx = x - paint.center.x, dy = y - paint.center.y;
+  const a = Math.hypot(dx, dy) / paint.r;
+  if (paint.twist === undefined) return a; // rings: exactly the plain radial's coordinate
+  const turn = 2 * Math.PI;
+  const b = (((Math.atan2(dx, -dy) % turn) + turn) % turn) / turn; // clockwise turn fraction from 12 o'clock, y down
+  return (s * a + c * b + offset) * scale;
+}
+
+/**
+ * Pure function. Whether a paint is a radial gradient with a non-default TWIST —
+ * one no vector shading can express (PDF/SVG have rings and axes, not spirals or
+ * sweeps).
+ * @param {*} paint - Parsed paint.
+ * @returns {boolean}
+ * @example isTwistedRadialPaint({type: "radialGradient", twist: 0}) // true
+ * @example isTwistedRadialPaint({type: "radialGradient"}) // false (rings)
+ */
+export function isTwistedRadialPaint(paint) {
+  return paint?.type === "radialGradient" && paint.twist !== undefined;
+}
+
+/**
+ * Pure function. THE RASTER-ROUTING PREDICATE for a twisted radial, over EVERY
+ * paint slot (opPaintSlots — fill, stroke, text colour, glyph stroke, rich runs):
+ * a named, enumerable capability gap like opHasReducedDepthGradient.
+ * @param {object} cmd - A display-list op.
+ * @returns {boolean}
+ * @example opHasTwistedRadial({op: "rect", fill: {type: "radialGradient", twist: 45}}) // true
+ * @example opHasTwistedRadial({op: "rect", fill: {type: "radialGradient"}}) // false
+ */
+export function opHasTwistedRadial(cmd) {
+  return opPaintSlots(cmd).some(isTwistedRadialPaint);
+}
+
+/**
+ * Command (console side effect, deduped). Routes a twisted radial to raster and
+ * says so once per backend; returns whether it did. The PDF/SVG exporters call it
+ * right after their Multipoint branch, before crop/lens/effect dispatch, so no
+ * subtree path can export a spiral as plain rings.
+ * @param {string} backend - "pdf_backend" | "svg_backend".
+ * @param {object} cmd - A display-list op.
+ * @returns {boolean} True when the op must be rasterized.
+ */
+export function reportTwistedRadialRaster(backend, cmd) {
+  if (!opHasTwistedRadial(cmd)) return false;
+  reportOnce(`${backend}-twisted-radial-raster`,
+    `${backend}: a radial gradient with a Twist other than 90° (a spiral or a spoke sweep) has no vector shading form — the op is exported as a RASTER region at this exporter's density. A 90° (ring) radial still exports as a true vector shading.`);
+  return true;
 }
 
 /**

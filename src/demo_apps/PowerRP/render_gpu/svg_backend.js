@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, isMultipointPaint, opHasMultipointPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, reportVectorDitherOmission, reportReducedDepthRaster, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, isMultipointPaint, opHasMultipointPaint, reportTwistedRadialRaster, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, reportVectorDitherOmission, reportReducedDepthRaster, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
@@ -1106,6 +1106,10 @@ async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, ou
     if (opHasMultipointPaint(cmd)) {
       // Before crop/lens dispatch: their own paint slots also need the real field.
       reportExportFailureOnce("svg_backend:multipoint", "PowerRP SVG export: Multipoint paints have no native SVG representation — affected operations are embedded as rasters to preserve appearance and opacity.");
+      out.push(await emitRasterOpSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
+    } else if (reportTwistedRadialRaster("svg_backend", cmd)) {
+      // A TWISTED radial (spiral/spokes) has no SVG gradient form; checked before
+      // the crop/lens/effect dispatch for the same reason as Multipoint just above.
       out.push(await emitRasterOpSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
     } else if (cmd.op === "magnifyBackdrop") {
       out.push(await emitLensSVG(cmd, world, commands, rawIndexOf[i], region, ctx));

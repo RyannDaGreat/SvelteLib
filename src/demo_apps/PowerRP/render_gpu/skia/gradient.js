@@ -18,6 +18,7 @@ export { isGradientPaint } from "../ir.js";
 import { isGradientPaint, linearGradientRender, collapsedGradientColor, paintDepth } from "../ir.js";
 import { depthShader } from "./dither_shader.js";
 import { multipointShader } from "./multipoint.js";
+import { twistedRadialShader } from "./radial_twist_shader.js";
 
 /**
  * Pure function. A spread mode ("mirror" | "loop" | "pad") → the CanvasKit TileMode
@@ -113,6 +114,10 @@ function unditheredShaderForPaint(CanvasKit, paint, bounds, opacity = 1, ctm = n
       colors, positions, skTileMode(CanvasKit, tile), lm,
     );
   }
+  // A TWIST (spiral/spokes) has no native Skia form: one runtime effect computes the
+  // ramp coordinate and samples these same stops (radial_twist_shader.js). A 90°
+  // twist is omitted by parsePaint, so every ring radial stays on the native path.
+  if (paint.twist !== undefined) return twistedRadialShader(CanvasKit, paint, colors, positions, lm);
   return CanvasKit.Shader.MakeRadialGradient(
     [paint.center.x, paint.center.y], paint.r,
     colors, positions, CanvasKit.TileMode.Clamp, lm,

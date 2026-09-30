@@ -396,6 +396,61 @@ tween, bit-identity hash from `.scratchpad/multipoint_resolution/pin_hashes_base
 `halfTexels`, node renders); a cache-probe case for stale-job cancellation; the
 browser probes were not re-run after this change.
 
+### Radial gradient TWIST — rings, spirals, spokes (2026-09-30)
+
+User, verbatim: "Radial gradients should have an option to go radially outward
+instead of what it is now, represented as an angle: which right now would be 90
+degrees and at 0 would be outward spokes and at others would be a spiral."
+
+- **Leaf:** `radial.twist`, DEGREES (the `linear.angle` convention: a plain degrees
+  number or an "=" equation, edited with an AngleField labelled "Twist" under Radius).
+  Default `RADIAL_DEFAULT_TWIST = 90` (core/properties.js). It is the direction the
+  ramp runs in the (radius, turn) square: 90° along the radius, 0° around the turn.
+- **Byte-identical default:** `parsePaint` normalizes twist into [0, 360) and OMITS it
+  at exactly 90 (absent, 90, 450, −270 are one picture), so every pre-feature radial
+  parses to the same object, takes the native `MakeRadialGradient` path and exports
+  as the same vector shading. Non-finite twist is refused loudly.
+- **Math (render_gpu/ir.js `radialTwistT`, the single definition every backend
+  mirrors):** a = ρ/r (distance from `center` over the radius, objectBoundingBox
+  units), b = the clockwise TURN FRACTION from 12 o'clock in [0, 1). With s = sin ψ,
+  c = cos ψ: `u = s·a + c·b`, and t = (u − min(0,s) − min(0,c)) / (|s| + |c|).
+  90° → t = a exactly (today's rings); 0° → t = b (one clockwise sweep: spokes);
+  180° → a counter-clockwise sweep; 270° → inverted rings (last stop at the centre);
+  anything else → Archimedean spirals whose handedness follows the sign of c.
+  - WHY ARCHIMEDEAN, not the constant-angle log spiral: the log form's radial term is
+    ln ρ, which cannot reduce to today's LINEAR ρ/r at 90° (a twist keyframed toward
+    90 would pop at the end) and winds infinitely tight at the centre.
+  - WHY THE TURN FRACTION, NOT RADIANS (measured, .scratchpad/radial_twist/): a first
+    cut mixed a with θ in RADIANS, which makes the stated angle the exact crossing
+    angle at the rim — and rendered 30° and 60° as near-copies of the 0° sweep,
+    because the angular term outweighs the radial one 2π:1 and an arm reaches the rim
+    within a quarter turn. Mixing a with b (both 0..1) makes ψ a plain rotation of the
+    ramp inside the (radius, turn) square: an iso-line gains c/s of the radius per
+    turn, so 45° winds exactly one turn centre-to-rim and 60° about 1.7 — the
+    rings → spiral → spokes progression the user described is visible at every step.
+  - WHY NORMALIZED: dividing by the term's range over the disc (a, θ/2π ∈ [0,1]) maps
+    the WHOLE ramp inside the circle at every twist, so a spiral shows every stop
+    rather than clamping most of the disc to the end colour; it also leaves 90°
+    untouched (range 1). Outside the circle a > 1 so t > 1 and CLAMPS to the end
+    colour, exactly as today's radial pads; pure spokes (s = 0) sweep to the corners.
+  - THE SEAM IS AUTHORED, NOT FIXED: the sweep starts at 12 o'clock (CSS
+    conic-gradient's convention) and the angular term jumps a whole turn across that
+    ray, so a ramp whose ends differ shows a seam there — the same rule CLAUDE.md
+    states for an authored hard loop seam ("the jump is what the author drew"). Radial
+    has no spread row to ask for loop, and silently appending the first stop would
+    rewrite the author's ramp. Match the first and last colours to hide it (the
+    Twist tooltip says so).
+- **Backends:** Skia draws a twisted radial with ONE runtime effect
+  (render_gpu/skia/radial_twist_shader.js) that computes t in SkSL and samples a
+  child LINEAR gradient of the same stops along x — so stop interpolation is Skia's
+  own, identical to the native radial's — used unchanged by the browser WebGL2
+  surface and bare-node software Skia; dither/bit depth wrap it at the usual single
+  exit. PDF/SVG have no spiral or sweep shading, so `opHasTwistedRadial` routes the op
+  to RASTER (reported once per backend by `reportTwistedRadialRaster`), checked right
+  after the Multipoint branch so crop/lens/effect subtrees cannot draw it as rings.
+  90° stays a vector shading. PPTX already downgrades every radial to nearest solid
+  with a report, unchanged.
+
 ### In-canvas Multipoint editing — the island (2026-09-30)
 
 User request, verbatim: "The thing is, the truth is, the UI makes it very difficult

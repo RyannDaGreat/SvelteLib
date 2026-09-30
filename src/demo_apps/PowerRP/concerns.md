@@ -1706,3 +1706,36 @@ conflate the local green gate with a completed remote deployment.
   compound_props_probe, inspector_row_uniformity_probe, list_ui_probe,
   multipoint_ui_probe, paintfield_probe, material_paint_ui_probe and
   gradient_stop_bar_probe are the ones these edits could move.
+
+## 2026-09-30 — Radial gradient TWIST (rings → spirals → spokes)
+
+User: "Radial gradients should have an option to go radially outward instead of what
+it is now, represented as an angle: which right now would be 90 degrees and at 0 would
+be outward spokes and at others would be a spiral."
+
+- Landed `radial.twist` (degrees, default 90, omitted by parsePaint → byte-identical:
+  absent / 90 / 450 render the exact same PNG bytes, measured). Skia runtime effect
+  `render_gpu/skia/radial_twist_shader.js` samples a child linear gradient of the same
+  stops; PDF/SVG route twisted radials to raster (`reportTwistedRadialRaster`, right
+  after the Multipoint branch); Inspector "Twist" AngleField under Radius; `twist`
+  registered in core/expressions.js PAINT_LEAF_KINDS so equations on it are typed.
+- MISTAKE, caught by looking: the first math mixed a = ρ/r with θ in RADIANS (so the
+  twist equalled the rim crossing angle exactly). Rendered 0/30/60/90/−45/135 and 30°
+  and 60° were near-copies of the 0° sweep — the angular term outweighed the radial
+  2π:1. Switched to mixing a with the turn FRACTION b (both 0..1): 45° now winds one
+  turn, 60° ≈1.7. Lesson: a formula that is "exact" in the most literal reading of the
+  request can still fail the request's picture; render the sweep of the parameter
+  before committing to the definition.
+- Measured: shader at 89.999° vs native rings max 1 code value (mean 0.001); shader vs
+  JS reference `radialTwistT` ≤0.5 code values at 5 twists; dither+2-bit on a twisted
+  radial changes 98.7% of pixels (the wrap composes). Node suites green:
+  paint_gradient 19, gradient_dither 31, gradient_spread 36, gradient_phase 18,
+  ir_field_coverage 4, ir_op_coverage 4, pdf_vector 27, pdf_backend 87, svg_warning 12,
+  paint_off 28. doctest_test: 2 FAILURES, both in the merged preset modules and NOT
+  from this change — core/multipoint_presets/mathematical.js:136 (mandelbrotCardioid
+  example expects −1, gets 1.2e−16) and core/multipoint_presets/planets.js:234
+  (latitudeBand example expects #000000, gets #242424). PowerRP build green.
+- Known and accepted: the sweep starts at 12 o'clock and a ramp whose ends differ shows
+  a seam there (authored seam, stated in the tooltip). Not done: a CSS swatch preview of
+  a twisted radial anywhere a ramp swatch is drawn as CSS still shows rings, if such a
+  surface shows radial geometry at all (not audited).
