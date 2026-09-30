@@ -1,20 +1,26 @@
-/** Native Multipoint field → ordinary Skia shader. One numerical implementation
- * for browser and headless rendering; generated F16 texels are only a cache.
+/** Native Multipoint field → ordinary Skia shader. Generated F16 texels are only a cache.
+ *
+ * TWO SOLVERS, ONE SYSTEM (claude_instructions.md "Multipoint GPU solver"): both start
+ * from core assembleMultipoint and run the same PCG + V-cycle. In a browser realm the
+ * WebGL2 solver (render_gpu/multipoint_gpu.js, float32) is used whenever it exists;
+ * bare node has no WebGL2 and uses the Float64 CPU solver. Fields agree to well under
+ * 1/255 (measured); a GPU failure falls back to the CPU LOUDLY (reportOnce).
  *
  * RENDER RESOLUTION (claude_instructions.md "Multipoint render resolution and solve
  * speed"): the parsed paint's `resolution` is a grid side N, "auto", or absent
  * (= MULTIPOINT_DEFAULT_SIZE, byte-identical to before the setting existed). N counts
  * texels per side of the SOLVE DOMAIN (the square around the box and every source).
  * A field is addressed by its FIELD KEY `${N}:${content key}`. */
-import { solveMultipoint, multipointDomain } from "../../core/multipoint_diffusion.js";
+import { solveMultipoint, multipointDomain, assembleMultipoint } from "../../core/multipoint_diffusion.js";
 import { MULTIPOINT_RESOLUTION_AUTO } from "../../core/properties.js";
 import { toHalf } from "./shape_sdf.js";
-import { warnOnce } from "../../core/report.js";
+import { warnOnce, reportOnce } from "../../core/report.js";
+import { multipointGpuSolver } from "../multipoint_gpu.js";
 
 export const MULTIPOINT_PREVIEW_SIZE = 128;
 export const MULTIPOINT_DEFAULT_SIZE = 512;
 export const MULTIPOINT_AUTO_MIN_SIZE = 128;
-export const MULTIPOINT_AUTO_MAX_SIZE = 2048; // the solver needs ~1.5 GB while solving 2048²
+export const MULTIPOINT_AUTO_MAX_SIZE = 2048; // the CPU solver needs ~1.5 GB while solving 2048²
 // Largest first: the editor's interim field is the finest one already solved.
 const FIELD_SIZES = [2048, 1024, 512, 256, 128];
 // Per cache, in F16 texel bytes: two 2048² fields (32 MiB each) or thirty-two 512².
@@ -103,20 +109,50 @@ export function halfTexels(pixels) {
 }
 
 /**
- * Pure function. Solves one field at `size` and returns the cacheable F16 record.
- * Nonconvergence and non-finite output are refused here, where the Float32 exists
- * (the refinement worker calls this too, so the main thread never converts).
+ * Near-pure function (the GPU route creates/uses this realm's WebGL2 context once).
+ * Solves one field at `size` and returns the cacheable F16 record. Nonconvergence and
+ * non-finite output are refused (the refinement worker calls this too, so the main
+ * thread never converts). `solver` "auto" takes the GPU whenever this realm has one;
+ * a GPU failure is REPORTED (reportOnce) and the field is solved on the CPU instead.
  * @param {object[]} features - Parsed sources.
  * @param {number} size - Power-of-two grid side, e.g. 512.
- * @returns {{size:number,half:Uint16Array,domain:object,iterations:number,relativeResidual:number}}
+ * @param {"auto"|"gpu"|"cpu"} solver - "gpu"/"cpu" force one (probes); "gpu" throws if absent.
+ * @returns {{size:number,half:Uint16Array,domain:object,iterations:number,relativeResidual:number,solver:string}}
  *   `half` is (size,size,4) F16 premultiplied encoded-sRGB RGBA.
  * @example solvedField([], 4).half.length // 64
+ * @example solvedField([], 4).solver // "cpu" (bare node has no WebGL2)
  */
-export function solvedField(features, size) {
+export function solvedField(features, size, solver = "auto") {
+  if (!["auto", "gpu", "cpu"].includes(solver)) throw new Error(`Unknown Multipoint solver "${solver}"`);
+  const gpu = solver === "cpu" ? null : multipointGpuSolver();
+  if (solver === "gpu" && !gpu) throw new Error("Multipoint GPU solver requested, but this realm has no usable WebGL2 float render targets.");
+  if (gpu) {
+    try { return gpuField(gpu, features, size); }
+    catch (error) {
+      if (solver === "gpu") throw error;
+      reportOnce(`multipoint-gpu-solve:${error.message}`, `Multipoint GPU solve failed (${error.message}); this field is solved on the CPU instead — same picture, slower.`);
+    }
+  }
   const {pixels, domain, converged, relativeResidual, iterations} = solveMultipoint(features, {size});
   if (!converged) throw new Error(`Multipoint diffusion did not converge (relative residual ${relativeResidual}).`);
   for (let i = 0; i < pixels.length; i++) if (!Number.isFinite(pixels[i])) throw new Error("Multipoint diffusion must return finite Float32 RGBA pixels.");
-  return {size, half: halfTexels(pixels), domain, iterations, relativeResidual};
+  return {size, half: halfTexels(pixels), domain, iterations, relativeResidual, solver: "cpu"};
+}
+
+/**
+ * Command (GPU work). One field on the WebGL2 solver: CPU assembly, GPU PCG, F16 readback.
+ * An empty system (no active source) is exactly transparent, as on the CPU.
+ * @param {object} gpu - multipointGpuSolver()'s solver.
+ * @param {object[]} features - Parsed sources.
+ * @param {number} size - Power-of-two grid side.
+ * @returns {object} The solvedField record, solver "gpu".
+ */
+function gpuField(gpu, features, size) {
+  const assembled = assembleMultipoint(features, size), {domain} = assembled;
+  if (!assembled.mass) return {size, half: new Uint16Array(size * size * 4), domain, iterations: 0, relativeResidual: 0, solver: "gpu"};
+  const {half, converged, relativeResidual, iterations} = gpu.solve(assembled);
+  if (!converged) throw new Error(`GPU diffusion did not converge (relative residual ${relativeResidual})`);
+  return {size, half, domain, iterations, relativeResidual, solver: "gpu"};
 }
 
 /**
@@ -183,10 +219,14 @@ export function withMultipointPreview(draw) {
 
 /**
  * Command. Resolves an immutable F16 field, solving deterministically on a miss.
- * Outside a preview scope (exports, bare node) that is always the exact `size`.
- * Inside one (the editor) a miss shows the finest field already solved for this
- * content, else a synchronous min(MULTIPOINT_PREVIEW_SIZE, size) solve, and records
- * the exact size for idle refinement; at size ≤ the preview size that solve IS final.
+ * Outside a preview scope (exports, bare node) that is always the exact `size`, on the
+ * GPU where this realm has one. Inside one (the editor) a miss shows the finest field
+ * already solved for this content, else a synchronous min(MULTIPOINT_PREVIEW_SIZE, size)
+ * solve ON THE CPU, and records the exact size for idle refinement — which the worker
+ * solves on the GPU. The editor's main thread never waits on the GPU: a synchronous
+ * 512² GPU solve per drag frame measured 43–84 ms long tasks, against 10–25 ms for the
+ * 128² CPU preview (latency profiling, 2026-09-30). At size ≤ the preview size the
+ * synchronous solve IS final.
  * @param {object[]} features - Parsed sources.
  * @param {string} key - multipointKey(features).
  * @param {number} size - Final grid side.
@@ -197,12 +237,12 @@ function fieldFor(features, key, size) {
   if (!previewRequests) return exact ?? rememberMultipointField(key, solvedField(features, size));
   const preview = Math.min(MULTIPOINT_PREVIEW_SIZE, size), ready = !!exact || preview === size;
   previewRequests.set(fieldKey, {key:fieldKey, contentKey:key, features, size, ready});
-  if (ready) return exact ?? rememberMultipointField(key, solvedField(features, size));
+  if (ready) return exact ?? rememberMultipointField(key, solvedField(features, size, "cpu"));
   for (const interim of FIELD_SIZES) {
     const entry = interim !== size && cached(fields, `${interim}:${key}`);
     if (entry) return entry.field;
   }
-  return rememberMultipointField(key, solvedField(features, preview));
+  return rememberMultipointField(key, solvedField(features, preview, "cpu"));
 }
 
 /**

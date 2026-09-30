@@ -33,6 +33,8 @@ const SMOOTH_STEPS = 2;
 const BOTTOM_SIZE = 4;
 const OUTPUT_SLACK = .01; // Larger violations are not credible premultiplied colors.
 const CENTRE_SNAP = 1e-9; // Texels. Far above float noise (~1e-13 at 2048²), far below any authored offset.
+// The GPU solver (render_gpu/multipoint_gpu.js) runs the same smoother and bounds check.
+export { JACOBI_DAMPING as MULTIPOINT_JACOBI_DAMPING, SMOOTH_STEPS as MULTIPOINT_SMOOTH_STEPS, OUTPUT_SLACK as MULTIPOINT_OUTPUT_SLACK };
 
 /**
  * Pure function. Validate parsed features, then flatten using canonical geometry.
@@ -107,15 +109,38 @@ function sampleStops(stops, t, side) {
 }
 
 /**
+ * Pure function. Allocate a private four-neighbor graph OPERATOR level: per-cell
+ * source mass, east/south edge conductances, diagonal, and the (N,N,4) RHS. No solver
+ * work vectors — the GPU solver needs only this, and at 2048² the three CPU work
+ * vectors alone are 384 MB.
+ * @param {number} n Grid side.
+ * @returns {object} Fresh operator level, e.g. operatorLevel(4).b has shape (4,4,4).
+ * @example operatorLevel(4).diag.length // 16
+ */
+function operatorLevel(n) {
+  const cells = n * n;
+  return { n, mass: new Float64Array(cells), right: new Float64Array(cells), down: new Float64Array(cells), diag: new Float64Array(cells), b: new Float64Array(cells * CHANNELS) };
+}
+
+/**
+ * Command. Attach the CPU solver's (N,N,4) work vectors u/temp/residual to a level.
+ * @param {object} g Operator level to extend in place.
+ * @returns {object} The same level, now CPU-solvable.
+ * @example withWork(operatorLevel(4)).u.length // 64
+ */
+function withWork(g) {
+  const length = g.n * g.n * CHANNELS;
+  g.u = new Float64Array(length); g.temp = new Float64Array(length); g.residual = new Float64Array(length);
+  return g;
+}
+
+/**
  * Pure function. Allocate private four-neighbor graph and (N,N,4) RGBA work arrays.
  * @param {number} n Grid side.
  * @returns {object} Fresh level, e.g. level(4).b has shape (4,4,4).
  * @example level(4).mass.length // 16
  */
-function level(n) {
-  const cells = n * n, length = cells * CHANNELS;
-  return { n, mass: new Float64Array(cells), right: new Float64Array(cells), down: new Float64Array(cells), diag: new Float64Array(cells), b: new Float64Array(length), u: new Float64Array(length), temp: new Float64Array(length), residual: new Float64Array(length) };
-}
+function level(n) { return withWork(operatorLevel(n)); }
 
 /**
  * Command. Add one color constraint to private graph mass/RHS arrays.
@@ -274,15 +299,18 @@ function finishDiagonal(g) {
 }
 
 /**
- * Command. Build coarse operators; attach exact bottom Cholesky to bottom level.
+ * Command. Build coarse OPERATOR levels (no work vectors); attach the exact bottom
+ * Cholesky factor to the bottom level. Shared by the CPU PCG and the GPU solver
+ * (render_gpu/multipoint_gpu.js), so both precondition with the same hierarchy.
  * @param {object} fine Finest graph (receives cholesky only when already bottom size).
- * @returns {object[]} Hierarchy (first entry references fine).
- * @example (() => { const g = level(4); g.mass.fill(1); finishDiagonal(g); return hierarchy(g).length; })() // 1
+ * @returns {object[]} Hierarchy (first entry references fine); bottom.cholesky is the
+ *   dense lower factor, (count,count) row-major with count = BOTTOM_SIZE².
+ * @example (() => { const g = operatorLevel(4); g.mass.fill(1); finishDiagonal(g); return operatorHierarchy(g).length; })() // 1
  */
-function hierarchy(fine) {
+function operatorHierarchy(fine) {
   const levels = [fine];
   while (levels.at(-1).n > BOTTOM_SIZE) {
-    const f = levels.at(-1), n = f.n / 2, c = level(n);
+    const f = levels.at(-1), n = f.n / 2, c = operatorLevel(n);
     for (let y = 0; y < f.n; y++) for (let x = 0; x < f.n; x++) {
       const i = y * f.n + x, j = (y >> 1) * n + (x >> 1);
       c.mass[j] += f.mass[i];
@@ -307,6 +335,19 @@ function hierarchy(fine) {
     l[i * count + j] = i === j ? Math.sqrt(value) : value / l[j * count + j];
   }
   g.cholesky = l;
+  return levels;
+}
+
+/**
+ * Command. The CPU hierarchy: operatorHierarchy plus work vectors on every coarse
+ * level (the fine level already carries its own).
+ * @param {object} fine Finest graph, with work vectors.
+ * @returns {object[]} Hierarchy (first entry references fine).
+ * @example (() => { const g = level(4); g.mass.fill(1); finishDiagonal(g); return hierarchy(g).length; })() // 1
+ */
+function hierarchy(fine) {
+  const levels = operatorHierarchy(fine);
+  for (const g of levels.slice(1)) withWork(g);
   return levels;
 }
 
@@ -498,6 +539,64 @@ function allFinite(values) { for (let i = 0; i < values.length; i++) if (!Number
  */
 export function multipointDomain(features) { return prepare(features).domain; }
 
+/** Relative residual ‖b − A x‖ / ‖b‖ at which a solve counts as converged (CPU and GPU). */
+export const MULTIPOINT_SOLVE_TOLERANCE = 1e-5;
+/** PCG iteration ceiling; converged solves take 6–10 at every size (mesh-independent). */
+export const MULTIPOINT_MAX_ITERATIONS = 160;
+
+/**
+ * Pure function. Refuses a nonpositive/nonfinite tolerance or a non-integer/zero
+ * iteration limit, loudly.
+ * @param {number} tolerance - Relative residual target, > 0.
+ * @param {number} maxIterations - Integer >= 1.
+ * @returns {undefined}
+ * @example validateSolveLimits(1e-5, 160) // undefined
+ */
+export function validateSolveLimits(tolerance, maxIterations) {
+  if (!Number.isFinite(tolerance) || tolerance <= 0 || !Number.isInteger(maxIterations) || maxIterations < 1) throw new Error('invalid solve tolerance/iteration limit');
+}
+
+/**
+ * Pure function. THE ASSEMBLY both solvers share: validates the features, rasterises
+ * every source into the fine operator (edge conductances with finite cuts, source
+ * mass and RHS), and computes the mass-weighted mean colour (the initial guess) and
+ * ‖b‖ in Float64. The CPU PCG (solveMultipoint) and the GPU PCG
+ * (render_gpu/multipoint_gpu.js) start from exactly this, so they solve one system.
+ * @param {object[]} features - Parsed IR features (see solveMultipoint).
+ * @param {number} size - Power-of-two grid side >= 4, e.g. 512.
+ * @returns {{size:number, domain:object, fine:object, mass:number, average:number[], norm:number}}
+ *   `fine` is an operator level (no work vectors): right/down/diag/mass (N,N) and b (N,N,4).
+ *   mass 0 means no active source: the field is exactly transparent.
+ * @example assembleMultipoint([], 4).mass // 0
+ * @example assembleMultipoint([{nodes:[[.5,.5,0,0,0,0]],stops:[{offset:0,color:[1,0,0,.5]}]}], 8).average // [0.5, 0, 0, 0.5]
+ */
+export function assembleMultipoint(features, size) {
+  if (!Number.isInteger(size) || size < BOTTOM_SIZE || !Number.isInteger(Math.log2(size))) throw new Error('Multipoint size must be a power of two >= 4');
+  const {sources, domain} = prepare(features), g = operatorLevel(size), length = g.b.length;
+  for (let i = 0; i < size * size; i++) { g.right[i] = i % size < size - 1 ? 1 : 0; g.down[i] = i + size < size * size ? 1 : 0; }
+  for (const f of sources) addCurve(g, f, domain.w);
+  finishDiagonal(g);
+  if (!allFinite(g.diag) || !allFinite(g.b)) throw new Error('Multipoint source strength overflowed numerical system');
+  let mass = 0;
+  for (let i = 0; i < g.mass.length; i++) mass += g.mass[i];
+  if (!Number.isFinite(mass) || (sources.length && !mass)) throw new Error('Multipoint source mass overflow/underflow');
+  const average = [0,0,0,0];
+  if (mass) for (let i = 0; i < length; i++) average[i % CHANNELS] += g.b[i] / mass;
+  const norm = Math.sqrt(dot(g.b, g.b)) || 1;
+  if (!Number.isFinite(norm)) throw new Error('Multipoint RHS norm overflow');
+  return {size, domain, fine: g, mass, average, norm};
+}
+
+/**
+ * Command. The multigrid operator hierarchy for an assembled fine level (coarse
+ * face-averaged conductances, summed mass, bottom Cholesky) — what the GPU solver
+ * uploads. Coarse levels carry no work vectors.
+ * @param {object} fine - assembleMultipoint(...).fine.
+ * @returns {object[]} Levels, finest first; the last has `cholesky`.
+ * @example multipointHierarchy(assembleMultipoint([{nodes:[[.5,.5,0,0,0,0]],stops:[{offset:0,color:[1,0,0,1]}]}], 16).fine).length // 3 (16, 8, 4)
+ */
+export function multipointHierarchy(fine) { return operatorHierarchy(fine); }
+
 /**
  * Pure function. Solve parsed Multipoint features without DOM, cache or input mutation.
  * Unit-box geometry is isotropic; caller maps returned domain back to paint bounds.
@@ -512,25 +611,13 @@ export function multipointDomain(features) { return prepare(features).domain; }
  *   before output rounding. Caller MUST report converged:false; never hide it.
  * @example solveMultipoint([{nodes:[[.5,.5,0,0,0,0]],stops:[{offset:0,color:[1,0,0,.5]}]}]).pixels.slice(0,4) // Float32Array [.5,0,0,.5]
  */
-export function solveMultipoint(features, {size = 128, tolerance = 1e-5, maxIterations = 160} = {}) {
-  if (!Number.isInteger(size) || size < BOTTOM_SIZE || !Number.isInteger(Math.log2(size))) throw new Error('Multipoint size must be a power of two >= 4');
-  if (!Number.isFinite(tolerance) || tolerance <= 0 || !Number.isInteger(maxIterations) || maxIterations < 1) throw new Error('invalid solve tolerance/iteration limit');
-  const {sources, domain} = prepare(features), g = level(size), length = g.b.length;
-  for (let i = 0; i < size * size; i++) { g.right[i] = i % size < size - 1 ? 1 : 0; g.down[i] = i + size < size * size ? 1 : 0; }
-  for (const f of sources) addCurve(g, f, domain.w);
-  finishDiagonal(g);
-  if (!allFinite(g.diag) || !allFinite(g.b)) throw new Error('Multipoint source strength overflowed numerical system');
-  let mass = 0;
-  for (let i = 0; i < g.mass.length; i++) mass += g.mass[i];
-  if (!Number.isFinite(mass) || (sources.length && !mass)) throw new Error('Multipoint source mass overflow/underflow');
+export function solveMultipoint(features, {size = 128, tolerance = MULTIPOINT_SOLVE_TOLERANCE, maxIterations = MULTIPOINT_MAX_ITERATIONS} = {}) {
+  validateSolveLimits(tolerance, maxIterations);
+  const assembled = assembleMultipoint(features, size), {domain, mass, average, norm} = assembled, g = withWork(assembled.fine), length = g.b.length;
   if (!mass) return {pixels:new Float32Array(length),size,domain,iterations:0,relativeResidual:0,converged:true};
   const rhs = g.b, x = new Float64Array(length), r = new Float64Array(length), p = new Float64Array(length), ap = new Float64Array(length);
-  const average = [0,0,0,0];
-  for (let i = 0; i < length; i++) average[i % CHANNELS] += rhs[i] / mass;
   for (let i = 0; i < length; i++) x[i] = average[i % CHANNELS];
   apply(g, x, r, rhs);
-  const norm = Math.sqrt(dot(rhs, rhs)) || 1;
-  if (!Number.isFinite(norm)) throw new Error('Multipoint RHS norm overflow');
   let relativeResidual = Math.sqrt(dot(r, r)) / norm, iterations = 0;
   if (relativeResidual > tolerance) {
     const levels = hierarchy(g);

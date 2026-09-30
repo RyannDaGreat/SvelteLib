@@ -309,17 +309,29 @@ Answers, measured (M4 Max, node 24; Chrome's V8 is the same engine):
   cubic only blurs the cut staircase, Catmull-Rom adds visible over/undershoot halos
   beside every step, and smooth bokeh regions are indistinguishable at 19 px/texel.
   Keeping `FilterMode.Linear` also keeps existing documents byte-identical.
-- **Why the solver is not moved to the GPU:** (1) one SkSL pass at 512² on the
-  bare-node software Skia that `cli/render.js` uses costs 156 ms (1024²: 580 ms) —
-  as long as the ENTIRE CPU solve, and a converged GPU multigrid-PCG needs on the
-  order of a thousand passes (V-cycle levels × smoothing + reductions for every dot
-  product), so "one numerical implementation in both" would mean minutes in node;
-  (2) the earlier GPU relaxation prototype (above) either missed colours by ~0.068 or
-  took ~240 ms with thousands of passes in Chrome; (3) GPU float math is not
-  bit-reproducible across vendors/ANGLE backends, while IEEE double JS is, and the
-  determinism law wants the same document to export the same pixels on every
-  machine; (4) float render targets need `EXT_color_buffer_float`, and Chromium's
-  Metal path already quantized an RGBA_F32 SOURCE to 8-bit once.
+- **Multipoint GPU solver (2026-09-30; user: "why are you still waiting to do the GPU
+  solver? Go!").** `render_gpu/multipoint_gpu.js` runs the SAME system and algorithm as the
+  CPU (core `assembleMultipoint` + `multipointHierarchy` assemble it on the CPU; PCG with one
+  symmetric V-cycle preconditioner on RGBA32F WebGL2 textures, α/β kept on the GPU, one
+  readback per iteration). Used by the refinement WORKER and by exports in any browser realm;
+  the editor's MAIN thread keeps the synchronous 128² CPU preview (a synchronous 512² GPU
+  solve per drag frame measured 43–84 ms long tasks). Bare node (`cli/render.js`) has no
+  WebGL2 and uses the CPU — by design. Missing WebGL2/float render targets, context loss or a
+  failed GPU solve fall back to the CPU LOUDLY (`reportOnce`).
+  Measured, M4 Max, Chrome/ANGLE Metal, incl. CPU assembly (CPU → GPU): 512² 170–255 → 21–46 ms;
+  1024² 640–1080 → 68–85 ms; 2048² 2.6–4.3 s → 0.22–0.41 s (4–16×). SwiftShader: 1.4–2.4×
+  at ≥512², slower at 128². Accuracy vs the Float64 CPU field: max 0.13–0.17/255, mean
+  0.02–0.05/255 on neon-spiral, warm-bokeh, jupiter-globe, vertigo-spiral and the default
+  three-point fill, 128²–2048².
+  TWO LESSONS: (1) the stencil must be evaluated in DIFFERENCE form, m·x + Σw(x − x_nb):
+  `d·x − Σw·x_nb` cancels catastrophically in float32 and measured a 7/255 field error at
+  2048² that no iteration count removed. (2) A float32 field cannot always meet the CPU's
+  relative residual 1e-5: b is sparse, x dense, and the exactly-solved field rounded to
+  float32 already has 5e-6 (512²) / 8e-5 (2048²) for the three-point fill. The loop stops on
+  the CPU's own criterion (recursive residual ≤ 1e-5); the final TRUE residual is certified
+  against max(1e-5, 2·eps32·‖|b|+|A||x|‖/‖b‖) — measured floors sit at 0.10–0.17 of that bound.
+  Stopping the LOOP at that bound was tried and left 2.2/255 error at 2048². Probe:
+  `tests/multipoint_gpu_probe.js`. Bench: `.scratchpad/multipoint_gpu/`.
 - The solver is already mesh-independent multigrid-preconditioned CG: 6–8
   iterations at every size from 128² to 2048². Cost is therefore ~linear in N², and
   work, not iteration count, is what can be cut.

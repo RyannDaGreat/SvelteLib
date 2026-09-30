@@ -1909,3 +1909,11 @@ it so slow?" Measured in Metal Chrome (M4 Max, ANGLE Metal) with
   double-click → compact, again → show all (4044); show-all survives reload; the island ramp
   library shown-all stays inside the render area via `data-resize-room`. No page errors, no
   storage warnings. PowerRP build green; doctests 7128 agree.
+
+## 2026-09-30 — Multipoint GPU solver (WebGL2)
+- Built `render_gpu/multipoint_gpu.js`; core split into `assembleMultipoint`/`multipointHierarchy` (CPU output bit-identical: 69 preset hashes at 128/256/512 unchanged; 7090 doctests agree).
+- Mistake 1: direct-form stencil in float32 → 7/255 error at 2048²; fixed with difference form (0.17/255).
+- Mistake 2: stopping the PCG loop at the float32 floor → 4 iterations, 2.2/255 at 2048²; loop now stops on the CPU criterion, only the certificate is float32-aware.
+- Mistake 3: a synchronous 512² GPU solve on the editor main thread made 43–84 ms drag frames (latency fork measurement); reverted to CPU 128² preview on the main thread, GPU in the worker/exports.
+- Found: `multipoint_pipeline_probe.js` counted worker replies by `"result" in data`, but the worker has answered `{key, field}` since the resolution commit — pending never decremented (fixed the probe's instrumentation). Still open in that probe: `.multipoint-presets [aria-label="Warm bokeh"]` not found after the picker became family-grouped (not GPU-related). `multipoint_cache_probe.js` fails on `_multipointWanted` undefined — the latency fork's browser_surface.js change; the probe builds the surface by hand.
+- WRAPPED UP EARLY (usage limit): `tests/multipoint_gpu_probe.js` written, run below; readback-per-iteration cost not yet reduced further.
