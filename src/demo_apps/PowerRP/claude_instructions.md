@@ -198,20 +198,35 @@ Numerical and runtime contract:
   logical unit. Positive curves remain barriers even at weak weight; exactly zero
   removes the source/barrier. The no-flux square includes active off-box geometry.
   Subpixel sources use conservative deposition, not disappearance or invented cuts.
-- Browser surfaces use an explicit 128² interactive field and refine after 120 ms
-  idle with one disposable module worker per surface to 512². Headless/export paths
-  solve 512² synchronously. Both call the same solver. Numerical nonconvergence
+- The FINAL field size is the paint's render resolution (`multipointResolution`,
+  default 512² — see "Multipoint render resolution and solve speed" below).
+  Browser surfaces draw a synchronous min(128², final) interactive field and refine
+  after 150 ms idle (`MULTIPOINT_IDLE_MS`) with one disposable module worker per
+  surface to the final size. Headless/export paths solve the final size
+  synchronously. Both call the same solver. Numerical nonconvergence
   fails loudly; coarse geometric detail is a distinct limitation, not convergence.
-- Field and GPU-image caches each have a 32 MiB budget. A visible content key
-  requests refinement at most once while it remains visible. Completed keys,
+- Field and GPU-image caches each have a 64 MiB budget of upload-ready F16 texels
+  (two 2048² fields, or thirty-two 512² fields). A visible field key (size +
+  content) requests refinement at most once while it remains visible. Completed keys,
   including final cache hits, prevent endless cycles under cache pressure;
   evicted fields may retain interactive quality. Leaving the visible scene clears
   this completion scope so returning content can refine again. Disposal terminates
   the worker and releases image resources. Distant sources warn about reduced
   effective paint-box resolution rather than claiming full geometric resolution.
 - New production modules: `core/multipoint.js` (shared geometry/edit operations),
-  `core/multipoint_diffusion.js` (solver), `core/multipoint_presets.js` (fourteen
-  native paints), `render_gpu/skia/multipoint.js` (cache/F16 shader),
+  `core/multipoint_diffusion.js` (solver), `core/multipoint_presets.js` (assembles
+  the deep-frozen `MULTIPOINT_PRESET_FAMILIES` [{id,title,presets}] and the flat
+  `MULTIPOINT_PRESETS`; 165 native paints on 2026-09-30 in 11 families: the original
+  14 as "Signature", then soft blends, classic shapes, nature, geometric, fluid &
+  materials, planets & moons, space & sci-fi, mathematical, art homages, food &
+  moods — authored by a 10-agent frenzy, each render inspected), family modules in
+  `core/multipoint_presets/*.js`, builders (preset/boundary/point/glow) in
+  `core/multipoint_presets/builders.js`, and shared pure geometry in
+  `core/multipoint_shapes.js`. WHY families: the Inspector picker renders one
+  section per family, and 165 swatches in one flat grid are unbrowsable. Helpers
+  duplicated by several agents with identical output were unified; those with
+  different signatures/outputs stay in their family module (unifying them would
+  change stored geometry). `render_gpu/skia/multipoint.js` (cache/F16 shader),
   `render_gpu/skia/multipoint_worker.js`, and `web/MultipointField.svelte`.
   Thumbnails in `web/multipoint_thumbnails/` are generated previews, not document
   data. Regenerate them with `node cli/build_multipoint_thumbnails.mjs` from the
@@ -236,6 +251,308 @@ Point constraints and influence weights require specified extensions. The small
 MIT `Lichtso/FreeFormGradients` implementation is a reference candidate, not a
 verified drop-in dependency: its current image-alpha seed mask, RGBA8 buffers and
 separate WebGL context do not meet PowerRP's paint contract unchanged.
+
+### Multipoint render resolution and solve speed (2026-09-30)
+
+User request, verbatim: "Oh, also the resolution that it renders at should be
+adjustable too in that material because right now it ends up very pixelated when I
+zoom in and Like it would be nice if I had some options to control what that
+resolution was. I know it's probably for performance I get that but like Well, isn't
+there some way we could You know do it faster and for that matter Is it using GPU To
+do his calculations for the gradients Read the manifest and stuff it does yeah It's
+worth asking these things"
+
+Vocabulary: **render resolution** = the side length N of the square N×N field the
+solver computes (the texel grid, not the output image). **Auto** = a resolution
+chosen per draw from how many device pixels the field covers. **Field key** =
+`${N}:${content key}`, the address of one solved field. **Interim field** = what the
+editor shows while a better field is being solved.
+
+Answers, measured (M4 Max, node 24; Chrome's V8 is the same engine):
+- **The solve is CPU JavaScript, not GPU.** `core/multipoint_diffusion.js` runs
+  (a) synchronously on the MAIN THREAD at 128² for editor/presenter interaction
+  (`browser_surface.js render → withMultipointPreview → multipoint.js fieldFor`),
+  (b) in one module Web Worker per surface for the idle refinement
+  (`multipoint_worker.js`), (c) synchronously at the final size in exports and bare
+  node (`gpuService`/`cli` → `paintIR`). The GPU only SAMPLES the finished field: an
+  RGBA_F16 image drawn through an ordinary Skia image shader.
+- **Why it pixelates when zoomed:** the field is a fixed 512² grid over the SOLVE
+  DOMAIN, which is the bounding SQUARE of the unit paint box and every flattened
+  source point (`prepare()`), in paint-box fractions. So N counts texels per domain
+  side, not per paint box: texels per paint box = N / domain side, and the shipped
+  presets span domain sides 1.00–1.36 (376–512 texels per box at N = 512; any
+  overhang to −0.08..1.08, even sideways only, grows the square in BOTH axes). The
+  square is in box fractions, so a non-square box gets anisotropic texels: a 16:9
+  box's long axis is the coarse one. A 1600-px-wide box on a 2× display at 100% zoom
+  is already 6.3 device px per texel; at 400% it is 25. Two-sided paths are CUTS
+  (real discontinuities), so they render as a staircase of texel-sized steps; smooth
+  regions stay smooth. Point sources are 0.04-box-radius disks (~20 texels at 512²,
+  ~5 at 128²), smooth rather than stair-stepped. While editing, the 128² interactive
+  field is 4× coarser still.
+- **Sampling filter is NOT the cause, and stays bilinear.** Measured side by side
+  (`.scratchpad/multipoint_resolution/filter_compare/`): at 25 px/texel Mitchell
+  cubic only blurs the cut staircase, Catmull-Rom adds visible over/undershoot halos
+  beside every step, and smooth bokeh regions are indistinguishable at 19 px/texel.
+  Keeping `FilterMode.Linear` also keeps existing documents byte-identical.
+- **Why the solver is not moved to the GPU:** (1) one SkSL pass at 512² on the
+  bare-node software Skia that `cli/render.js` uses costs 156 ms (1024²: 580 ms) —
+  as long as the ENTIRE CPU solve, and a converged GPU multigrid-PCG needs on the
+  order of a thousand passes (V-cycle levels × smoothing + reductions for every dot
+  product), so "one numerical implementation in both" would mean minutes in node;
+  (2) the earlier GPU relaxation prototype (above) either missed colours by ~0.068 or
+  took ~240 ms with thousands of passes in Chrome; (3) GPU float math is not
+  bit-reproducible across vendors/ANGLE backends, while IEEE double JS is, and the
+  determinism law wants the same document to export the same pixels on every
+  machine; (4) float render targets need `EXT_color_buffer_float`, and Chromium's
+  Metal path already quantized an RGBA_F32 SOURCE to 8-bit once.
+- The solver is already mesh-independent multigrid-preconditioned CG: 6–8
+  iterations at every size from 128² to 2048². Cost is therefore ~linear in N², and
+  work, not iteration count, is what can be cut.
+
+Design:
+- **Leaf:** paint-level `multipointResolution`, a sibling of `type` and the dither
+  leaves, NOT inside the `multipoint` sub-state. WHY: applying a preset replaces the
+  whole `multipoint` sub-state, and render quality is not part of a preset's
+  artwork; paint-level leaves survive presets and mode switches for free (the
+  "retaining paint-level settings" rule `MultipointField.pickPreset` states).
+  Values are STRINGS — "128", "256", "512", "1024", "2048", "auto" — because a
+  numeric leaf tweens: two integer keyframes 512 → 2048 would lerp through 1280, which
+  is not a legal grid. Strings switch discretely at alpha > 0 (the house rule). An
+  equation may produce the equal NUMBER (1024); anything else is refused loudly.
+- **Byte-identical default:** `parsePaint` omits the leaf when absent OR "512", so a
+  pre-feature document produces the same parsed object, the same field key, the same
+  solve, the same F16 bytes and the same pixels. Non-default values parse to
+  `resolution` (a number, or "auto").
+- **Auto rule (deterministic):** N = the smallest power of two ≥ the number of DEVICE
+  pixels the field's square spans along its longer axis under THIS draw's canvas
+  matrix (`canvas.getTotalMatrix()`, the matrix `skShaderForPaint` already receives
+  for dither), clamped to [128², 2048²]. The span includes the off-box domain
+  expansion, so auto also compensates for distant sources up to the cap. Exports
+  stay deterministic because the matrix is a function of the document, the camera
+  and the chosen OUTPUT size: the same export settings give the same N; a 4K export
+  gets a finer field than a 720p one, like vector content. In the editor, zooming in
+  raises N. Accepted cost: an animated camera zoom crosses power-of-two steps, so N
+  can change between frames (a small change at cuts, not a pop of the whole field).
+- **Editor progressive behaviour:** a field key is ready when that exact N is cached.
+  Otherwise the editor shows the LARGEST cached field of the same content (e.g. the
+  previous zoom's), else a synchronous min(128², N) solve, and queues a worker job
+  carrying N. When N ≤ 128² the synchronous solve IS final. A worker job whose field
+  leaves the visible scene is CANCELLED (worker terminated, respawned on demand)
+  rather than left to burn seconds on a stale 2048² solve.
+- **Field cache holds F16 texels**, converted once per field (in the worker for
+  refinements, so the main thread never converts a refined field), instead of
+  Float32 converted again per CanvasKit image. Measured main-thread conversion via
+  `Uint16Array.from(pixels, toHalf)`: 92 / 368 / 1458 ms at 512² / 1024² / 2048²;
+  a plain loop over the same `toHalf` is bit-identical and 21 / 78 / 282 ms.
+  Budgets rose 32 → 64 MiB each so two visible 2048² fields (32 MiB F16 each) do not
+  evict each other every frame.
+- **Solver kernels restructured, bit-identically:** row/column loops instead of
+  per-cell `%`, the Jacobi update fused into its operator sweep (ping-pong arrays),
+  the V-cycle residual fused into its operator application, the first smoothing
+  sweep from zero done in closed form (A·0 = 0 exactly), the PCG residual used in
+  place as the fine right-hand side (no per-iteration copy), plain loops instead of
+  `.every`/`.reduce`/`Float32Array.from`. Same floating-point operations in the same
+  order: 17/17 fixtures (14 presets + 3) bit-identical (`Object.is` per texel) at
+  128², 256², 512², 1024² and 2048² against the pre-change solver.
+- **Cut through a cell centre leaked (fixed, `crossingCell`).** A sloped two-sided path
+  passing exactly (or within float noise) through cell centres gave the centre cell
+  BOTH side colours and two uncut edges bridging the sides: a smudge across the cut
+  (reported on a corner-to-corner candy-cane stripe). Crossings within 1e-9 texel of a
+  centre now use one symbolic +x perturbation in both passes. Wrong-side colour ≥2
+  texels from the line: 0.26 → 0.0002 (exact down-right diagonal), 0.24 → 0.0002
+  (float-noise corner line); no preset or fixture changed by a single bit.
+- Measured solve time before → after (5 presets, ranges; peak process RSS after):
+  128²: 17–22 → 14–19 ms (~75 MB); 256²: 68–83 → 45–57 ms (~90 MB);
+  512²: 211–263 → 157–198 ms (~160 MB); 1024²: 897–999 → 644–755 ms (~425 MB);
+  2048²: 3571–4006 → 2799–2931 ms (~1.5 GB). The solver needs ~360 bytes per texel
+  (Float64 multigrid + PCG vectors), which is why 2048² is the ceiling.
+- **Rejected, with numbers:** nested iteration (solve N/2, prolong as x₀): 5% faster
+  at 512²/1024², slower at 2048², and it moved texels by up to 9.6e-4 — changing
+  every existing picture for no real gain. Precomputed Jacobi scale: no gain (the
+  division is not the bottleneck). Looser tolerance: two converged answers already
+  differ by up to 9.6e-4 at 1e-5, so loosening it would be visible.
+- **Recommended next speedups (not landed):** a WebAssembly SIMD port of the four
+  kernels (`apply`, `jacobiSweep`, `restrict`, `prolong`) keeping the operation order
+  (IEEE f64 is reproducible, so it can stay bit-identical); a Float32 multigrid
+  preconditioner inside Float64 PCG (≈ -22% memory, changes bits below tolerance);
+  per-channel parallel workers for editor refinement (changes bits; exports stay
+  synchronous).
+
+Files (landed): `core/multipoint_diffusion.js` (kernels, `crossingCell`,
+`multipointDomain`), `core/properties.js` (option list, labels, help),
+`render_gpu/ir.js` (`multipointResolutionField`: parse/validate/omit default),
+`render_gpu/skia/multipoint.js` (size rule, F16 field cache, interim selection),
+`render_gpu/skia/multipoint_worker.js` (sized jobs, worker-side conversion),
+`render_gpu/skia/browser_surface.js` (sized jobs, cancellation),
+`render_gpu/skia/gradient.js` (passes the matrix), `tests/multipoint_cache_probe.js`
+(fixture now 1024² fields in the new `{field:{size,half,domain}}` protocol).
+Benchmarks/repros: `.scratchpad/multipoint_resolution/`.
+**Inspector control:** a "Resolution" Dropdown row in `web/PaintField.svelte`, shown
+only in Multipoint mode, directly above the dither rows (paint-level leaves together).
+It displays the default when the leaf is absent and writes only on change, so an
+untouched paint stays byte-identical; its label tooltip is `MULTIPOINT_RESOLUTION_HELP`.
+**NOT YET LANDED (2026-09-30):** `tests/multipoint_resolution_test.js` (parse, size rule, discrete
+tween, bit-identity hash from `.scratchpad/multipoint_resolution/pin_hashes_baseline.txt`,
+`halfTexels`, node renders); a cache-probe case for stale-job cancellation; the
+browser probes were not re-run after this change.
+
+### In-canvas Multipoint editing — the island (2026-09-30)
+
+User request, verbatim: "The thing is, the truth is, the UI makes it very difficult
+to edit them right now. It's not easy to edit these gradients. When I double click
+one of the points, I can't select a color. Or when I select some points, I can
+trash them, I can hide them, but I can't, like inside the canvas, but I can't
+select their colors. And there's no visual way in the canvas to add more points or
+split a line into another thing. It would be nice if there was like, you know, when
+I was editing these, the gradients, I would add points, if there was like a little
+command bar or like island or something that would let me, you know, add another
+point, edit its color and such. That would be nice. ... make sure that it's well
+integrated with the rest of the app."
+
+Problem: before this, colour was editable on canvas only when EXACTLY ONE colour
+handle was selected, and only by a second click on a collapsed swatch; a double
+click did nothing; a multi-selection had no colour control; adding a source or
+splitting a path existed only as Inspector buttons (a new source always landed in
+the box centre).
+
+Vocabulary: the **island** is the floating command bar for Multipoint editing. It
+is NOT a second toolbar: it is the existing selected-handle bar
+(`web/HandleToolbar.svelte`, on `FloatingCanvasPanel`) extended with a Multipoint
+section (`web/MultipointIsland.svelte`), so one surface hangs off the widget and
+the two cannot overlap. A **colour target** is one colour leaf a selected handle
+edits; a **pending stop** is a colour target at a path node where no stop exists
+yet (see below). **Split** inserts a shaping node at a clicked place on a path.
+
+Design and why:
+- The island appears whenever exactly one item is selected and one of its paint
+  keys is Multipoint, even with no handle selected — the handles are visible then,
+  so the user is "editing the gradient". Its Multipoint row: +Point, +Line,
+  +Curve, Split, and (for selected path handles) Two sides, Closed, Reverse. Below
+  it, one colour field per colour side of the selected handles. Paint key: that of
+  the selected Multipoint handles, else the first Multipoint paint key in
+  Inspector order.
+- Every action is a command-registry entry (palette + `CommandButton` surfacing,
+  `aria-disabled` + `commandUnavailableReason`), and every edit is ONE undo unit via
+  `setPreview → commitPreview`. Shortcut: `C` opens the colour editor for the
+  selected Multipoint colour handles (registered in `KEYBINDING_DEFAULTS`, so the
+  HintBar shows it). Double-click is announced by one HintBar chip ("Point colour /
+  split path"), shown only when the selected widget has no activation of its own,
+  because one gesture may have only one chip per context.
+- **Double-click a Multipoint handle** → select it and open its colour editor.
+  **Double-click a Multipoint path (not a handle)** → split it exactly there and
+  select the new node. Both are checked in `CanvasView.onDblClick` BEFORE widget
+  activation, because the handles/paths are overlay chrome drawn above the widget;
+  anywhere else, double-click keeps its widget meaning (e.g. text editing).
+- **Colour targets by handle role:** a point source's anchor → its first visible
+  stop's colour; a colour bead → that stop's side (`color` or `rightColor`); a path
+  node → the colour AT that node's arc position (both sides on a two-sided path); a
+  Bézier control handle → none (it shapes, it carries no colour). "At the node"
+  means: the visible stop within `NODE_STOP_TOLERANCE` of the node's normalized arc
+  offset if one exists; otherwise a PENDING stop whose shown colour is the
+  interpolated colour there. The first colour pick on a pending stop inserts the
+  stop (other side = its interpolated colour) AND sets the picked colour in one
+  preview/commit, so Escape inserts nothing and the picture changes only where the
+  author picked. Nearest-stop-by-distance was rejected: on a spiral with stops at
+  0/⅓/⅔/1 it would recolour a whole band from an unrelated node.
+- Interpolation for a pending stop matches the solver: encoded sRGB, premultiplied
+  before interpolating, coincident offsets last-wins, clamped ends
+  (`core/multipoint_edit.js stopColorAt`, twin of the private `sampleStops` in
+  `core/multipoint_diffusion.js` — unify when that file is free; recorded as debt).
+- Colour writes are computed against the COMMITTED fold, never the preview, because
+  `setPreview` replaces the preview wholesale: resolving against a preview that
+  already contains the inserted stop would turn the second tick of a drag into a
+  leaf write and drop the insertion. Equation-bound colours are excluded (the field
+  says how many), and a pending insert is refused on equation-bound stop lists.
+- **Adding sources is click-to-place**: +Point/+Line/+Curve arm a one-shot canvas
+  mode (`multipoint_place`, an activate-phase handler entered by command like
+  `pin_light_position`); the hover previews the new geometry; a click inside the
+  widget's box places it centred there (paint-box units) and exits, then selects the
+  new source's colour handle and opens its picker; a click outside cancels loudly
+  (console report). Escape exits. Split has the same shape (`multipoint_split`): a
+  hover dot shows the exact split point; the click splits and exits.
+- **Split is exact**: `insertFeatureNode(feature, index, t)` splits the chosen cubic
+  at parameter `t` with de Casteljau, so the drawn path, arc length and stop
+  positions do not change (the manifest's "splitting must not change the picture").
+  The nearest `(segment, t)` comes from dense sampling plus golden-section
+  refinement on the same `nodeCubic` segments the renderer draws.
+- Reverse on canvas remaps the handle selection through the same node order
+  `reverseFeature` uses, so the selection keeps pointing at the same physical nodes.
+- The hit slop for paths is the canvas's own `SNAP_PX / zoom`, passed to modes as
+  `ctx.slop` (a generic mode-context service) rather than a second constant.
+
+Files: `core/multipoint.js` (split at `t`, placement, new-source colours),
+`core/multipoint_edit.js` (pure: path hits, node offsets, colour targets/writes,
+edit refusals), `core/paint_handles.js` (the Multipoint handle-id grammar:
+`multipointHandleId` / `parseMultipointHandleId` / `isMultipointColorHandleId` —
+the island recovers source/role from the selected ids, so no handle metadata is
+threaded through derive), `web/multipointCanvas.js` (app-level actions, commands
+and the four mode handlers: place point/line/curve, split),
+`web/MultipointIsland.svelte`, `web/HandleToolbar.svelte`, `web/CanvasView.svelte`,
+`web/ColorField.svelte` (bindable `open`, optional `pairsFor` write hook),
+`web/CommandButton.svelte` (optional `pressed`), `web/App.svelte` (commands,
+shortcut context), `core/shortcut_entries.js`. Tests: `tests/multipoint_edit_test.js`
+(node) and `tests/multipoint_canvas_probe.js` (browser: double-click colour, split,
+add, recolour a multi-selection, undo; screenshots in
+`.scratchpad/multipoint_ui/canvas/`).
+
+## Inspector indentation law (2026-09-30)
+
+User report, verbatim: "I guess one of the big problems inside the UI is the lack
+of indentation with all the suboptions. Like, I open sources, and each source has,
+like, it breaks its own indentation hierarchy. Like, look, for example, like, every
+indent should be a little bit more to the right of the last one, but that's not the
+case. See how it says three sources, source one, and then weight under that is
+actually to the left of source one. It's a problem. It means there's no visual
+indentation hierarchy, and that makes it really, really confusing to scroll through
+it because there's just so many options."
+
+Measured before the fix (default 317px Inspector, x relative to the panel): Fill row
+label 53, its restacked paint editor 8; "3 sources" title 28; "Source 1" title 76;
+Weight 13; "1 node" title 33; node fields 13. A polygon's "5 points" header sat at 48
+under its "Points" label at 53; a compound's X/Y children sat at 53, the SAME x as
+"Position"; a material's knob rows sat left of their own header's title.
+
+**THE LAW.** Every nesting level's labels start exactly one `--a-nest-step` right of
+the parent's label, never left of it and never level with it. Glossary:
+- **parent label** — the text a nested level belongs to: an Inspector row's `.label`,
+  a nested header's `.cat-title`, a list element's index (or a custom element's title).
+- **nest step** (`--a-nest-step`) — one level of indent, label to label. It IS
+  `--a-row-label-gutter` (15px), the unit compound rows already stepped by, so every
+  nesting device in the panel steps identically.
+- **hanging chevron** — a nested header (`.nest-header`) pulls its chevron into the
+  indent LEFT of its title, so the title is what aligns. That is the compound
+  twisty's existing arrangement, and it is what keeps a level at one step instead of
+  step + chevron width (35px/level measured the other way, unaffordable at depth 5).
+- **guide** — the hairline down a nested block's left, under the parent's chevron: a
+  header's chevron centre, or for an Inspector row its disclosure slot (where a
+  compound's twisty and the interp button sit).
+
+Three devices, one law (app.css "THE NESTING LAW"): `.nest` for a block under a nested
+header (ListField's `.list-body`, a custom element's `.list-el-content`, PaintField's
+`.paint-knob-rows`); a row-level editor nest for a full-width editor restacked under a
+row (`.row-list > .list-cell`, the restacked paint editor); a row block for rows among
+rows (`.compound-children`, `.interp-strip`), stepped by margin with its guide painted
+under the parent's twisty. Custom list elements render `[▾ Title] [eye] [◆] [purge]`,
+header first and no separate index (the title states it). Multipoint node fields that
+wrap to their own line step in one level. A material fill whose knobs form an
+accordion restacks full width like a gradient: an accordion cannot nest inside a
+~200px value cell without overflowing it.
+
+**THE VALUE COLUMN AT DEPTH: BLOCK INDENT, decided.** The whole block steps right;
+values' right edges and the keyframe column stay flush with the panel. WHY: every
+nested row grid resolves its label track as a PROPORTION of its own block, and every
+LabelDivider is a readout of that proportion, so a block indent keeps the divider
+machinery correct by construction, and the label track loses only `frac × step` per
+level (about 3.5px at the default 0.23) while the value column's left edge steps right
+by `(1 − frac) × step` — values read as nested too. REJECTED: label-only indent (the
+old compound rule), which spends the whole step out of the label track at every level:
+at the default width a 69px label track already holds the 45px affordance gutter, so
+one more level leaves no room for text at all. Accepted cost: a restacked paint editor
+starts at the row label + one step (60px in), where it used to span the full width.
+
+Enforced by `tests/inspector_indent_probe.js`: every label inside a nested region is
+right of the region's parent label, and each region's first column is exactly one step
+right of it.
 
 ## SVG uploads and reload safety (2026-09-28)
 
