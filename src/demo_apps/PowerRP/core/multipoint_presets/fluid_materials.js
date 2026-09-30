@@ -5,7 +5,7 @@
  * Side convention (verified by render): walking a curve on screen, rightColor lies to
  * the walker's right — BELOW a left-to-right curve, INSIDE a clockwise closed curve.
  */
-import { preset, boundary, point } from "./builders.js";
+import { preset, boundary, point, closedRamp } from "./builders.js";
 import { hermiteNodes, ellipseNodes, waveNodes, finiteGeometry } from "../multipoint_shapes.js";
 
 const FULL_TURN = 2 * Math.PI;
@@ -124,16 +124,6 @@ export function insetPolygon(points, inset) {
     if (!d) throw new Error("insetPolygon vertex sits on the centroid; no direction to move");
     return [x + (cx - x) * inset / d, y + (cy - y) * inset / d];
   });
-}
-
-/**
- * Pure function. Repeats a ramp's first colour at its end, the closed-curve seam rule.
- * @param {string[]} colors - Open ramp.
- * @returns {string[]} Seam-free closed ramp, one longer.
- * @example closedRamp(["#ff0000", "#00ff00"]) // ["#ff0000","#00ff00","#ff0000"]
- */
-function closedRamp(colors) {
-  return [...colors, colors[0]];
 }
 
 /**

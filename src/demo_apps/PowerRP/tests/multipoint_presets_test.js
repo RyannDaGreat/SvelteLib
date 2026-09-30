@@ -16,6 +16,16 @@ const EXPECTED_IDS = [
   "peach-lilac", "pastel-quartet", "tri-tone", "sorbet-trio", "dusty-rose", "sage-sand", "pastel-dawn", "lavender-haze", "cool-greys", "apricot-rise", "slate-sidelight", "linen-halo", "teal-lumen", "amethyst-bloom", "garnet-cushion", "oat-folds", "emerald-glade", "ocean-mint", "window-light",
   // Basics · classic shapes
   "clear-sky", "side-fade", "diagonal-sweep", "diagonal-split", "conic-sweep", "center-glow", "soft-spotlight", "dark-vignette", "horizon-split", "corner-flare", "soft-band", "stage-beam", "studio-paper", "four-corners", "black-white", "blue-diamond", "green-hills", "crimson-disc", "amber-rise", "violet-halo",
+  // Swirls
+  "vertigo-spiral", "maelstrom-eye", "naruto-whirlpool", "fillmore-melt", "spectrum-twirl", "swirl-lollipop", "triple-spiral", "french-curl", "nightingale-nest", "rose-marble", "kowhaiwhai-koru", "liquid-light", "cataract-waves", "latte-heart", "scream-sky",
+  // Abstract
+  "simultaneous-disc", "rythme-pair", "moon-forms", "newton-discs", "zip-field", "unfurled-rivulets", "target-rings", "pale-bands", "skyspace-glow", "plains-light", "one-as-two", "goethe-balance", "warm-cold", "perceptual-sweep", "hue-shift-ramp", "rainbow-squiggle",
+  // Wallpapers & UI
+  "layered-dusk", "coastal-layers", "violet-canyon", "sunrise-rays", "midnight-silk", "glassy-aurora", "rim-orb", "porcelain-swirl", "night-ribbons", "blush-folds", "aurora-hero", "tilted-mesh", "golden-petals", "cobalt-ruffle", "magenta-swoosh", "sunset-twirl", "silk-ribbon",
+  // Minerals & phenomena
+  "fortress-agate", "malachite-bands", "rhodochrosite-fan", "peacock-eye", "prismatic-spring", "venus-belt", "noctilucent-night", "pool-caustics", "aurora-corona", "jewel-beetle", "bismuth-hopper", "glowing-eddy", "tiger-eye", "fire-opal", "amethyst-geode", "golden-hour", "glowing-surf",
+  // Retro & eras
+  "whiplash-silk", "rajah-steam", "etoile-rails", "fillmore-vortex", "neon-rose", "flower-power", "rainbow-bend", "supergraphic-serpentine", "airbrush-waves", "city-pop", "aqua-arcs", "aero-streaks", "bloom-petals", "red-fuji", "seigaiha-waves", "record-swirl", "screensaver-trails", "bondi-blobs",
   // Nature
   "hillside-dawn", "sunlit-shafts", "coral-atoll", "sunlit-grove", "dune-crests", "glacier-facets", "lavender-rows", "misty-ridges", "lightning-strike", "autumn-leaves", "sakura-bloom", "frost-star", "mossy-stones", "ember-volcano", "moonlit-sea",
   // Geometric

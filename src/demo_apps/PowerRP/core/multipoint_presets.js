@@ -10,6 +10,11 @@
 import { PRESETS as SIGNATURE } from "./multipoint_presets/signature.js";
 import { PRESETS as SOFT_BLENDS } from "./multipoint_presets/soft_blends.js";
 import { PRESETS as CLASSIC_SHAPES } from "./multipoint_presets/classic_shapes.js";
+import { PRESETS as SWIRLS } from "./multipoint_presets/swirls.js";
+import { PRESETS as ABSTRACT } from "./multipoint_presets/abstract.js";
+import { PRESETS as WALLPAPERS_UI } from "./multipoint_presets/wallpapers_ui.js";
+import { PRESETS as MINERALS_PHENOMENA } from "./multipoint_presets/minerals_phenomena.js";
+import { PRESETS as RETRO_ERAS } from "./multipoint_presets/retro_eras.js";
 import { PRESETS as NATURE } from "./multipoint_presets/nature.js";
 import { PRESETS as GEOMETRIC } from "./multipoint_presets/geometric.js";
 import { PRESETS as FLUID_MATERIALS } from "./multipoint_presets/fluid_materials.js";
@@ -35,6 +40,11 @@ export const MULTIPOINT_PRESET_FAMILIES = freezeCatalog([
   { id: "signature", title: "Signature", presets: SIGNATURE },
   { id: "soft-blends", title: "Basics · soft blends", presets: SOFT_BLENDS },
   { id: "classic-shapes", title: "Basics · classic shapes", presets: CLASSIC_SHAPES },
+  { id: "swirls", title: "Swirls", presets: SWIRLS },
+  { id: "abstract", title: "Abstract", presets: ABSTRACT },
+  { id: "wallpapers-ui", title: "Wallpapers & UI", presets: WALLPAPERS_UI },
+  { id: "minerals-phenomena", title: "Minerals & phenomena", presets: MINERALS_PHENOMENA },
+  { id: "retro-eras", title: "Retro & eras", presets: RETRO_ERAS },
   { id: "nature", title: "Nature", presets: NATURE },
   { id: "geometric", title: "Geometric", presets: GEOMETRIC },
   { id: "fluid-materials", title: "Fluid & materials", presets: FLUID_MATERIALS },

@@ -216,17 +216,25 @@ Numerical and runtime contract:
 - New production modules: `core/multipoint.js` (shared geometry/edit operations),
   `core/multipoint_diffusion.js` (solver), `core/multipoint_presets.js` (assembles
   the deep-frozen `MULTIPOINT_PRESET_FAMILIES` [{id,title,presets}] and the flat
-  `MULTIPOINT_PRESETS`; 165 native paints on 2026-09-30 in 11 families: the original
-  14 as "Signature", then soft blends, classic shapes, nature, geometric, fluid &
-  materials, planets & moons, space & sci-fi, mathematical, art homages, food &
-  moods — authored by a 10-agent frenzy, each render inspected), family modules in
-  `core/multipoint_presets/*.js`, builders (preset/boundary/point/glow) in
+  `MULTIPOINT_PRESETS`; 248 native paints on 2026-09-30 in 16 families, picker order:
+  the original 14 as "Signature", Basics · soft blends, Basics · classic shapes,
+  Swirls, Abstract, Wallpapers & UI, Minerals & phenomena, Retro & eras, Nature,
+  Geometric, Fluid & materials, Planets & moons, Space & sci-fi, Mathematical, Art
+  homages, Food & moods. 151 came from a 10-agent frenzy and 83 from a 5-agent
+  RESEARCH frenzy whose presets each trace to a studied real artwork, photograph,
+  wallpaper or tutorial (sources in concerns.md, 2026-09-30); every render was
+  inspected. Family modules in
+  `core/multipoint_presets/*.js`, builders (preset/boundary/point/glow/closedRamp) in
   `core/multipoint_presets/builders.js`, and shared pure geometry in
   `core/multipoint_shapes.js`. WHY families: the Inspector picker renders one
-  section per family, and 165 swatches in one flat grid are unbrowsable. Helpers
+  section per family, and 248 swatches in one flat grid are unbrowsable. Helpers
   duplicated by several agents with identical output were unified; those with
   different signatures/outputs stay in their family module (unifying them would
-  change stored geometry). `render_gpu/skia/multipoint.js` (cache/F16 shader),
+  change stored geometry). A family module MAY import another family's helpers
+  (e.g. wallpapers_ui uses nature/fluid/space/geometric helpers); the old families never
+  import the new ones, so there is no cycle. Builders canonicalise -0 to 0 in stored
+  nodes (`v + 0`): stored paint must survive a JSON round trip, and JSON cannot hold -0.
+  `render_gpu/skia/multipoint.js` (cache/F16 shader),
   `render_gpu/skia/multipoint_worker.js`, and `web/MultipointField.svelte`.
   Thumbnails in `web/multipoint_thumbnails/` are generated previews, not document
   data. Regenerate them with `node cli/build_multipoint_thumbnails.mjs` from the

@@ -1772,3 +1772,93 @@ be outward spokes and at others would be a spiral."
   failed), PowerRP build green, and a puppeteer run (.scratchpad/multipoint_ramps/
   visual.mjs; screenshots 01–05 read): hover previews without touching the document,
   sweeping back reproduces the same recolour (no compounding), click = one undo unit.
+
+## 2026-09-30 — Research-preset merge (5-agent research frenzy → 83 presets, 248 total)
+
+User ask (verbatim): "I'd love a ton more presets for swirls and gradients and more abstract
+things ... do serious research into it ... make each one come up with like 15 presets based on
+true art and imagery using their VLMs". Five agents researched online, downloaded and LOOKED AT
+reference images, and authored presets in .scratchpad/frenzy/r2_agent_{1..5}/ (scratch notes
+NOTES.md there are not shipped; the source list below is the durable record).
+
+Merge: five new family modules (swirls, abstract, wallpapers_ui, minerals_phenomena, retro_eras)
+placed after the two Basics families. Curation by the lead: dropped tree-ring-pour (weakest
+swirl), big-sur (duplicate of coastal-layers) and stripe-mesh (tilted-mesh covers it). De-branded:
+jaguar-arcs → aqua-arcs "Aqua arcs", vista-aurora → aero-streaks "Aero streaks", bloom-petals
+label "Bloom petals", vertigo-swirl → record-swirl "Record swirl", mystify-trails →
+screensaver-trails "Screensaver trails"; their descriptions evoke the era instead of naming
+products. Invariant (.scratchpad/frenzy/r2_merge_check.mjs): the 165 prior presets are
+byte-identical (JSON), all 83 research paints equal the agents' originals. Only `closedRamp` was
+unified (four identical copies → builders.js); arcNodes/boxEdge/boxFrame/ribbon variants differ in
+output (span size, edge direction, start corner) and stay per family.
+
+PRE-EXISTING RED FOUND AND FIXED: tests/multipoint_presets_test.js "parses losslessly" was
+failing at HEAD (c2d548c9 shipped it unrun): 25 round-1 presets and 13 new ones stored -0 in node
+handles (trig of ±π, negated zero handles), and JSON cannot round-trip -0. Fixed at the three
+feature constructors (builders.boundary, abstract.placedStops, planets.fieldBoundary) with
+`v + 0`; JSON output is unchanged, so the byte-identical invariant still holds. Now 10/10 pass.
+
+Solve-domain scan (.scratchpad/frenzy/domain_scan.mjs; the harness now checks it per preset):
+43 of 248 presets solve over a domain larger than the unit box — 42 from earlier rounds (worst:
+lavender-rows w=1.6, honey-cells 1.52, deco-fan 1.4, candy-vortex/coral-atoll 1.36), plus
+rainbow-squiggle and candy-cane by float overshoot only (w≈1+1e-16). Reported, not altered.
+
+Sources (id — what it was traced to):
+- Swirls: vertigo-spiral — Saul Bass Vertigo poster (1958); maelstrom-eye — Corryvreckan /
+  Saltstraumen aerials; naruto-whirlpool — Hiroshige, Awa: Naruto Whirlpools (1855);
+  fillmore-melt — Wes Wilson / Fillmore posters; spectrum-twirl — colour wheel through a twirl
+  filter; swirl-lollipop — rainbow twist lollipop; triple-spiral — Newgrange; french-curl —
+  1647 French-curl marbled endpaper; nightingale-nest — Turkish ebru bülbül yuvası; rose-marble —
+  Rijksmuseum stroommarmer; kowhaiwhai-koru — Māori kōwhaiwhai / koru; liquid-light — 1960s oil
+  light shows; cataract-waves — Bridget Riley, Cataract 3 (1967); latte-heart — latte art;
+  scream-sky — Munch, The Scream (1893).
+- Abstract: simultaneous-disc — R. Delaunay, Premier Disque (1913) + Chevreul; rythme-pair —
+  Delaunay, Rythme (1934); moon-forms — Delaunay, Formes circulaires, Lune no. 1; newton-discs —
+  Kupka, Disks of Newton (1912); zip-field — Newman, Vir Heroicus Sublimis; unfurled-rivulets —
+  Morris Louis, Alpha-Pi (1960); target-rings — Noland, Turnsole (1961); pale-bands — Agnes
+  Martin, Untitled (1977); skyspace-glow — Turrell, Aten Reign (2013); plains-light — O'Keeffe,
+  Light Coming on the Plains No. II; one-as-two — Albers, Interaction of Color; goethe-balance —
+  Goethe/Itten light values; warm-cold — Itten cold-warm contrast; perceptual-sweep — grey dead
+  zone tutorials (Comeau, Kennedy, Hobday); hue-shift-ramp — Slynyrd hue-shift tutorial;
+  rainbow-squiggle — Snowfro, Chromie Squiggle (2020).
+- Wallpapers & UI (evoked, never named): layered-dusk — iOS 17 default; coastal-layers — macOS
+  Big Sur; violet-canyon — Monterey; sunrise-rays — Sequoia; midnight-silk — Tahoe dark;
+  glassy-aurora — Vista Aurora; rim-orb — Windows 11 Glow; porcelain-swirl / blush-folds —
+  Windows 11 Flow; night-ribbons, magenta-swoosh, sunset-twirl, silk-ribbon — Unsplash mesh /
+  ribbon photos; aurora-hero — "aurora UI" hero trend; tilted-mesh — Stripe-style WebGL
+  gradient; golden-petals — Ventura; cobalt-ruffle — Windows 11 Bloom.
+- Minerals & phenomena: fortress-agate, malachite-bands, rhodochrosite-fan, tiger-eye, fire-opal,
+  amethyst-geode, bismuth-hopper — photographed specimens; peacock-eye — feather macro;
+  prismatic-spring — Grand Prismatic Spring aerial; venus-belt — Belt of Venus (Brastad);
+  noctilucent-night — noctilucent clouds; pool-caustics — pool caustic web; aurora-corona —
+  overhead corona; jewel-beetle — Chrysochroa fulgidissima; glowing-eddy / glowing-surf —
+  bioluminescence photos; golden-hour — golden-hour treeline sky.
+- Retro & eras: whiplash-silk — Obrist, Cyclamen (1895); rajah-steam — Meunier, Thé Rajah (1897);
+  etoile-rails — Cassandre, Étoile du Nord (1927); fillmore-vortex — Wilson Winterland poster
+  (1966); neon-rose — Moscoso, Neon Rose #13 (1967); flower-power — Susan Cook, Florida fabric
+  (c.1970); rainbow-bend / supergraphic-serpentine — 1970s supergraphics; airbrush-waves —
+  Laura Smith, LA Summer Games (1983); city-pop — Nagai, A Long Vacation (1981); aqua-arcs —
+  2002 glossy desktop; aero-streaks — 2006 glassy desktop aurora; bloom-petals — 2021 desktop
+  bloom; red-fuji — Hokusai, Fine Wind, Clear Morning; seigaiha-waves — seigaiha + bokashi;
+  record-swirl — 1969 record-label swirl; screensaver-trails — 1990s screensaver; bondi-blobs —
+  1998 translucent-plastic era.
+
+NEW solver lessons from the research round (not in earlier entries):
+- Four cubic spans per turn is visually exact for spirals, so a 3-turn hypnotic spiral fits one
+  13-node feature; quarter-turn spans also suffice for constant-radius arcs.
+- Crisp flat bands: parallel two-sided curves whose far-side colour equals the next curve's
+  near side — or alternating curve orientation — so every gap sees ONE colour on both sides.
+  Flat, mud-free even between complementary colours.
+- Crisp strokes are thin CLOSED two-sided ribbons (the interior sees only its rim); an open
+  single-sided line spreads into a wide glow. Taper ribbons to zero-width tips to avoid specks.
+- Neon hairlines on black: the neon curve between two black single-sided guard curves ~0.018
+  away; the guard gap sets the glow width.
+- Soft spirals need light/dark CONTRAST between neighbouring turns (interleave a light and a dark
+  arm); a single brightening ramp reads as a radial blur.
+- An open curve's tip vanishes if its ramp starts with the local field colour on both sides.
+- Float overshoot grows the domain: sin(π) = 1.2e-16 puts an arc end past the edge; snap
+  endpoints exactly onto the box. hermiteNodes mirrors the unused end handles of open curves,
+  which can land far outside the box (harmless to the solve, but trips the hull bounds) — trim.
+- A split-colour rim does NOT give a hard edge across a closed shape (the interior blurs into a
+  gradient); use a two-sided chord.
+- Explicit OKLCH stops keep gradients saturated despite the solver blending in encoded sRGB.
