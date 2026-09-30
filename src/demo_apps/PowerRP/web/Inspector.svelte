@@ -2158,7 +2158,9 @@
      IT RECURSES, so a compound whose child is another compound renders through
      THIS SAME SNIPPET at the deeper indent — the user asked for sub-subproperties
      and the architecture is the answer rather than a plan to rewrite it later.
-     `depth` is the ONLY thing that varies; no branch counts levels.
+     The deeper indent is STRUCTURAL: the children block sits inside its
+     parent's and every such block steps one --a-nest-step (app.css THE
+     NESTING LAW), so nothing counts levels.
 
      THE DIAMOND IS SectionKeyframeControls, THE SECTION BUBBLE ITSELF — not a
      lookalike. The user's own framing is "you know how sections can be none, some
@@ -2174,13 +2176,13 @@
      row already known to be a leaf. -->
 {#snippet anyRow(row, state, opts)}
   {#if row.compound}
-    {@render compoundRow(row, state, opts, 0)}
+    {@render compoundRow(row, state, opts)}
   {:else}
     {@render propRow(row, state, opts)}
   {/if}
 {/snippet}
 
-{#snippet compoundRow(node, state, opts, depth)}
+{#snippet compoundRow(node, state, opts)}
   {@const itemId = opts.itemId ?? null}
   {@const open = !!compoundOpen[node.key]}
   {@const leaves = leafRows(node.children)}
@@ -2191,7 +2193,7 @@
        the rows beneath it visibly lack. -->
   {@const kfPaths = sectionPaths({ rows: leaves }, opts)}
   {@const axes = padAxes(node, itemId)}
-  <div class="row compound-row" class:compound-open={open} style="--compound-depth: {depth}">
+  <div class="row compound-row" class:compound-open={open}>
     <span class="row-label-chrome compound-label">
       <!-- ALWAYS VISIBLE (never the hover-only reveal its chrome siblings use):
            a disclosure the author must hover to discover is one they will not
@@ -2319,10 +2321,10 @@
          property the interp strip buys by rendering through propRow, and it is
          why "compounds are pure grouping" is true of the UI and not only of the
          storage. A nested compound recurses into THIS snippet one level deeper. -->
-    <div class="compound-children" style="--compound-depth: {depth + 1}">
+    <div class="compound-children">
       {#each node.children as child (child.key)}
         {#if child.compound}
-          {@render compoundRow(child, state, opts, depth + 1)}
+          {@render compoundRow(child, state, opts)}
         {:else}
           {@render propRow(child, state, opts)}
         {/if}

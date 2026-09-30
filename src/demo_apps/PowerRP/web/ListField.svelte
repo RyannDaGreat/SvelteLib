@@ -35,6 +35,15 @@
                RENUMBERS every later one; the tooltip says so rather than
                hiding it, and the button refuses (disabled, with the reason) at
                the declaration's `minLength`.
+  A CUSTOM element (`elementContent`, a Multipoint source) replaces [n] and
+  [fields] with ONE collapse header that LEADS the row — [▾ Source 1] [eye]
+  [‹ ◆ ›] [purge] — because its title is the label its body indents from.
+
+  ── NESTING: every level one step right of its parent's label ────────────────
+  The header's chevron hangs left of its title, the element rows sit in a
+  `.list-body` one step in, and a custom element's body one step in again, each
+  with its guide under the chevron above it (app.css THE NESTING LAW; pinned by
+  tests/inspector_indent_probe.js).
 
   ── INSERT: at the ENDS and BETWEEN, like a slide in-between ──────────────────
   Between every pair of rows — and before the first and after the last — sits a
@@ -693,7 +702,7 @@
     <Tooltip text={collapseTip()}>
       <button
         type="button"
-        class="cat-header"
+        class="cat-header nest-header"
         aria-expanded={!collapsed}
         disabled={suppressed}
         aria-label={`${label} list: ${summary}`}
@@ -718,6 +727,11 @@
       </Tooltip>
     {/if}
   {:else if !collapsed}
+    <!-- THE ELEMENT ROWS ARE THE HEADER'S CHILDREN, so they sit one step right of
+         its title with the guide under its chevron (app.css THE NESTING LAW). One
+         wrapper rather than an indent per row, so the guide is one unbroken line
+         past the insert seams. -->
+    <div class="list-body nest">
     {@render insertSlice(0)}
     {#each value.list as el, index (index)}
       {@const visible = elementActive(value.active, index)}
@@ -725,7 +739,24 @@
            up the row that edits that stop, which is how the bar answers "select
            one to edit its colour" without growing a second colour control. -->
       <div class="list-el" class:list-el-custom={!!elementContent} class:list-el-hidden={!visible} class:list-el-selected={selectedElement === index}>
-        <span class="list-index">{index + 1}</span>
+        {#if elementContent}
+          <!-- A CUSTOM element's collapse HEADER LEADS the row, and it carries no
+               separate index: its title already states the number. It is the
+               parent label of the body below, so it must come first — behind an
+               index and an eye it sat ~70px in, and its own body (one step in
+               from the ROW's edge) landed left of it: the user's "weight under
+               that is actually to the left of source one". -->
+          <span class="list-fields">
+            <button type="button" class="cat-header nest-header" aria-expanded={!foldedElements[index]}
+              aria-label={`${label} ${index + 1}`}
+              onclick={() => { foldedElements[index] = !foldedElements[index]; }}>
+              <iconify-icon icon={foldedElements[index] ? "mdi:chevron-right" : "mdi:chevron-down"} width={ICON} height={ICON}></iconify-icon>
+              <span class="cat-title">{label} {index + 1}</span>
+            </button>
+          </span>
+        {:else}
+          <span class="list-index">{index + 1}</span>
+        {/if}
         <!-- VISIBILITY: the app's ONE boolean control, but the WRITE is ours —
              it is not a single scalar (the whole canonicalized companion array
              is written, exactly as the canvas handle toolbar writes it), which
@@ -743,15 +774,8 @@
           oncommit={(next) => setActive(index, next)}
           disabled={disabled || hideBlocked(index)}
         />
+        {#if !elementContent}
         <span class="list-fields">
-          {#if elementContent}
-            <button type="button" class="cat-header" aria-expanded={!foldedElements[index]}
-              aria-label={`${label} ${index + 1}`}
-              onclick={() => { foldedElements[index] = !foldedElements[index]; }}>
-              <iconify-icon icon={foldedElements[index] ? "mdi:chevron-right" : "mdi:chevron-down"} width={ICON} height={ICON}></iconify-icon>
-              <span class="cat-title">{label} {index + 1}</span>
-            </button>
-          {:else}
           {#each fields as f (f.name)}
             {#if !fieldVisible || fieldVisible(el, f, index)}
             {@const fieldPath = [...path, index, elementStorageKey(decl.element, f.name)]}
@@ -836,8 +860,8 @@
             </span>
             {/if}
           {/each}
-          {/if}
         </span>
+        {/if}
         <!-- ONE keyframe triad per ELEMENT, on the element's own path, so a stop or
              a vertex keyframes and tweens as a unit (PaintField's per-stop ◆,
              generalized). A grayed row has no diamonds — the Inspector's own rule
@@ -862,13 +886,16 @@
           </button>
         </Tooltip>
         {#if elementContent && !foldedElements[index]}
-          <div class="list-el-content">
+          <!-- The body is its header's child: one step right of the title, guide
+               under the chevron (app.css THE NESTING LAW). -->
+          <div class="list-el-content nest">
             {@render elementContent(el, index, [...path, index])}
           </div>
         {/if}
       </div>
       {@render insertSlice(index + 1)}
     {/each}
+    </div>
   {/if}
   </div>
 </div>

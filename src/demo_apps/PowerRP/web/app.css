@@ -375,11 +375,34 @@
      THE DISCLOSURE TRIANGLE's box, and the gap between it and the label it
      pushes right. Sized to the 14px glyph it holds plus nothing — the nudge the
      user asked for ("push the property name to the right a little") should be
-     exactly the arrow's own width, not a decorative indent on top of it. It
-     doubles as the per-level indent unit via --a-row-label-gutter, so a nested
-     compound's label steps by the same amount its parent's triangle occupies. */
+     exactly the arrow's own width, not a decorative indent on top of it. How far
+     a compound's CHILDREN step in is the nesting law's --a-nest-step below. */
   --a-compound-twisty-w: 14px;
   --a-compound-twisty-gap: 2px;
+  /* ── THE NESTING LAW (see the block of that name further down) ────────────
+     User, 2026-09-30: "every indent should be a little bit more to the right of
+     the last one". Every nested level's labels start exactly ONE STEP right of
+     their parent's label. The step IS the row-label gutter, the unit compound
+     rows already stepped by, so every nesting device in the panel steps alike. */
+  --a-nest-step: var(--a-row-label-gutter);
+  /* Where an Inspector row's LABEL starts inside the row: the copy-path, (?) and
+     interp slots the row-label chrome reserves ahead of it. It is the panel's
+     ONE label x (tests/inspector_row_uniformity_probe.js), which is what a
+     row's nested editor steps in from. */
+  --a-row-label-x: calc(3 * var(--a-row-label-gutter));
+  /* A row's GUIDE x: the centre of its disclosure slot, where a compound's
+     twisty sits (and the interp button beside it), so a row's nested block
+     hangs its hairline from the control that opens it. */
+  --a-row-guide-x: calc(var(--a-row-label-x) - var(--a-compound-twisty-gap) - var(--a-compound-twisty-w) / 2);
+  /* A section header's chevron glyph (.cat-header's iconify-icon — the markup
+     draws it at 16), and how far the header's TITLE sits from the header's own
+     left edge: its padding, the chevron, and the flex gap. A NESTED header hangs
+     by exactly this much, so its title lands on its block's content edge. */
+  --a-cat-twisty: 16px;
+  --a-cat-title-inset: calc(2 * var(--a-sp-1) + var(--a-cat-twisty));
+  /* From a hanging header's chevron CENTRE to its title: where the guide of the
+     block it heads runs, measured back from the title. */
+  --a-nest-header-guide: calc(var(--a-sp-1) + var(--a-cat-twisty) / 2);
   /* THE 2D DRAG PAD, collapsed and expanded (web/Vector2Pad.svelte). The
      collapsed size is --a-control-h so the pad is exactly as tall as the X and Y
      fields it sits beside and the row keeps one baseline. The expanded size is
@@ -4177,23 +4200,28 @@ textarea {
    value column it fits TWO swatch columns and wastes most of the panel, so a
    row containing the picker RESTACKS: the label and the keyframe controls keep
    line 1 — the row still reads like every other row — and the editor spans the
-   whole panel width on line 2. Placement is explicit (not auto-flow) because a
+   panel on line 2, stepped in under the row's label by the nesting law (see
+   THE NESTING LAW below: it is the row's child, so it starts one step right of
+   "Fill", never left of it). Placement is explicit (not auto-flow) because a
    full-bleed middle child would otherwise push the trailing controls onto a
    third line. Scoped by :has() to rows that actually contain the picker, so
-   every ordinary row keeps the ONE shared label|value|controls grid above. */
-.inspector .row:has(.gradient-presets, .multipoint-field) {
+   every ordinary row keeps the ONE shared label|value|controls grid above.
+   `.nest-header` is in the list because a MATERIAL whose knobs form an
+   accordion needs the same room: nested one step under its header inside a
+   ~200px value cell, a knob row's label + value + keyframe tracks overflowed. */
+.inspector .row:has(.gradient-presets, .multipoint-field, .nest-header) {
   grid-template-columns: 1fr var(--a-kf-w);
 }
-.inspector .row:has(.gradient-presets, .multipoint-field) > .label,
-.inspector .row:has(.gradient-presets, .multipoint-field) > .row-label-chrome {
+.inspector .row:has(.gradient-presets, .multipoint-field, .nest-header) > .label,
+.inspector .row:has(.gradient-presets, .multipoint-field, .nest-header) > .row-label-chrome {
   grid-area: 1 / 1;
 }
-.inspector .row:has(.gradient-presets, .multipoint-field) > .kf-controls {
+.inspector .row:has(.gradient-presets, .multipoint-field, .nest-header) > .kf-controls {
   grid-area: 1 / 2;
 }
-/* PaintField's root is the only child holding the picker (it carries no class
-   of its own — it is styled inline by the component). */
-.inspector .row:has(.gradient-presets, .multipoint-field) > :has(.gradient-presets, .multipoint-field) {
+/* The value cell holding the editor — PaintField's root, or the compound
+   value that wraps it on a colour row with channel children. */
+.inspector .row:has(.gradient-presets, .multipoint-field, .nest-header) > :has(.gradient-presets, .multipoint-field, .nest-header) {
   grid-area: 2 / 1 / 3 / 3;
 }
 
@@ -8217,14 +8245,102 @@ audio.ae-preview-media {
 }
 
 /* THE INTERP STRIP — this property's blend law, revealed under the row it
-   governs. Indented by one gutter and hairline-bracketed on the left so it reads
-   as belonging to the row above rather than as a sibling property of its own;
-   the row inside is an ordinary .row and keeps every column alignment, so its
-   value control still lines up with the panel's. */
+   governs. It is a ROW BLOCK under the nesting law below: the rows inside are
+   ordinary .rows, one step in, with the guide hanging from the interp button's
+   slot that opened it. */
+
+/* ═══ THE NESTING LAW ═══════════════════════════════════════════════════════
+   USER, 2026-09-30: "every indent should be a little bit more to the right of
+   the last one, but that's not the case. See how it says three sources, source
+   one, and then weight under that is actually to the left of source one … there's
+   no visual indentation hierarchy, and that makes it really, really confusing to
+   scroll through it because there's just so many options."
+
+   THE LAW: every nesting level's labels start exactly ONE --a-nest-step right of
+   the PARENT'S LABEL — never left of it, never level with it. The parent label is
+   an Inspector row's `.label`, a nested header's `.cat-title`, or a list
+   element's index. Measured before this block existed (default 317px panel):
+   Fill 53 → its editor 8; "3 sources" 28 → "Source 1" 76 → Weight 13; "Points" 53
+   → "5 points" 48; "Position" 53 → X 53. Every device had bracketed its body with
+   its own gutter-or-spacing-step and none was measured against the parent label,
+   the one x a reader actually compares. tests/inspector_indent_probe.js now does.
+
+   A NESTED HEADER HANGS ITS CHEVRON (.nest-header): the title sits on the block's
+   content edge and the chevron sits in the indent to its left — the compound
+   twisty's own arrangement. Without that a level costs step + chevron (35px
+   against 15), which Multipoint's five levels cannot afford in a 300px pane.
+
+   THE GUIDE runs down a nested block from the parent's CHEVRON: under a header,
+   the chevron's centre; under an Inspector row, the row's disclosure slot, where a
+   compound's twisty and the interp button sit (--a-row-guide-x).
+
+   THE VALUE COLUMN AT DEPTH IS A BLOCK INDENT, deliberately: the whole block
+   steps right and its values' right edges and keyframe column stay flush with the
+   panel. Every nested row grid takes its label track as a PROPORTION of its own
+   block, and every LabelDivider is a readout of that proportion, so a block
+   indent keeps the divider machinery right by construction; the label track
+   loses only frac × step per level (~3.5px at 0.23) while the value column's left
+   edge steps right by (1 − frac) × step, so values read as nested too. Indenting
+   the LABEL alone (the old compound rule) spends the whole step out of the label
+   track every level — at the default width a 69px track already carries the 45px
+   affordance gutter, so a single level left no room for text.
+
+   EVERY GUIDE IS PAINTED, NEVER A BORDER. A border takes layout width, and a
+   --a-hairline border (0.5px) is laid out as a whole device pixel at 1× — so a
+   step computed as "gutter minus the hairline" drifted 0.5px per level on a 1×
+   screen (measured: 15.5px steps). A painted stripe takes no width at any DPR,
+   so a level is exactly --a-nest-step everywhere and the guide can sit at any x.
+
+   THREE DEVICES, ONE LAW — they differ only in where the parent label sits, which
+   sets how far the block reaches and where its stripe is painted. */
+.nest,
+.inspector .row.row-list > .list-cell,
+.inspector .row:has(.gradient-presets, .multipoint-field, .nest-header) > :has(.gradient-presets, .multipoint-field, .nest-header),
+.inspector .compound-children,
 .inspector .interp-strip {
-  margin-left: var(--a-row-label-gutter);
-  border-left: var(--a-hairline) solid var(--border);
-  padding-left: var(--a-sp-2);
+  background-image: linear-gradient(var(--border), var(--border));
+  background-size: var(--a-hairline) 100%;
+  background-repeat: no-repeat;
+}
+
+/* 1. A block under a NESTED HEADER — ListField's element rows (.list-body), a
+   custom element's body (.list-el-content), a material's knob rows. The header's
+   title is on the parent's content edge, so the guide sits LEFT of that edge
+   (under the hanging chevron) and the block reaches back to paint it. */
+.nest {
+  margin-left: calc(-1 * var(--a-nest-header-guide));
+  padding-left: calc(var(--a-nest-header-guide) + var(--a-nest-step));
+  background-position: 0 0;
+}
+
+/* 2. An EDITOR restacked under an Inspector ROW — a list row's list, a gradient /
+   Multipoint / material paint editor. The parent label is the row's, after its
+   reserved affordance slots, so the editor starts one step right of THAT. */
+.inspector .row.row-list > .list-cell,
+.inspector .row:has(.gradient-presets, .multipoint-field, .nest-header) > :has(.gradient-presets, .multipoint-field, .nest-header) {
+  padding-left: calc(var(--a-row-label-x) + var(--a-nest-step));
+  background-position: var(--a-row-guide-x) 0;
+}
+
+/* 3. ROWS under a row — a compound's children, an interp strip. They are ordinary
+   rows carrying their own affordance slots, so the block steps one step and each
+   row's label lands one step right of its parent's. The stripe hangs from the
+   parent's disclosure slot, which falls inside these rows' own (hover-only) slot
+   area. Blocks nest, so depth N steps N times with nothing counting levels. */
+.inspector .compound-children,
+.inspector .interp-strip {
+  margin-left: var(--a-nest-step);
+  background-position: calc(var(--a-row-guide-x) - var(--a-nest-step)) 0;
+}
+
+/* THE HANGING HEADER. Its title lands on the content edge; the chevron and the
+   header's own padding hang into the indent, and the width grows by the same
+   amount so its seam still reaches the right edge. Compounded with .cat-header
+   because that shared rule, later in this file, sets `width: 100%` at the same
+   single-class specificity and would otherwise win on order. */
+.cat-header.nest-header {
+  margin-left: calc(-1 * var(--a-cat-title-inset));
+  width: calc(100% + var(--a-cat-title-inset));
 }
 
 /* ═══ COMPOUND ROWS (workstream COMPOUND_, backburner CY) ═══════════════════
@@ -8264,12 +8380,14 @@ audio.ae-preview-media {
 .inspector .compound-twisty:hover {
   color: var(--fg);
 }
-/* DEPTH IS A CUSTOM PROPERTY, NOT A NESTED SELECTOR, because the tree is of
-   ARBITRARY DEPTH (the user's "we might even have sub-subproperties"): a
-   selector per level would cap the feature at however many levels someone
-   happened to write, and the cap would be invisible until the day a three-level
-   compound rendered flat. `--compound-depth` is set inline by the snippet from
-   its own recursion counter, so level N indents by N gutters for every N.
+/* DEPTH IS STRUCTURE, NOT A COUNTER, because the tree is of ARBITRARY DEPTH (the
+   user's "we might even have sub-subproperties"): a nested compound's children
+   block sits INSIDE its parent's, and every such block steps one --a-nest-step
+   (THE NESTING LAW, row blocks), so level N indents N steps for every N with no
+   selector per level and no depth variable. It used to be a `--compound-depth`
+   counter added to the LABEL's padding alone, and that rule also subtracted the
+   twisty from LEAF rows, which have none — measured 2026-09-30, X and Y sat at
+   exactly the x of "Position", level with their parent rather than right of it.
 
    IT MUST RESTATE THE BASE RESERVATION, and that is the trap this rule fell into
    once. `.compound-label` IS a `.row-label-chrome`, which reserves TWO gutters of
@@ -8294,13 +8412,8 @@ audio.ae-preview-media {
    help do on an ordinary row. The nudge the user asked for is real and visible —
    it is the arrow sitting where nothing sits on a plain row — without the
    compound opting out of the alignment every other row obeys. */
-.inspector .compound-row > .compound-label,
-.inspector .compound-children > .row > .label,
-.inspector .compound-children > .row > .row-label-chrome {
-  padding-left: calc(
-    (3 + var(--compound-depth, 0)) * var(--a-row-label-gutter)
-    - var(--a-compound-twisty-w) - var(--a-compound-twisty-gap)
-  );
+.inspector .compound-row > .compound-label {
+  padding-left: calc(var(--a-row-label-x) - var(--a-compound-twisty-w) - var(--a-compound-twisty-gap));
 }
 /* The value cell holds several controls at once — the collapsed form's
    `[X] [Y] [pad]`, plus the chain link on the Size compound. They share the ONE
@@ -8324,14 +8437,10 @@ audio.ae-preview-media {
 .inspector .compound-row.compound-open > .compound-value {
   justify-content: flex-start;
 }
-/* The children block: bracketed on the left like the interp strip, so a leaf
-   inside a compound reads as belonging to the row above rather than as a sibling
-   property. It does NOT indent the whole block (the interp strip's margin-left
-   idiom), because these are real rows whose value columns must stay aligned with
-   the rest of the panel — the indent goes on the LABEL only, above. */
-.inspector .compound-children {
-  border-left: var(--a-hairline) solid var(--border);
-}
+/* The children block is a ROW BLOCK under THE NESTING LAW (one step in, guide
+   hanging from the twisty). It used to indent the LABEL only, so the value
+   columns stayed on the panel's; that is the label-only indent the law's header
+   explains rejecting. */
 
 /* THE 2D DRAG PAD (web/Vector2Pad.svelte) — the XY compound's joint control, the
    rotation dial's sibling. Square, because the two axes are symmetric and a
@@ -8535,11 +8644,9 @@ audio.ae-preview-media {
      gradient and material etc? this looks so flat but it's not"). The list's own
      collapse header reuses the category accordion's look, so a list sitting flush
      with the category read as a SECOND category rather than as the value of the
-     row above it. The same bracket the interp strip uses — one label gutter in and
-     a hairline on the left — is what says "this belongs to that row". */
-  margin-left: var(--a-row-label-gutter);
-  border-left: var(--a-hairline) solid var(--border);
-  padding-left: var(--a-sp-2);
+     row above it. Its indent and guide are THE NESTING LAW's row-level editor
+     rule: the bracket this used to carry (one gutter in) still left the list's
+     header 5px LEFT of the row's own label. */
 }
 
 .inspector .row.row-list > .kf-controls {
@@ -8882,8 +8989,12 @@ audio.ae-preview-media {
 .listfield .list-el-custom {
   flex-wrap: wrap;
 }
+/* A custom element's BODY, on its own line under the element's header. It is a
+   `.nest` (THE NESTING LAW), whose negative margin reaches back under the hanging
+   chevron — so it GROWS (flex-grow 1) by that much, or its right edge would stop
+   short of the row's. */
 .list-el-content {
-  flex: 0 0 100%;
+  flex: 1 0 100%;
   min-width: 0;
 }
 .multipoint-field,
@@ -8893,19 +9004,24 @@ audio.ae-preview-media {
   gap: var(--a-sp-2);
   min-width: 0;
 }
+/* No left bracket of its own: the .list-el-content nest around it draws the
+   source's guide, and a second hairline here stacked a level that is not one. */
 .multipoint-source {
-  padding: var(--a-sp-2) 0 var(--a-sp-2) var(--a-sp-2);
-  border-left: var(--a-hairline) solid var(--border);
+  padding: var(--a-sp-2) 0;
 }
 /* Intrinsic wrapping keeps numeric inputs legible in narrow inspector panes;
    a fixed two-column grid let 90px controls overlap their neighbours. */
 .listfield .multipoint-source .list-el {
   flex-wrap: wrap;
 }
+/* The fields wrap onto their OWN line under the node's index, which makes them
+   that element's children: one step in (THE NESTING LAW), or "x" would sit
+   level with the "1" it belongs to. */
 .listfield .multipoint-source .list-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--a-multipoint-field-w)), 1fr));
-  flex-basis: 100%;
+  margin-left: var(--a-nest-step);
+  flex-basis: calc(100% - var(--a-nest-step));
   order: 1;
 }
 .list-el-custom > .list-fields .cat-title {
@@ -10196,6 +10312,16 @@ audio.ae-preview-media {
 .cat-header:hover {
   background: var(--a-hover-bg);
   color: var(--fg);
+}
+
+/* THE CHEVRON'S BOX IS PINNED to --a-cat-twisty, so the title's x does not
+   depend on the glyph having loaded: an iconify-icon is 0px wide until its SVG
+   arrives, and measured, some section titles sat 16px left of their siblings for
+   exactly that reason. It is also what --a-cat-title-inset (padding + chevron +
+   gap, the nesting law's hang) is computed from. */
+.cat-header > iconify-icon {
+  flex: none;
+  width: var(--a-cat-twisty);
 }
 
 .cat-title {

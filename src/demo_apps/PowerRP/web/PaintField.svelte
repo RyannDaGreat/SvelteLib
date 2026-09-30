@@ -738,7 +738,7 @@
       <Tooltip text={matCollapsed ? "Show these knobs" : "Fold these knobs away"}>
         <button
           type="button"
-          class="cat-header"
+          class="cat-header nest-header"
           aria-expanded={!matCollapsed}
           aria-label={`${matEntry.title ?? matSub.id} knobs: ${matSummary}`}
           onclick={toggleMatCollapsed}
@@ -769,6 +769,13 @@
              have re-spaced every knob row to buy a `position`. A divider scope
              must not move a single row (app.css's own rule for .cat-row-run), so
              this class carries `position: relative` and nothing else. -->
+        <!-- THE KNOBS ARE THE HEADER'S CHILDREN: one step right of its title, guide
+             under its chevron (app.css THE NESTING LAW). The `.nest` is a WRAPPER,
+             not a class on the block below, because that block is its divider's
+             containing block — and a divider resolves `left: frac × 100%` against
+             the PADDING box, so the nest's padding there would misplace the strip
+             off the rows' actual boundary. -->
+        <div class="nest">
         <div class="cat-rows paint-knob-rows" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_VARIABLE]}>
           <!-- The knob list is its own divider group, for the same reason the
                geometry rows are: it is a contiguous run of label⟷value rows, and
@@ -904,6 +911,7 @@
             </div>
             {/if}
           {/each}
+        </div>
         </div>
       {/if}
     {/if}
