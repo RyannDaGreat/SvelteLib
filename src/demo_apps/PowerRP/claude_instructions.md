@@ -201,9 +201,16 @@ Numerical and runtime contract:
 - The FINAL field size is the paint's render resolution (`multipointResolution`,
   default 512² — see "Multipoint render resolution and solve speed" below).
   Browser surfaces draw a synchronous min(128², final) interactive field and refine
-  after 150 ms idle (`MULTIPOINT_IDLE_MS`) with one disposable module worker per
-  surface to the final size. Headless/export paths solve the final size
-  synchronously. Both call the same solver. Numerical nonconvergence
+  after 50 ms of CONTENT idle (`MULTIPOINT_IDLE_MS`) with one disposable module worker
+  per surface to the final size. The idle clock restarts only when a frame asks for a
+  field key the surface was not already waiting on — a repaint with the same fields
+  (video frames, hover chrome) must not postpone refinement forever. Proxy-quality
+  gpuService renders (slide thumbnails, minimap, project previews) resolve fields
+  through the SAME preview scope, so they reuse the viewport's field instead of
+  solving the final size on the main thread; full-quality jobs (PNG export, PDF/SVG
+  raster regions) and headless/export paths solve the final size synchronously.
+  Measured latency and WHY each rule exists: "Multipoint edit latency" below.
+  Both call the same solver. Numerical nonconvergence
   fails loudly; coarse geometric detail is a distinct limitation, not convergence.
 - Field and GPU-image caches each have a 64 MiB budget of upload-ready F16 texels
   (two 2048² fields, or thirty-two 512² fields). A visible field key (size +
@@ -403,6 +410,52 @@ untouched paint stays byte-identical; its label tooltip is `MULTIPOINT_RESOLUTIO
 tween, bit-identity hash from `.scratchpad/multipoint_resolution/pin_hashes_baseline.txt`,
 `halfTexels`, node renders); a cache-probe case for stale-job cancellation; the
 browser probes were not re-run after this change.
+
+### Multipoint edit latency — everything between an edit and the sharp picture (2026-09-30)
+
+User, verbatim: "It still seems to be taking its sweet time to update. Are you sure it's
+using GPU? Why is it so slow?" This section covers the NON-solver latency; the solve
+itself is the GPU-solver work. Measured in real Chrome on an M4 Max with ANGLE on Metal
+(`.scratchpad/multipoint_latency/measure.mjs` instruments Worker spawn/post/message/
+terminate, `SkiaSurface.render` / `_queueMultipoint` and long tasks; `profile.mjs` takes
+a CPU profile). Presets `neon-spiral` (15 nodes) and `nightingale-nest` (40 nodes), a
+640² widget; "sharp" = the repaint after the worker's final field arrives.
+
+| Scenario | Before | After |
+|---|---|---|
+| Pick preset, 1024²: main-thread freeze after the commit | 837–935 ms | none |
+| Pick preset, 512²: main-thread freeze after the commit | 210–240 ms | none |
+| Drag, 1024²: mouse-up → sharp | 1861–2023 ms | 1011–1092 ms (CPU worker) |
+| Drag, 512²: mouse-up → sharp | 595–678 ms | 341–356 ms (CPU worker) |
+| Gradient-map hover, 512²: last hover → sharp | 411–436 ms | 346–361 ms |
+| Drag frame: Inspector retype menu per pointermove | ~7.6 ms (228 ms / 30 steps) | 0 |
+
+The three causes and their fixes:
+1. **THE FREEZE WAS THE THUMBNAILS, NOT THE CANVAS.** Every commit re-renders the slide
+   thumbnail and minimap through `web/gpuService.js`, whose render ran OUTSIDE the
+   preview scope, so it solved the FINAL field synchronously on the main thread (the
+   840–935 ms long task at 1024²), and then the viewport's worker solved the same field
+   again. Proxy-quality jobs now resolve fields through `withMultipointPreview`: they
+   reuse the finest field already solved for that content, else a quick 128² solve.
+   Full-quality jobs (PNG export, PDF/SVG raster regions) are untouched and stay exact.
+2. **THE IDLE CLOCK RESTARTED ON EVERY REPAINT.** `_queueMultipoint` cleared the timer
+   on every frame, so any repaint loop postponed refinement indefinitely. It now
+   restarts only for a field key the surface was not already waiting on. The wait
+   dropped from 150 ms to 50 ms: continuous drags still never start a worker (every
+   pointermove makes a new key), while a discrete edit or a paused hover gets its
+   worker 100 ms sooner. Accepted cost: a hover sweep slower than 50 ms per swatch
+   starts and cancels a worker per swatch. That is off the main thread; measured 9
+   spawns and terminates over a 10-swatch sweep, with no main-thread cost.
+3. **THE RETYPE MENU RECOMPUTED ON EVERY DRAG FRAME.** `web/Inspector.svelte` builds a
+   coercion preview against every eligible widget type from the live state. It now holds
+   its last value while `app.dragging` and recomputes once at the gesture's end (the
+   menu cannot be opened mid-drag).
+
+Also measured, not changed here: Svelte dev-mode `get_stack`/`get_error` cost ~6 ms per
+drag frame, and a production build does not pay it. `auto` resolution picks 1024² for this
+viewport and did not flip N during drags or hovers. Worker spawn plus module load is not a
+meaningful share: a fresh worker and a reused one answered a 512² job equally fast
+(≈250–320 ms, all solve).
 
 ### Radial gradient TWIST — rings, spirals, spokes (2026-09-30)
 

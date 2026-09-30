@@ -220,7 +220,14 @@
   // plain caption. Derived, not cached: app.retypeChoices() reads app.state(),
   // which is itself a rune-tracked derivation, so an edit to a warned-about
   // property updates the tooltip on the very next frame.
-  let retypeMenu = $derived(app.retypeChoices());
+  //
+  // HELD DURING A DRAG: the menu cannot be opened mid-gesture, yet recomputing it
+  // (a coercion preview against EVERY eligible type) on each pointermove measured
+  // 228 ms over a 30-step Multipoint node drag (~7.6 ms per frame, 2026-09-30). While
+  // `app.dragging` the derivation reads only that flag and returns the last menu; the
+  // gesture's end recomputes once against the committed state.
+  let retypeMenuHeld = [];
+  let retypeMenu = $derived(app.dragging ? retypeMenuHeld : (retypeMenuHeld = app.retypeChoices()));
 
   // Picker: items visible on this slide first (render-tree order, as before),
   // then every OTHER document item — not yet created here, or active:false — at

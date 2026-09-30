@@ -15,7 +15,7 @@
 import { paintIR } from "./paint_skia.js";
 import { withMultipointPreview, rememberMultipointField } from "./multipoint.js";
 
-const MULTIPOINT_IDLE_MS = 150; // wait for a pause in gestures/playback before expensive refinement
+const MULTIPOINT_IDLE_MS = 50; // a pause in CONTENT changes (see _queueMultipoint) before refinement starts
 import { refuseCameraDither } from "./dither_shader.js";
 import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
@@ -121,6 +121,7 @@ export class SkiaSurface {
     this._multipointWorker = null;
     this._multipointTimer = null;
     this._multipointPending = [];
+    this._multipointWanted = new Set(); // keys the idle clock is already counting toward
     this._multipointActive = new Set();
     this._multipointCompleted = new Set();
     this._multipointFailed = new Set();
@@ -210,7 +211,6 @@ export class SkiaSurface {
    * @returns {undefined}
    */
   _queueMultipoint(requests) {
-    clearTimeout(this._multipointTimer);
     this._multipointActive = new Set(requests.map((r) => r.key));
     if (this._multipointBusy && !this._multipointActive.has(this._multipointJob.key)) {
       this._multipointWorker.terminate(); this._multipointWorker = null;
@@ -224,6 +224,15 @@ export class SkiaSurface {
         "Multipoint viewport cache evicted a visible final field; some fills remain at interactive resolution. Exports still use final resolution.");
     }
     this._multipointPending = requests.filter((r) => !r.ready && !this._multipointCompleted.has(r.key) && !this._multipointFailed.has(r.key));
+    // THE IDLE CLOCK MEASURES A PAUSE IN CONTENT, NOT IN REPAINTS. Only a field key
+    // this surface did not already want restarts it; a repaint with the same (or a
+    // shrinking) set keeps the running timer or the readiness it already earned.
+    // Restarting on EVERY repaint let any repaint loop — a playing video's frame
+    // epoch, hover chrome — postpone refinement forever.
+    const fresh = this._multipointPending.some((r) => !this._multipointWanted.has(r.key));
+    this._multipointWanted = new Set(this._multipointPending.map((r) => r.key));
+    if (!fresh) return;
+    clearTimeout(this._multipointTimer);
     this._multipointReady = false;
     if (this._multipointPending.length) this._multipointTimer = setTimeout(() => {
       this._multipointReady = true;
@@ -274,7 +283,7 @@ export class SkiaSurface {
     clearTimeout(this._multipointTimer);
     this._multipointWorker?.terminate(); this._multipointWorker = null;
     this._multipointBusy = false; this._multipointJob = null;
-    this._multipointPending = []; this._lastRender = null;
+    this._multipointPending = []; this._multipointWanted = new Set(); this._lastRender = null;
     // Free this context's reused video textures BEFORE the GrContext dies — a
     // later eviction .delete() on a torn-down context would fault the wasm heap.
     disposeUploaderScope(this._uploader.scopeId);

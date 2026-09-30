@@ -44,6 +44,7 @@ import { clampSurfaceSize, MAX_SURFACE_DIM } from "../core/clip.js";
 import { reportOnce } from "../core/report.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
+import { withMultipointPreview } from "../render_gpu/skia/multipoint.js";
 import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
 import { sceneMedia, prepareSceneScrubFrames } from "../render_gpu/skia/browser_media.js";
@@ -251,7 +252,16 @@ function renderJob(reqWidth, reqHeight, buildIR) {
       const { media, release } = sceneMedia(uploader, ir);
       try {
         const canvas = surface.getCanvas();
-        paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection, makeSurface, antialias, quality });
+        const paint = () => paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection, makeSurface, antialias, quality });
+        // PROXY RENDERS (thumbnails, minimap, project previews) take Multipoint fields
+        // through the PREVIEW scope: the finest field already solved for that content
+        // (usually the viewport's own), else a quick 128² solve. Outside it they solved
+        // the FINAL size synchronously on the main thread after every edit — measured
+        // 2026-09-30 in Metal Chrome: 240 ms at 512², 840–935 ms at 1024² of frozen UI,
+        // then the viewport's worker solved the same field again. Full-quality jobs
+        // (PNG export, PDF/SVG raster regions) are untouched and stay exact.
+        if (quality === "proxy") withMultipointPreview(paint);
+        else paint();
         surface.flush();
         const img = surface.makeImageSnapshot();
         if (!img) throw new Error("gpuService: makeImageSnapshot returned null");

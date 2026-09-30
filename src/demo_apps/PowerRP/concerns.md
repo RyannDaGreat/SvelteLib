@@ -1862,3 +1862,32 @@ NEW solver lessons from the research round (not in earlier entries):
 - A split-colour rim does NOT give a hard edge across a closed shape (the interior blurs into a
   gradient); use a two-sided chord.
 - Explicit OKLCH stops keep gradients saturated despite the solver blending in encoded sRGB.
+
+## 2026-09-30 — Multipoint edit latency (non-solver half)
+User: "It still seems to be taking its sweet time to update. Are you sure it's using GPU? Why is
+it so slow?" Measured in Metal Chrome (M4 Max, ANGLE Metal) with
+`.scratchpad/multipoint_latency/measure.mjs` + `profile.mjs`; logs in
+`.scratchpad/logs/multipoint_latency_*.log`, per-run JSON in `.scratchpad/multipoint_latency/results-*.json`.
+- ROOT CAUSE OF THE BIGGEST FREEZE was not the viewport at all: gpuService's proxy renders
+  (thumbnails/minimap after every commit) solved the final field synchronously on the main
+  thread — 837–935 ms at 1024², 210–240 ms at 512² — and the viewport worker then solved the
+  same field again. Fixed by routing proxy renders through the preview scope.
+- `_queueMultipoint` restarted its idle timer on EVERY repaint; a repaint loop (video epoch,
+  hover chrome) could postpone refinement forever. Now restarts only for new field keys;
+  idle 150 → 50 ms. Mouse-up → sharp at 512²: 595–678 → 341–356 ms; at 1024²: 1861–2023 →
+  1011–1092 ms (CPU worker; the 1024² gain is mostly the thumbnail freeze no longer
+  contending for the CPU).
+- Inspector `retypeChoices()` recomputed per drag frame (228 ms over a 30-step drag). Held
+  while dragging.
+- Measurement mistakes, recorded so they aren't repeated: (1) `window.__powerrp_app.selection` is
+  the id STRING, so `selection[0]` indexed its first character and the first matrix silently
+  measured nothing; (2) Vite dev loads more modules than the default 250-entry resource-timing
+  buffer holds, so locating a module URL via `performance.getEntriesByType("resource")` needs
+  `setResourceTimingBufferSize`; (3) the `auto` rows in a matrix run AFTER the `1024` rows
+  are cache hits (auto = 1024² for a 640² widget at dpr 1) and prove nothing about auto's
+  latency — run auto alone (`MP_RES=auto MP_DEBUG=1`).
+- Observed mid-flight while the GPU-solver fork's code was live (its concern, reported to the
+  lead): the synchronous GPU solve pays ~28 ms per drag frame in `readScalar`
+  (`gl.readPixels` of 1×1 dot-product targets, a pipeline stall per CG iteration), and at 512²
+  it currently solves the FULL field synchronously per frame (renders 43–84 ms, a long task
+  every drag frame) instead of the 128² preview.
