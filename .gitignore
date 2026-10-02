@@ -66,3 +66,4 @@ src/demo_apps/PowerRP/.claude_audio_checks/*.wav
 src/demo_apps/PowerRP/tests/fixtures/surge/
 src/demo_apps/PowerRP/web/viewer_bundle/
 src/demo_apps/PowerRP/.claude_vlm_checks
+/.scratchpad
